@@ -67,7 +67,7 @@ WrappedSimpleTensor::get_memory_usage() const
     return MemoryUsage(used, used, 0, 0);
 }
 
-Tensor::UP
+vespalib::eval::Value::UP
 WrappedSimpleTensor::clone() const
 {
     auto tensor = std::make_unique<eval::SimpleTensor>(_tensor.type(), _tensor.my_cells());

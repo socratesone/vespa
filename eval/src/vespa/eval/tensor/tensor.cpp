@@ -26,11 +26,4 @@ Tensor::supported(TypeList types)
     return (dense != sparse);
 }
 
-std::ostream &
-operator<<(std::ostream &out, const Tensor &value)
-{
-    out << value.toSpec().to_string();
-    return out;
-}
-
 }

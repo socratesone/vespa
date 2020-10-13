@@ -168,7 +168,7 @@ SparseTensorT<T>::apply(const CellFunction &func) const
 }
 
 template<typename T>
-Tensor::UP
+vespalib::eval::Value::UP
 SparseTensorT<T>::clone() const
 {
     return std::make_unique<SparseTensorT<T>>(fast_type(), index(), _values);

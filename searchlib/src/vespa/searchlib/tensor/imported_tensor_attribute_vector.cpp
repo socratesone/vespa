@@ -6,8 +6,6 @@
 
 namespace search::tensor {
 
-using vespalib::tensor::Tensor;
-
 ImportedTensorAttributeVector::ImportedTensorAttributeVector(vespalib::stringref name,
                                                              std::shared_ptr<ReferenceAttribute> reference_attribute,
                                                              std::shared_ptr<IDocumentMetaStoreContext> document_meta_store,

@@ -4,7 +4,7 @@
 
 namespace search::tensor {
 
-extern std::unique_ptr<vespalib::tensor::Tensor>
+extern std::unique_ptr<vespalib::eval::Value>
 deserialize_tensor(const void *data, size_t size);
 
 } // namespace

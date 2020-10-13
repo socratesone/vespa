@@ -44,7 +44,7 @@ DirectTensorStore::DirectTensorStore()
 
 DirectTensorStore::~DirectTensorStore() = default;
 
-const vespalib::tensor::Tensor*
+const vespalib::eval::Value *
 DirectTensorStore::get_tensor(EntryRef ref) const
 {
     if (!ref.valid()) {
@@ -56,7 +56,7 @@ DirectTensorStore::get_tensor(EntryRef ref) const
 }
 
 EntryRef
-DirectTensorStore::store_tensor(std::unique_ptr<Tensor> tensor)
+DirectTensorStore::store_tensor(std::unique_ptr<vespalib::eval::Value> tensor)
 {
     assert(tensor);
     return add_entry(TensorSP(std::move(tensor)));

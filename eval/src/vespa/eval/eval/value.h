@@ -6,6 +6,7 @@
 #include "typed_cells.h"
 #include <vespa/vespalib/stllike/string.h>
 #include <vespa/vespalib/util/traits.h>
+#include <vespa/vespalib/util/memoryusage.h>
 #include <vector>
 #include <memory>
 
@@ -67,8 +68,14 @@ struct Value {
     virtual double as_double() const;
     bool as_bool() const { return (as_double() != 0.0); }
     virtual const Tensor *as_tensor() const { return nullptr; }
+
+    virtual Value::UP clone() const;
+    virtual MemoryUsage get_memory_usage() const;
 // --- end of old interface
 };
+
+bool operator==(const Value &lhs, const Value &rhs);
+std::ostream &operator<<(std::ostream &out, const Value &tensor);
 
 /**
  * Common index for values without any mapped dimensions.

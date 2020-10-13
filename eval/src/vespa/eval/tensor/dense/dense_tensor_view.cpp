@@ -209,7 +209,7 @@ struct CallClone {
     }
 };
 
-Tensor::UP
+vespalib::eval::Value::UP
 DenseTensorView::clone() const
 {
     return dispatch_1<CallClone>(_cellsRef, _typeRef);

@@ -59,5 +59,37 @@ Value::as_double() const
 
 ValueType DoubleValue::_type = ValueType::double_type();
 
+
 } // namespace vespalib::eval
 } // namespace vespalib
+
+#include <vespa/eval/eval/engine_or_factory.h>
+namespace vespalib::eval {
+
+Value::UP Value::clone() const {
+    auto engine = EngineOrFactory::get();
+    return engine.clone(*this);
+}
+
+MemoryUsage
+Value::get_memory_usage() const
+{
+    MemoryUsage unknown;
+    return unknown;
+}
+
+bool operator==(const Value &lhs, const Value &rhs)
+{
+    auto engine = EngineOrFactory::get();
+    return engine.equals(lhs, rhs);
+}
+
+std::ostream &operator<<(std::ostream &out, const Value &value)
+{
+    auto engine = EngineOrFactory::get();
+    auto spec = engine.to_spec(value);
+    out << spec.to_string();
+    return out;
+}
+
+} // namespace

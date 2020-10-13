@@ -36,7 +36,7 @@ public:
     double as_double() const override;
     void accept(TensorVisitor &visitor) const override;
     MemoryUsage get_memory_usage() const override;
-    Tensor::UP clone() const override;
+    Value::UP clone() const override;
     // functions below should not be used for this implementation
     Tensor::UP apply(const CellFunction &) const override;
     Tensor::UP join(join_fun_t, const Tensor &) const override;

@@ -47,6 +47,8 @@ public:
     std::unique_ptr<Value> from_spec(const TensorSpec &spec) const;
     void encode(const Value &value, nbostream &output) const;
     std::unique_ptr<Value> decode(nbostream &input) const;
+    bool equals(const Value &a, const Value &b);
+    std::unique_ptr<Value> clone(const Value &value);
     // engine-only forwarding functions
     const Value &map(const Value &a, operation::op1_t function, Stash &stash) const;
     const Value &join(const Value &a, const Value &b, operation::op2_t function, Stash &stash) const;

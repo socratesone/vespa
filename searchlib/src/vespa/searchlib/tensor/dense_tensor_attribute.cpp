@@ -21,7 +21,6 @@ using vespalib::eval::ValueType;
 using vespalib::slime::ObjectInserter;
 using vespalib::tensor::DenseTensorView;
 using vespalib::tensor::MutableDenseTensorView;
-using vespalib::tensor::Tensor;
 
 namespace search::tensor {
 
@@ -79,7 +78,7 @@ can_use_index_save_file(const search::attribute::Config &config, const search::a
 }
 
 void
-DenseTensorAttribute::internal_set_tensor(DocId docid, const Tensor& tensor)
+DenseTensorAttribute::internal_set_tensor(DocId docid, const vespalib::eval::Value& tensor)
 {
     checkTensorType(tensor);
     consider_remove_from_index(docid);
@@ -135,7 +134,7 @@ DenseTensorAttribute::clearDoc(DocId docId)
 }
 
 void
-DenseTensorAttribute::setTensor(DocId docId, const Tensor &tensor)
+DenseTensorAttribute::setTensor(DocId docId, const vespalib::eval::Value &tensor)
 {
     internal_set_tensor(docId, tensor);
     if (_index) {
@@ -144,7 +143,7 @@ DenseTensorAttribute::setTensor(DocId docId, const Tensor &tensor)
 }
 
 std::unique_ptr<PrepareResult>
-DenseTensorAttribute::prepare_set_tensor(DocId docid, const Tensor& tensor) const
+DenseTensorAttribute::prepare_set_tensor(DocId docid, const vespalib::eval::Value& tensor) const
 {
     if (_index) {
         const auto* view = dynamic_cast<const DenseTensorView*>(&tensor);
@@ -155,7 +154,7 @@ DenseTensorAttribute::prepare_set_tensor(DocId docid, const Tensor& tensor) cons
 }
 
 void
-DenseTensorAttribute::complete_set_tensor(DocId docid, const Tensor& tensor,
+DenseTensorAttribute::complete_set_tensor(DocId docid, const vespalib::eval::Value& tensor,
                                           std::unique_ptr<PrepareResult> prepare_result)
 {
     internal_set_tensor(docid, tensor);
@@ -164,7 +163,7 @@ DenseTensorAttribute::complete_set_tensor(DocId docid, const Tensor& tensor,
     }
 }
 
-std::unique_ptr<Tensor>
+std::unique_ptr<vespalib::eval::Value>
 DenseTensorAttribute::getTensor(DocId docId) const
 {
     EntryRef ref;
@@ -172,7 +171,7 @@ DenseTensorAttribute::getTensor(DocId docId) const
         ref = _refVector[docId];
     }
     if (!ref.valid()) {
-        return std::unique_ptr<Tensor>();
+        return std::unique_ptr<vespalib::eval::Value>();
     }
     return _denseTensorStore.getTensor(ref);
 }

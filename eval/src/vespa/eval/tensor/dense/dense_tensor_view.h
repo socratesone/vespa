@@ -43,7 +43,7 @@ public:
     std::unique_ptr<Tensor> add(const Tensor &arg) const override;
     std::unique_ptr<Tensor> remove(const CellValues &) const override;
     bool equals(const Tensor &arg) const override;
-    Tensor::UP clone() const override;
+    Value::UP clone() const override;
     eval::TensorSpec toSpec() const override;
     void accept(TensorVisitor &visitor) const override;
     MemoryUsage get_memory_usage() const override {

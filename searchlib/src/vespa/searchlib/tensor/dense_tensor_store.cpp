@@ -9,9 +9,9 @@
 #include <vespa/vespalib/datastore/datastore.hpp>
 
 using vespalib::datastore::Handle;
-using vespalib::tensor::Tensor;
 using vespalib::tensor::DenseTensorView;
 using vespalib::tensor::MutableDenseTensorView;
+using vespalib::eval::Value;
 using vespalib::eval::ValueType;
 using CellType = vespalib::eval::ValueType::CellType;
 
@@ -131,11 +131,11 @@ DenseTensorStore::move(EntryRef ref)
     return newraw.ref;
 }
 
-std::unique_ptr<Tensor>
+std::unique_ptr<Value>
 DenseTensorStore::getTensor(EntryRef ref) const
 {
     if (!ref.valid()) {
-        return std::unique_ptr<Tensor>();
+        return std::unique_ptr<Value>();
     }
     vespalib::eval::TypedCells cells_ref(getRawBuffer(ref), _type.cell_type(), getNumCells());
     return std::make_unique<DenseTensorView>(_type, cells_ref);
@@ -175,7 +175,7 @@ DenseTensorStore::setDenseTensor(const TensorType &tensor)
 }
 
 TensorStore::EntryRef
-DenseTensorStore::setTensor(const Tensor &tensor)
+DenseTensorStore::setTensor(const vespalib::eval::Value &tensor)
 {
     const DenseTensorView &view(dynamic_cast<const DenseTensorView &>(tensor));
     return setDenseTensor(view);

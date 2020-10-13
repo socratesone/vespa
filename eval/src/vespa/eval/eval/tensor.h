@@ -37,8 +37,5 @@ public:
     virtual ~Tensor() {}
 };
 
-bool operator==(const Tensor &lhs, const Tensor &rhs);
-std::ostream &operator<<(std::ostream &out, const Tensor &tensor);
-
 } // namespace vespalib::eval
 } // namespace vespalib

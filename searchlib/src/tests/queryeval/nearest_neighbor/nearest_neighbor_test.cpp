@@ -3,6 +3,7 @@
 #include <vespa/vespalib/testkit/test_kit.h>
 #include <vespa/vespalib/util/stringfmt.h>
 
+#include <vespa/eval/eval/engine_or_factory.h>
 #include <vespa/eval/tensor/default_tensor_engine.h>
 #include <vespa/eval/tensor/dense/dense_tensor.h>
 #include <vespa/eval/tensor/tensor.h>
@@ -25,12 +26,12 @@ using search::feature_t;
 using search::tensor::DenseTensorAttribute;
 using search::AttributeVector;
 using search::BitVector;
+using vespalib::eval::Value;
 using vespalib::eval::ValueType;
 using CellType = vespalib::eval::ValueType::CellType;
 using vespalib::eval::TensorSpec;
-using vespalib::tensor::Tensor;
+using vespalib::eval::EngineOrFactory;
 using vespalib::tensor::DenseTensorView;
-using vespalib::tensor::DefaultTensorEngine;
 using search::tensor::DistanceFunction;
 using search::attribute::DistanceMetric;
 
@@ -44,7 +45,7 @@ DistanceFunction::UP euclid_d = search::tensor::make_distance_function(DistanceM
 DistanceFunction::UP euclid_f = search::tensor::make_distance_function(DistanceMetric::Euclidean, CellType::FLOAT);
 
 std::unique_ptr<DenseTensorView> createTensor(const TensorSpec &spec) {
-    auto value = DefaultTensorEngine::ref().from_spec(spec);
+    auto value = EngineOrFactory::get().from_spec(spec);
     DenseTensorView *tensor = dynamic_cast<DenseTensorView*>(value.get());
     ASSERT_TRUE(tensor != nullptr);
     value.release();
@@ -106,7 +107,7 @@ struct Fixture
         }
     }
 
-    void setTensor(uint32_t docId, const Tensor &tensor) {
+    void setTensor(uint32_t docId, const Value &tensor) {
         ensureSpace(docId);
         _tensorAttr->setTensor(docId, tensor);
         _attr->commit();

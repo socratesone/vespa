@@ -13,8 +13,6 @@
 #include "tensor_deserialize.h"
 #include "tensor_attribute.hpp"
 
-using vespalib::tensor::Tensor;
-
 namespace search::tensor {
 
 DirectTensorAttribute::DirectTensorAttribute(stringref name, const Config &cfg)
@@ -62,7 +60,7 @@ DirectTensorAttribute::onLoad()
 }
 
 void
-DirectTensorAttribute::set_tensor(DocId lid, std::unique_ptr<Tensor> tensor)
+DirectTensorAttribute::set_tensor(DocId lid, std::unique_ptr<vespalib::eval::Value> tensor)
 {
     checkTensorType(*tensor);
     EntryRef ref = _direct_store.store_tensor(std::move(tensor));
@@ -70,12 +68,12 @@ DirectTensorAttribute::set_tensor(DocId lid, std::unique_ptr<Tensor> tensor)
 }
 
 void
-DirectTensorAttribute::setTensor(DocId lid, const Tensor &tensor)
+DirectTensorAttribute::setTensor(DocId lid, const vespalib::eval::Value &tensor)
 {
     set_tensor(lid, tensor.clone());
 }
 
-std::unique_ptr<Tensor>
+std::unique_ptr<vespalib::eval::Value>
 DirectTensorAttribute::getTensor(DocId docId) const
 {
     EntryRef ref;
@@ -88,11 +86,11 @@ DirectTensorAttribute::getTensor(DocId docId) const
             return ptr->clone();
         }
     }
-    std::unique_ptr<Tensor> empty;
+    std::unique_ptr<vespalib::eval::Value> empty;
     return empty;
 }
 
-const Tensor &
+const vespalib::eval::Value &
 DirectTensorAttribute::get_tensor_ref(DocId docId) const
 {
     EntryRef ref;
