@@ -664,10 +664,9 @@ createTensorSchema(const vespalib::string& tensor_spec = sparse_tensor) {
 
 Document::UP
 createTensorPutDoc(DocBuilder &builder, const Value &tensor) {
-    auto engine = vespalib::eval::EngineOrFactory::get();
     return builder.startDocument("id:ns:searchdocument::1").
         startAttributeField("a1").
-        addTensor(engine.clone(tensor)).endField().endDocument();
+        addTensor(tensor.clone()).endField().endDocument();
 }
 
 }
