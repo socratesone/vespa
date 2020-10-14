@@ -3,8 +3,7 @@
 #include "serialized_tensor_store.h"
 #include "tensor_deserialize.h"
 #include <vespa/eval/eval/engine_or_factory.h>
-#include <vespa/eval/tensor/tensor.h>
-#include <vespa/eval/tensor/serialization/typed_binary_format.h>
+#include <vespa/eval/eval/value.h>
 #include <vespa/vespalib/datastore/datastore.hpp>
 #include <vespa/vespalib/objects/nbostream.h>
 #include <vespa/vespalib/util/stringfmt.h>

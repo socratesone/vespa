@@ -7,8 +7,6 @@
 #include <vespa/searchlib/fef/test/rankresult.h>
 #include <vespa/searchlib/fef/test/dummy_dependency_handler.h>
 #include <vespa/eval/eval/engine_or_factory.h>
-#include <vespa/eval/tensor/tensor.h>
-#include <vespa/eval/tensor/serialization/typed_binary_format.h>
 #include <vespa/vespalib/objects/nbostream.h>
 #include <vespa/eval/tensor/dense/dense_tensor.h>
 

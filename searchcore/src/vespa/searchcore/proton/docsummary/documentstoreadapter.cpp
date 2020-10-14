@@ -4,8 +4,6 @@
 #include <vespa/searchsummary/docsummary/summaryfieldconverter.h>
 #include <vespa/document/fieldvalue/stringfieldvalue.h>
 #include <vespa/eval/eval/engine_or_factory.h>
-#include <vespa/eval/tensor/tensor.h>
-#include <vespa/eval/tensor/serialization/typed_binary_format.h>
 #include <vespa/vespalib/objects/nbostream.h>
 #include <vespa/document/fieldvalue/tensorfieldvalue.h>
 

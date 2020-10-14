@@ -3,7 +3,7 @@
 #include "direct_tensor_attribute.h"
 #include "direct_tensor_saver.h"
 
-#include <vespa/eval/tensor/tensor.h>
+#include <vespa/eval/eval/value.h>
 #include <vespa/fastlib/io/bufferedfile.h>
 #include <vespa/searchlib/attribute/readerbase.h>
 #include <vespa/searchlib/util/fileutil.h>

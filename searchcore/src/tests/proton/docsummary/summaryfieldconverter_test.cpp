@@ -46,9 +46,9 @@
 #include <vespa/vespalib/data/slime/binary_format.h>
 #include <vespa/searchlib/util/slime_output_raw_buf_adapter.h>
 #include <vespa/eval/eval/engine_or_factory.h>
-#include <vespa/eval/tensor/tensor.h>
+#include <vespa/eval/eval/value.h>
+#include <vespa/eval/eval/test/value_compare.h>
 #include <vespa/eval/tensor/types.h>
-#include <vespa/eval/tensor/default_tensor_engine.h>
 #include <vespa/vespalib/data/slime/slime.h>
 
 using document::Annotation;

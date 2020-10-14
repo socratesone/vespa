@@ -4,7 +4,7 @@
 #include "docsumstate.h"
 #include "docsumwriter.h"
 #include <vespa/eval/eval/engine_or_factory.h>
-#include <vespa/eval/tensor/tensor.h>
+#include <vespa/eval/eval/value.h>
 #include <vespa/searchcommon/attribute/iattributecontext.h>
 #include <vespa/searchlib/attribute/iattributemanager.h>
 #include <vespa/searchlib/attribute/integerbase.h>

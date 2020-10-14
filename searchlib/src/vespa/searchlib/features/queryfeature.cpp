@@ -11,8 +11,6 @@
 #include <vespa/searchlib/fef/properties.h>
 #include <vespa/searchlib/fef/feature_type.h>
 #include <vespa/vespalib/objects/nbostream.h>
-#include <vespa/eval/tensor/serialization/typed_binary_format.h>
-#include <vespa/eval/tensor/tensor.h>
 #include <vespa/eval/eval/value_type.h>
 #include <vespa/vespalib/locale/c.h>
 #include <cerrno>
