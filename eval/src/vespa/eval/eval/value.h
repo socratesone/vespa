@@ -74,8 +74,12 @@ struct Value {
 // --- end of old interface
 };
 
+namespace test {
+
 bool operator==(const Value &lhs, const Value &rhs);
 std::ostream &operator<<(std::ostream &out, const Value &tensor);
+
+}
 
 /**
  * Common index for values without any mapped dimensions.

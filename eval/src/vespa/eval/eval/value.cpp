@@ -2,6 +2,7 @@
 
 #include "value.h"
 #include "tensor_engine.h"
+#include "engine_or_factory.h"
 #include <vespa/vespalib/util/typify.h>
 
 namespace vespalib {
@@ -59,13 +60,6 @@ Value::as_double() const
 
 ValueType DoubleValue::_type = ValueType::double_type();
 
-
-} // namespace vespalib::eval
-} // namespace vespalib
-
-#include <vespa/eval/eval/engine_or_factory.h>
-namespace vespalib::eval {
-
 Value::UP Value::clone() const {
     auto engine = EngineOrFactory::get();
     return engine.clone(*this);
@@ -77,6 +71,8 @@ Value::get_memory_usage() const
     MemoryUsage unknown;
     return unknown;
 }
+
+namespace test {
 
 bool operator==(const Value &lhs, const Value &rhs)
 {
@@ -92,4 +88,7 @@ std::ostream &operator<<(std::ostream &out, const Value &value)
     return out;
 }
 
-} // namespace
+} // namespace vespalib::eval::test
+} // namespace vespalib::eval
+} // namespace vespalib
+
