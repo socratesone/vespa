@@ -1,7 +1,6 @@
 // Copyright 2017 Yahoo Holdings. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
 #include "value.h"
-#include "tensor_engine.h"
 #include "engine_or_factory.h"
 #include <vespa/vespalib/util/typify.h>
 
@@ -72,23 +71,6 @@ Value::get_memory_usage() const
     return unknown;
 }
 
-namespace test {
-
-bool operator==(const Value &lhs, const Value &rhs)
-{
-    auto engine = EngineOrFactory::get();
-    return engine.equals(lhs, rhs);
-}
-
-std::ostream &operator<<(std::ostream &out, const Value &value)
-{
-    auto engine = EngineOrFactory::get();
-    auto spec = engine.to_spec(value);
-    out << spec.to_string();
-    return out;
-}
-
-} // namespace vespalib::eval::test
 } // namespace vespalib::eval
 } // namespace vespalib
 

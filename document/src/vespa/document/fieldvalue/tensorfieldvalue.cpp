@@ -10,6 +10,7 @@
 #include <ostream>
 #include <cassert>
 
+using vespalib::eval::EngineOrFactory;
 using vespalib::eval::TensorSpec;
 using vespalib::eval::ValueType;
 using namespace vespalib::xml;
@@ -213,13 +214,19 @@ TensorFieldValue::compare(const FieldValue &other) const
     if (!rhs._tensor) {
         return 1;
     }
-    if (*_tensor == *rhs._tensor) {
+    if (_tensor.get() == rhs._tensor.get()) {
         return 0;
     }
-    assert(_tensor.get() != rhs._tensor.get());
-    // XXX: Wrong, compares identity of tensors instead of values
-    // Note: sorting can be dangerous due to this.
-    return ((_tensor.get()  < rhs._tensor.get()) ? -1 : 1);
+    auto lhs_type = _tensor->type().to_spec();
+    auto rhs_type = rhs._tensor->type().to_spec();
+    int type_cmp = lhs_type.compare(rhs_type);
+    if (type_cmp != 0) {
+        return type_cmp;
+    }
+    auto engine = EngineOrFactory::get();
+    auto lhs_spec = engine.to_spec(*_tensor).to_string();
+    auto rhs_spec = engine.to_spec(*rhs._tensor).to_string();
+    return lhs_spec.compare(rhs_spec);
 }
 
 IMPLEMENT_IDENTIFIABLE(TensorFieldValue, FieldValue);
