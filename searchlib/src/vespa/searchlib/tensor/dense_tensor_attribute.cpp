@@ -17,9 +17,9 @@
 LOG_SETUP(".searchlib.tensor.dense_tensor_attribute");
 
 using search::attribute::LoadUtils;
+using vespalib::eval::Value;
 using vespalib::eval::ValueType;
 using vespalib::slime::ObjectInserter;
-using vespalib::tensor::DenseTensorView;
 using vespalib::tensor::MutableDenseTensorView;
 
 namespace search::tensor {
@@ -146,9 +146,7 @@ std::unique_ptr<PrepareResult>
 DenseTensorAttribute::prepare_set_tensor(DocId docid, const vespalib::eval::Value& tensor) const
 {
     if (_index) {
-        const auto* view = dynamic_cast<const DenseTensorView*>(&tensor);
-        assert(view);
-        return _index->prepare_add_document(docid, view->cellsRef(), getGenerationHandler().takeGuard());
+        return _index->prepare_add_document(docid, tensor.cells(), getGenerationHandler().takeGuard());
     }
     return std::unique_ptr<PrepareResult>();
 }

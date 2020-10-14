@@ -5,7 +5,6 @@
 #include "nearest_neighbor_iterator.h"
 #include "nns_index_iterator.h"
 #include <vespa/searchlib/fef/termfieldmatchdataarray.h>
-#include <vespa/eval/tensor/dense/dense_tensor_view.h>
 #include <vespa/eval/tensor/dense/dense_tensor.h>
 #include <vespa/searchlib/tensor/dense_tensor_attribute.h>
 #include <vespa/searchlib/tensor/distance_function_factory.h>
@@ -13,7 +12,7 @@
 
 LOG_SETUP(".searchlib.queryeval.nearest_neighbor_blueprint");
 
-using vespalib::tensor::DenseTensorView;
+using vespalib::eval::Value;
 using vespalib::tensor::DenseTensor;
 
 namespace search::queryeval {
@@ -22,9 +21,9 @@ namespace {
 
 template<typename LCT, typename RCT>
 void
-convert_cells(std::unique_ptr<DenseTensorView> &original, vespalib::eval::ValueType want_type)
+convert_cells(std::unique_ptr<Value> &original, vespalib::eval::ValueType want_type)
 {
-    auto old_cells = original->cellsRef().typify<LCT>();
+    auto old_cells = original->cells().typify<LCT>();
     std::vector<RCT> new_cells;
     new_cells.reserve(old_cells.size());
     for (LCT value : old_cells) {
@@ -36,11 +35,11 @@ convert_cells(std::unique_ptr<DenseTensorView> &original, vespalib::eval::ValueT
 
 template<>
 void
-convert_cells<float,float>(std::unique_ptr<DenseTensorView> &, vespalib::eval::ValueType) {}
+convert_cells<float,float>(std::unique_ptr<Value> &, vespalib::eval::ValueType) {}
 
 template<>
 void
-convert_cells<double,double>(std::unique_ptr<DenseTensorView> &, vespalib::eval::ValueType) {}
+convert_cells<double,double>(std::unique_ptr<Value> &, vespalib::eval::ValueType) {}
 
 struct ConvertCellsSelector
 {
@@ -52,7 +51,7 @@ struct ConvertCellsSelector
 
 NearestNeighborBlueprint::NearestNeighborBlueprint(const queryeval::FieldSpec& field,
                                                    const tensor::DenseTensorAttribute& attr_tensor,
-                                                   std::unique_ptr<vespalib::tensor::DenseTensorView> query_tensor,
+                                                   std::unique_ptr<Value> query_tensor,
                                                    uint32_t target_num_hits, bool approximate, uint32_t explore_additional_hits, double brute_force_limit)
     : ComplexLeafBlueprint(field),
       _attr_tensor(attr_tensor),
@@ -66,7 +65,7 @@ NearestNeighborBlueprint::NearestNeighborBlueprint(const queryeval::FieldSpec& f
       _found_hits(),
       _global_filter(GlobalFilter::create())
 {
-    auto lct = _query_tensor->cellsRef().type;
+    auto lct = _query_tensor->cells().type;
     auto rct = _attr_tensor.getTensorType().cell_type();
     using MyTypify = vespalib::eval::TypifyCellType;
     auto fixup_fun = vespalib::typify_invoke<2,MyTypify,ConvertCellsSelector>(lct, rct);
@@ -120,11 +119,11 @@ NearestNeighborBlueprint::perform_top_k()
 {
     auto nns_index = _attr_tensor.nearest_neighbor_index();
     if (_approximate && nns_index) {
-        auto lhs_type = _query_tensor->fast_type();
+        auto lhs_type = _query_tensor->type();
         auto rhs_type = _attr_tensor.getTensorType();
         // different cell types should be converted already
         if (lhs_type == rhs_type) {
-            auto lhs = _query_tensor->cellsRef();
+            auto lhs = _query_tensor->cells();
             uint32_t k = _target_num_hits;
             if (_global_filter->has_filter()) {
                 auto filter = _global_filter->filter();
@@ -144,7 +143,7 @@ NearestNeighborBlueprint::createLeafSearch(const search::fef::TermFieldMatchData
     if (! _found_hits.empty()) {
         return NnsIndexIterator::create(tfmd, _found_hits, _dist_fun);
     }
-    const vespalib::tensor::DenseTensorView &qT = *_query_tensor;
+    const Value &qT = *_query_tensor;
     return NearestNeighborIterator::create(strict, tfmd, qT, _attr_tensor,
                                            _distance_heap, _global_filter->filter(), _dist_fun);
 }

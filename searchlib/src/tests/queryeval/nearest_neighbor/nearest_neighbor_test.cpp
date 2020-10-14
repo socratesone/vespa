@@ -31,7 +31,6 @@ using vespalib::eval::ValueType;
 using CellType = vespalib::eval::ValueType::CellType;
 using vespalib::eval::TensorSpec;
 using vespalib::eval::EngineOrFactory;
-using vespalib::tensor::DenseTensorView;
 using search::tensor::DistanceFunction;
 using search::attribute::DistanceMetric;
 
@@ -44,15 +43,13 @@ vespalib::string denseSpecFloat("tensor<float>(x[2])");
 DistanceFunction::UP euclid_d = search::tensor::make_distance_function(DistanceMetric::Euclidean, CellType::DOUBLE);
 DistanceFunction::UP euclid_f = search::tensor::make_distance_function(DistanceMetric::Euclidean, CellType::FLOAT);
 
-std::unique_ptr<DenseTensorView> createTensor(const TensorSpec &spec) {
+std::unique_ptr<Value> createTensor(const TensorSpec &spec) {
     auto value = EngineOrFactory::get().from_spec(spec);
-    DenseTensorView *tensor = dynamic_cast<DenseTensorView*>(value.get());
-    ASSERT_TRUE(tensor != nullptr);
-    value.release();
-    return std::unique_ptr<DenseTensorView>(tensor);
+    ASSERT_TRUE(value->is_tensor());
+    return value;
 }
 
-std::unique_ptr<DenseTensorView> createTensor(const vespalib::string& type_spec, double v1, double v2) {
+std::unique_ptr<Value> createTensor(const vespalib::string& type_spec, double v1, double v2) {
     return createTensor(TensorSpec(type_spec).add({{"x", 0}}, v1)
                                              .add({{"x", 1}}, v2));
 }
@@ -128,7 +125,7 @@ struct Fixture
 };
 
 template <bool strict>
-SimpleResult find_matches(Fixture &env, const DenseTensorView &qtv) {
+SimpleResult find_matches(Fixture &env, const Value &qtv) {
     auto md = MatchData::makeTestInstance(2, 2);
     auto &tfmd = *(md->resolveTermField(0));
     auto &attr = *(env._tensorAttr);
@@ -206,7 +203,7 @@ TEST("require that NearestNeighborIterator returns filtered results") {
 }
 
 template <bool strict>
-std::vector<feature_t> get_rawscores(Fixture &env, const DenseTensorView &qtv) {
+std::vector<feature_t> get_rawscores(Fixture &env, const Value &qtv) {
     auto md = MatchData::makeTestInstance(2, 2);
     auto &tfmd = *(md->resolveTermField(0));
     auto &attr = *(env._tensorAttr);

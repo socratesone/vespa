@@ -53,8 +53,6 @@ using vespalib::eval::TensorSpec;
 using vespalib::eval::ValueType;
 using vespalib::eval::Value;
 using vespalib::eval::EngineOrFactory;
-using vespalib::tensor::DenseTensor;
-using vespalib::tensor::DenseTensorView;
 
 using DoubleVector = std::vector<double>;
 using generation_t = vespalib::GenerationHandler::generation_t;
@@ -65,10 +63,6 @@ vespalib::string vec_2d_spec("tensor(x[2])");
 
 Value::UP createTensor(const TensorSpec &spec) {
     auto value = EngineOrFactory::get().from_spec(spec);
-    if (value->is_double()) {
-        return Value::UP(new DenseTensor<double>(ValueType::double_type(), {value->as_double()}));
-    }
-    ASSERT_TRUE(value->is_tensor());
     return value;
 }
 
@@ -897,8 +891,6 @@ TEST_F("Nearest neighbor index type is added to attribute file header", DenseTen
 
 class NearestNeighborBlueprintFixture : public DenseTensorAttributeMockIndex {
 public:
-    using QueryTensor = DenseTensor<double>;
-
     NearestNeighborBlueprintFixture() {
         set_tensor(1, vec_2d(1, 1));
         set_tensor(2, vec_2d(2, 2));
@@ -912,12 +904,9 @@ public:
         set_tensor(10, vec_2d(0, 0));
     }
 
-    std::unique_ptr<QueryTensor> createDenseTensor(const TensorSpec &spec) {
+    std::unique_ptr<Value> createDenseTensor(const TensorSpec &spec) {
         auto value = EngineOrFactory::get().from_spec(spec);
-        QueryTensor *tensor = dynamic_cast<QueryTensor *>(value.get());
-        ASSERT_TRUE(tensor != nullptr);
-        value.release();
-        return std::unique_ptr<QueryTensor>(tensor);
+        return value;
     }
 
     std::unique_ptr<NearestNeighborBlueprint> make_blueprint(double brute_force_limit = 0.05) {
