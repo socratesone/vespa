@@ -50,7 +50,8 @@ TensorFieldValue::TensorFieldValue(const TensorFieldValue &rhs)
       _altered(true)
 {
     if (rhs._tensor) {
-        _tensor = rhs._tensor->clone();
+        auto engine = EngineOrFactory::get();
+        _tensor = engine.copy(*rhs._tensor);
     }
 }
 
@@ -77,7 +78,8 @@ TensorFieldValue::operator=(const TensorFieldValue &rhs)
         if (&_dataType == &rhs._dataType || !rhs._tensor ||
             _dataType.isAssignableType(rhs._tensor->type())) {
             if (rhs._tensor) {
-                _tensor = rhs._tensor->clone();
+                auto engine = EngineOrFactory::get();
+                _tensor = engine.copy(*rhs._tensor);
             } else {
                 _tensor.reset();
             }

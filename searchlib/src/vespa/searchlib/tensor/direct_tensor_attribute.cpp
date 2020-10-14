@@ -3,6 +3,7 @@
 #include "direct_tensor_attribute.h"
 #include "direct_tensor_saver.h"
 
+#include <vespa/eval/eval/engine_or_factory.h>
 #include <vespa/eval/eval/value.h>
 #include <vespa/fastlib/io/bufferedfile.h>
 #include <vespa/searchlib/attribute/readerbase.h>
@@ -12,6 +13,8 @@
 #include "blob_sequence_reader.h"
 #include "tensor_deserialize.h"
 #include "tensor_attribute.hpp"
+
+using vespalib::eval::EngineOrFactory;
 
 namespace search::tensor {
 
@@ -70,7 +73,8 @@ DirectTensorAttribute::set_tensor(DocId lid, std::unique_ptr<vespalib::eval::Val
 void
 DirectTensorAttribute::setTensor(DocId lid, const vespalib::eval::Value &tensor)
 {
-    set_tensor(lid, tensor.clone());
+    auto engine = EngineOrFactory::get();
+    set_tensor(lid, engine.copy(tensor));
 }
 
 std::unique_ptr<vespalib::eval::Value>
@@ -83,7 +87,8 @@ DirectTensorAttribute::getTensor(DocId docId) const
     if (ref.valid()) {
         auto ptr = _direct_store.get_tensor(ref);
         if (ptr) {
-            return ptr->clone();
+            auto engine = EngineOrFactory::get();
+            return engine.copy(*ptr);
         }
     }
     std::unique_ptr<vespalib::eval::Value> empty;

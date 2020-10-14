@@ -75,24 +75,12 @@ SparseTensor::type() const
     return _type;
 }
 
-bool
-SparseTensor::equals(const Tensor &arg) const
-{
-    const SparseTensor *rhs = dynamic_cast<const SparseTensor *>(&arg);
-    if (!rhs) {
-        return false;
-    }
-    return *this == *rhs;
-}
-
 TensorSpec
 SparseTensor::toSpec() const
 {
     return vespalib::eval::spec_from_value(*this);
 }
 
-
-
-}
+} // namespace
 
 VESPALIB_HASH_MAP_INSTANTIATE(vespalib::tensor::SparseTensorAddressRef, double);

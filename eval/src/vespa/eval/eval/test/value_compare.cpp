@@ -8,7 +8,7 @@ namespace vespalib::eval {
 bool operator==(const Value &lhs, const Value &rhs)
 {
     auto engine = EngineOrFactory::get();
-    return engine.equals(lhs, rhs);
+    return engine.to_spec(lhs) == engine.to_spec(rhs);
 }
 
 std::ostream &operator<<(std::ostream &out, const Value &value)

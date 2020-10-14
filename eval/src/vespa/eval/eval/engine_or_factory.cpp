@@ -78,14 +78,8 @@ EngineOrFactory::decode(nbostream &input) const
     }
 }
 
-bool
-EngineOrFactory::equals(const Value &a, const Value &b)
-{
-    return to_spec(a) == to_spec(b);
-}
-
 std::unique_ptr<Value>
-EngineOrFactory::clone(const Value &value)
+EngineOrFactory::copy(const Value &value)
 {
     nbostream stream;
     encode(value, stream);

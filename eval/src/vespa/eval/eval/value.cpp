@@ -59,11 +59,6 @@ Value::as_double() const
 
 ValueType DoubleValue::_type = ValueType::double_type();
 
-Value::UP Value::clone() const {
-    auto engine = EngineOrFactory::get();
-    return engine.clone(*this);
-}
-
 MemoryUsage
 Value::get_memory_usage() const
 {

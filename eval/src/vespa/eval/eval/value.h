@@ -69,7 +69,6 @@ struct Value {
     bool as_bool() const { return (as_double() != 0.0); }
     virtual const Tensor *as_tensor() const { return nullptr; }
 
-    virtual Value::UP clone() const;
     virtual MemoryUsage get_memory_usage() const;
 // --- end of old interface
 };

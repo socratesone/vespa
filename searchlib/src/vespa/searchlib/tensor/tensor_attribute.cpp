@@ -183,7 +183,8 @@ TensorAttribute::populate_state(vespalib::slime::Cursor& object) const
 vespalib::eval::Value::UP
 TensorAttribute::getEmptyTensor() const
 {
-    return _emptyTensor->clone();
+    auto engine = EngineOrFactory::get();
+    return engine.copy(*_emptyTensor);
 }
 
 void

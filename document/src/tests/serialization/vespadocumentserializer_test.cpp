@@ -840,7 +840,8 @@ void checkDeserialization(const string &name, std::unique_ptr<vespalib::eval::Va
     TensorDataType valueType(tensor ? tensor->type() : vespalib::eval::ValueType::error_type());
     TensorFieldValue value(valueType);
     if (tensor) {
-        value = tensor->clone();
+        auto engine = EngineOrFactory::get();
+        value = engine.copy(*tensor);
     }
     serializeToFile(value, data_dir + name + "__cpp");
     deserializeAndCheck(data_dir + name + "__cpp", value);
@@ -879,7 +880,8 @@ TensorDocFixture::TensorDocFixture(const DocumentTypeRepo &docTypeRepo,
       _blob()
 {
     auto fv = _doc.getField(tensor_field_name).createValue();
-    dynamic_cast<TensorFieldValue &>(*fv) = _tensor->clone();
+    auto engine = EngineOrFactory::get();
+    dynamic_cast<TensorFieldValue &>(*fv) = engine.copy(*_tensor);
     _doc.setValue(tensor_field_name, *fv);
     _doc.serialize(_blob);
 }

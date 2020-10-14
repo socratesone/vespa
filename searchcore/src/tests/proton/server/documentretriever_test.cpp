@@ -20,6 +20,7 @@
 #include <vespa/document/fieldset/fieldsets.h>
 #include <vespa/document/repo/configbuilder.h>
 #include <vespa/document/repo/documenttyperepo.h>
+#include <vespa/eval/eval/engine_or_factory.h>
 #include <vespa/eval/eval/value.h>
 #include <vespa/eval/eval/test/value_compare.h>
 #include <vespa/eval/tensor/test/test_utils.h>
@@ -89,6 +90,7 @@ using storage::spi::Timestamp;
 using storage::spi::test::makeSpiBucket;
 using vespalib::make_string;
 using vespalib::string;
+using vespalib::eval::EngineOrFactory;
 using vespalib::eval::TensorSpec;
 using vespalib::eval::ValueType;
 using vespalib::eval::Value;
@@ -168,7 +170,8 @@ struct MyDocumentStore : proton::test::DummyDocumentStore {
         doc->set(zcurve_field, static_zcurve_value);
         doc->setValue(dyn_field_p, static_value_p);
         TensorFieldValue tensorFieldValue(tensorDataType);
-        tensorFieldValue = static_tensor->clone();
+        auto engine = EngineOrFactory::get();
+        tensorFieldValue = engine.copy(*static_tensor);
         doc->setValue(dyn_field_tensor, tensorFieldValue);
         if (_set_position_struct_field) {
             FieldValue::UP fv = PositionDataType::getInstance().createFieldValue();

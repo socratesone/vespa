@@ -664,9 +664,10 @@ createTensorSchema(const vespalib::string& tensor_spec = sparse_tensor) {
 
 Document::UP
 createTensorPutDoc(DocBuilder &builder, const Value &tensor) {
+    auto engine = EngineOrFactory::get();
     return builder.startDocument("id:ns:searchdocument::1").
         startAttributeField("a1").
-        addTensor(tensor.clone()).endField().endDocument();
+        addTensor(engine.copy(tensor)).endField().endDocument();
 }
 
 }
@@ -710,7 +711,8 @@ TEST_F(AttributeWriterTest, handles_tensor_assign_update)
                                   .add({{"x", "8"}, {"y", "9"}}, 11));
     TensorDataType xySparseTensorDataType(vespalib::eval::ValueType::from_spec(sparse_tensor));
     TensorFieldValue new_value(xySparseTensorDataType);
-    new_value = new_tensor->clone();
+    auto engine = EngineOrFactory::get();
+    new_value = engine.copy(*new_tensor);
     upd.addUpdate(FieldUpdate(upd.getType().getField("a1"))
                   .addUpdate(AssignValueUpdate(new_value)));
     bool immediateCommit = true;

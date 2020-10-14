@@ -12,6 +12,7 @@ namespace search::tensor {
 class DirectTensorAttribute : public TensorAttribute
 {
     DirectTensorStore _direct_store;
+
 public:
     DirectTensorAttribute(vespalib::stringref baseFileName, const Config &cfg);
     virtual ~DirectTensorAttribute();
