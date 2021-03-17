@@ -5,8 +5,7 @@
 #include <vespa/searchlib/attribute/searchcontextelementiterator.h>
 #include <vespa/searchlib/attribute/flagattribute.h>
 #include <vespa/searchlib/attribute/singleboolattribute.h>
-#include <vespa/searchlib/attribute/singlenumericattribute.h>
-#include <vespa/searchlib/attribute/singlestringattribute.h>
+#include <vespa/searchlib/attribute/stringbase.h>
 #include <vespa/searchlib/common/bitvectoriterator.h>
 #include <vespa/searchlib/fef/matchdata.h>
 #include <vespa/searchlib/fef/termfieldmatchdataarray.h>
@@ -19,6 +18,7 @@
 #include <vespa/searchlib/test/searchiteratorverifier.h>
 #include <vespa/vespalib/testkit/testapp.h>
 #include <vespa/vespalib/util/compress.h>
+#include <vespa/vespalib/util/stringfmt.h>
 
 #include <vespa/log/log.h>
 LOG_SETUP("searchcontext_test");
@@ -61,11 +61,12 @@ using fef::TermFieldMatchDataPosition;
 using queryeval::HitCollector;
 using queryeval::SearchIterator;
 using queryeval::SimpleResult;
+using TermType = search::QueryTermSimple::Type;
 
 class DocSet : public std::set<uint32_t>
 {
 public:
-    DocSet();
+    DocSet() noexcept;
     ~DocSet();
     DocSet(const uint32_t *b, const uint32_t *e) : std::set<uint32_t>(b, e) {}
     DocSet & put(const uint32_t &v) {
@@ -74,7 +75,7 @@ public:
     }
 };
 
-DocSet::DocSet() = default;
+DocSet::DocSet() noexcept = default;
 DocSet::~DocSet() = default;
 
 template <typename V, typename T>
@@ -117,7 +118,7 @@ public:
     static void addReservedDoc(AttributeVector &ptr);
     static void addDocs(AttributeVector & ptr, uint32_t numDocs);
     template <typename V, typename T>
-    static SearchContextPtr getSearch(const V & vec, const T & term, QueryTermSimple::SearchTerm termType=QueryTermSimple::WORD);
+    static SearchContextPtr getSearch(const V & vec, const T & term, TermType termType=TermType::WORD);
 private:
     typedef std::map<vespalib::string, Config> ConfigMap;
     // Map of all config objects
@@ -137,14 +138,14 @@ private:
     template <typename V, typename T>
     void fillPostingList(PostingList<V, T> & pl);
     static void buildTermQuery(std::vector<char> & buffer, const vespalib::string & index, const vespalib::string & term,
-                               QueryTermSimple::SearchTerm termType=QueryTermSimple::WORD);
+                               TermType termType=TermType::WORD);
 
     ResultSetPtr performSearch(SearchIterator & sb, uint32_t numDocs);
     template <typename V, typename T>
-    ResultSetPtr performSearch(const V & vec, const T & term, QueryTermSimple::SearchTerm termType=QueryTermSimple::WORD);
+    ResultSetPtr performSearch(const V & vec, const T & term, TermType termType=TermType::WORD);
     template <typename V>
     void performSearch(const V & vec, const vespalib::string & term,
-                       const DocSet & expected, QueryTermSimple::SearchTerm termType);
+                       const DocSet & expected, TermType termType);
     void checkResultSet(const ResultSet & rs, const DocSet & exp, bool bitVector);
 
     template<typename T, typename A>
@@ -236,7 +237,7 @@ private:
 
     // test prefix search
     void performPrefixSearch(const StringAttribute & vec, const vespalib::string & term,
-                             const DocSet & expected, QueryTermSimple::SearchTerm termType);
+                             const DocSet & expected, TermType termType);
     void testPrefixSearch(const AttributePtr & ptr);
     void testPrefixSearch();
 
@@ -390,7 +391,7 @@ SearchContextTest::fillPostingList(PostingList<V, T> & pl)
 }
 
 void
-SearchContextTest::buildTermQuery(std::vector<char> & buffer, const vespalib::string & index, const vespalib::string & term, QueryTermSimple::SearchTerm termType)
+SearchContextTest::buildTermQuery(std::vector<char> & buffer, const vespalib::string & index, const vespalib::string & term, TermType termType)
 {
     uint32_t indexLen = index.size();
     uint32_t termLen = term.size();
@@ -398,8 +399,8 @@ SearchContextTest::buildTermQuery(std::vector<char> & buffer, const vespalib::st
     uint32_t p = 0;
     buffer.resize(queryPacketSize);
     switch (termType) {
-      case QueryTermSimple::PREFIXTERM: buffer[p++] = ParseItem::ITEM_PREFIXTERM; break;
-      case QueryTermSimple::REGEXP: buffer[p++] = ParseItem::ITEM_REGEXP; break;
+      case TermType::PREFIXTERM: buffer[p++] = ParseItem::ITEM_PREFIXTERM; break;
+      case TermType::REGEXP: buffer[p++] = ParseItem::ITEM_REGEXP; break;
       default:
          buffer[p++] = ParseItem::ITEM_TERM;
          break;
@@ -415,7 +416,7 @@ SearchContextTest::buildTermQuery(std::vector<char> & buffer, const vespalib::st
 
 template <typename V, typename T>
 SearchContextPtr
-SearchContextTest::getSearch(const V & vec, const T & term, QueryTermSimple::SearchTerm termType)
+SearchContextTest::getSearch(const V & vec, const T & term, TermType termType)
 {
     std::vector<char> query;
     vespalib::asciistream ss;
@@ -441,7 +442,7 @@ SearchContextTest::performSearch(SearchIterator & sb, uint32_t numDocs)
 
 template <typename V, typename T>
 ResultSetPtr
-SearchContextTest::performSearch(const V & vec, const T & term, QueryTermSimple::SearchTerm termType)
+SearchContextTest::performSearch(const V & vec, const T & term, TermType termType)
 {
     TermFieldMatchData dummy;
     SearchContextPtr sc = getSearch(vec, term, termType);
@@ -454,7 +455,7 @@ SearchContextTest::performSearch(const V & vec, const T & term, QueryTermSimple:
 template <typename V>
 void
 SearchContextTest::performSearch(const V & vec, const vespalib::string & term,
-                                 const DocSet & expected, QueryTermSimple::SearchTerm termType)
+                                 const DocSet & expected, TermType termType)
 {
 #if 0
     std::cout << "performSearch[" << term << "]: {";
@@ -650,7 +651,7 @@ Verifier<T, A>::Verifier(const std::vector<T> & keys, const vespalib::string & k
     size_t i(0);
     for (uint32_t doc : getExpectedDocIds()) {
         EXPECT_TRUE(nullptr != dynamic_cast<A *>(_attribute.get()));
-        EXPECT_TRUE(dynamic_cast<A *>(_attribute.get())->update(doc, keys[(i++)%keys.size()]));
+        EXPECT_TRUE(dynamic_cast<A &>(*_attribute).update(doc, keys[(i++)%keys.size()]));
     }
     _attribute->commit(true);
     _sc = SearchContextTest::getSearch(*_attribute, keyAsString);
@@ -1100,7 +1101,7 @@ void
 SearchContextTest::performRangeSearch(const VectorType & vec, const vespalib::string & term,
                                       const DocSet & expected)
 {
-    performSearch(vec, term, expected, QueryTermSimple::WORD);
+    performSearch(vec, term, expected, TermType::WORD);
 }
 
 template <typename VectorType, typename ValueType>
@@ -1307,7 +1308,7 @@ void
 SearchContextTest::performCaseInsensitiveSearch(const StringAttribute & vec, const vespalib::string & term,
                                                 const DocSet & expected)
 {
-    performSearch(vec, term, expected, QueryTermSimple::WORD);
+    performSearch(vec, term, expected, TermType::WORD);
 }
 
 void
@@ -1403,8 +1404,8 @@ SearchContextTest::testRegexSearch(const AttributePtr & ptr)
     }
 
     for (uint32_t i = 0; i < terms.size(); ++i) {
-        performSearch(vec, terms[i], expected[i], QueryTermSimple::REGEXP);
-        performSearch(vec, terms[i], empty, QueryTermSimple::WORD);
+        performSearch(vec, terms[i], expected[i], TermType::REGEXP);
+        performSearch(vec, terms[i], empty, TermType::WORD);
     }
 }
 
@@ -1432,7 +1433,7 @@ SearchContextTest::testRegexSearch()
 
 void
 SearchContextTest::performPrefixSearch(const StringAttribute & vec, const vespalib::string & term,
-                                       const DocSet & expected, QueryTermSimple::SearchTerm termType)
+                                       const DocSet & expected, TermType termType)
 {
     performSearch(vec, term, expected, termType);
 }
@@ -1477,11 +1478,11 @@ SearchContextTest::testPrefixSearch(const AttributePtr & ptr)
     for (uint32_t i = 0; i < 4; ++i) {
         for (uint32_t j = 0; j < 3; ++j) {
             if (j == 0 || ptr->getConfig().fastSearch()) {
-                performPrefixSearch(vec, terms[i][j], expected[i], QueryTermSimple::PREFIXTERM);
-                performPrefixSearch(vec, terms[i][j], empty, QueryTermSimple::WORD);
+                performPrefixSearch(vec, terms[i][j], expected[i], TermType::PREFIXTERM);
+                performPrefixSearch(vec, terms[i][j], empty, TermType::WORD);
             } else {
-                performPrefixSearch(vec, terms[i][j], empty, QueryTermSimple::PREFIXTERM);
-                performPrefixSearch(vec, terms[i][j], empty, QueryTermSimple::WORD);
+                performPrefixSearch(vec, terms[i][j], empty, TermType::PREFIXTERM);
+                performPrefixSearch(vec, terms[i][j], empty, TermType::WORD);
             }
         }
     }
@@ -1779,15 +1780,15 @@ SearchContextTest::requireThatFlagAttributeHandlesTheByteRange()
     fa.append(5, 127, 1);
     fa.commit(true);
 
-    performSearch(fa, "-128", DocSet().put(1), QueryTermSimple::WORD);
-    performSearch(fa, "127", DocSet().put(5), QueryTermSimple::WORD);
-    performSearch(fa, ">-128", DocSet().put(2).put(3).put(4).put(5), QueryTermSimple::WORD);
-    performSearch(fa, "<127", DocSet().put(1).put(2).put(3).put(4), QueryTermSimple::WORD);
-    performSearch(fa, "[-128;-8]", DocSet().put(1).put(2), QueryTermSimple::WORD);
-    performSearch(fa, "[-8;8]", DocSet().put(2).put(3), QueryTermSimple::WORD);
-    performSearch(fa, "[8;127]", DocSet().put(3).put(4).put(5), QueryTermSimple::WORD);
-    performSearch(fa, "[-129;-8]", DocSet().put(1).put(2), QueryTermSimple::WORD);
-    performSearch(fa, "[8;128]", DocSet().put(3).put(4).put(5), QueryTermSimple::WORD);
+    performSearch(fa, "-128", DocSet().put(1), TermType::WORD);
+    performSearch(fa, "127", DocSet().put(5), TermType::WORD);
+    performSearch(fa, ">-128", DocSet().put(2).put(3).put(4).put(5), TermType::WORD);
+    performSearch(fa, "<127", DocSet().put(1).put(2).put(3).put(4), TermType::WORD);
+    performSearch(fa, "[-128;-8]", DocSet().put(1).put(2), TermType::WORD);
+    performSearch(fa, "[-8;8]", DocSet().put(2).put(3), TermType::WORD);
+    performSearch(fa, "[8;127]", DocSet().put(3).put(4).put(5), TermType::WORD);
+    performSearch(fa, "[-129;-8]", DocSet().put(1).put(2), TermType::WORD);
+    performSearch(fa, "[8;128]", DocSet().put(3).put(4).put(5), TermType::WORD);
 }
 
 void
@@ -1838,7 +1839,7 @@ public:
         _attr.commit();
     }
     search::AttributeVector::SearchContext::UP create_search_context(const std::string& term) const {
-        return _attr.getSearch(std::make_unique<search::QueryTermSimple>(term, search::QueryTermSimple::WORD),
+        return _attr.getSearch(std::make_unique<search::QueryTermSimple>(term, search::TermType::WORD),
                                SearchContextParams().useBitVector(true));
     }
     SimpleResult search_context(const std::string& term) const {

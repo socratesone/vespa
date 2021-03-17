@@ -104,10 +104,10 @@ struct TensorFunction
      * the value stack during execution.
      *
      * @return instruction representing the operation of this node
-     * @param engine the tensor engine used for evaluation
+     * @param factory the value builder factory used during evaluation
      * @param stash heterogeneous object store
      **/
-    virtual InterpretedFunction::Instruction compile_self(EngineOrFactory engine, Stash &stash) const = 0;
+    virtual InterpretedFunction::Instruction compile_self(const ValueBuilderFactory &factory, Stash &stash) const = 0;
 
     // for debug dumping
     vespalib::string as_string() const;
@@ -188,7 +188,7 @@ public:
     ConstValue(const Value &value_in) : Super(value_in.type()), _value(value_in) {}
     const Value &value() const { return _value; }
     bool result_is_mutable() const override { return false; }
-    InterpretedFunction::Instruction compile_self(EngineOrFactory engine, Stash &stash) const final override;
+    InterpretedFunction::Instruction compile_self(const ValueBuilderFactory &factory, Stash &stash) const final override;
     void visit_self(vespalib::ObjectVisitor &visitor) const override;
 };
 
@@ -204,7 +204,7 @@ public:
         : Super(result_type_in), _param_idx(param_idx_in) {}
     size_t param_idx() const { return _param_idx; }
     bool result_is_mutable() const override { return false; }
-    InterpretedFunction::Instruction compile_self(EngineOrFactory engine, Stash &stash) const final override;
+    InterpretedFunction::Instruction compile_self(const ValueBuilderFactory &factory, Stash &stash) const final override;
     void visit_self(vespalib::ObjectVisitor &visitor) const override;
 };
 
@@ -225,7 +225,7 @@ public:
     Aggr aggr() const { return _aggr; }
     const std::vector<vespalib::string> &dimensions() const { return _dimensions; }
     bool result_is_mutable() const override { return true; }
-    InterpretedFunction::Instruction compile_self(EngineOrFactory engine, Stash &stash) const final override;
+    InterpretedFunction::Instruction compile_self(const ValueBuilderFactory &factory, Stash &stash) const final override;
     void visit_self(vespalib::ObjectVisitor &visitor) const override;
 };
 
@@ -243,7 +243,7 @@ public:
         : Super(result_type_in, child_in), _function(function_in) {}
     map_fun_t function() const { return _function; }
     bool result_is_mutable() const override { return true; }
-    InterpretedFunction::Instruction compile_self(EngineOrFactory engine, Stash &stash) const override;
+    InterpretedFunction::Instruction compile_self(const ValueBuilderFactory &factory, Stash &stash) const override;
     void visit_self(vespalib::ObjectVisitor &visitor) const override;
 };
 
@@ -262,7 +262,7 @@ public:
         : Super(result_type_in, lhs_in, rhs_in), _function(function_in) {}
     join_fun_t function() const { return _function; }
     bool result_is_mutable() const override { return true; }
-    InterpretedFunction::Instruction compile_self(EngineOrFactory engine, Stash &stash) const override;
+    InterpretedFunction::Instruction compile_self(const ValueBuilderFactory &factory, Stash &stash) const override;
     void visit_self(vespalib::ObjectVisitor &visitor) const override;
 };
 
@@ -281,7 +281,7 @@ public:
         : Super(result_type_in, lhs_in, rhs_in), _function(function_in) {}
     join_fun_t function() const { return _function; }
     bool result_is_mutable() const override { return true; }
-    InterpretedFunction::Instruction compile_self(EngineOrFactory engine, Stash &stash) const override;
+    InterpretedFunction::Instruction compile_self(const ValueBuilderFactory &factory, Stash &stash) const override;
     void visit_self(vespalib::ObjectVisitor &visitor) const override;
 };
 
@@ -300,7 +300,23 @@ public:
         : Super(result_type_in, lhs_in, rhs_in), _dimension(dimension_in) {}
     const vespalib::string &dimension() const { return _dimension; }
     bool result_is_mutable() const override { return true; }
-    InterpretedFunction::Instruction compile_self(EngineOrFactory engine, Stash &stash) const final override;
+    InterpretedFunction::Instruction compile_self(const ValueBuilderFactory &factory, Stash &stash) const final override;
+    void visit_self(vespalib::ObjectVisitor &visitor) const override;
+};
+
+//-----------------------------------------------------------------------------
+
+class CellCast : public Op1
+{
+    using Super = Op1;
+private:
+    CellType _cell_type;
+public:
+    CellCast(const ValueType &result_type_in, const TensorFunction &child_in, CellType cell_type)
+        : Super(result_type_in, child_in), _cell_type(cell_type) {}
+    CellType cell_type() const { return _cell_type; }
+    bool result_is_mutable() const override { return true; }
+    InterpretedFunction::Instruction compile_self(const ValueBuilderFactory &factory, Stash &stash) const override;
     void visit_self(vespalib::ObjectVisitor &visitor) const override;
 };
 
@@ -310,18 +326,21 @@ class Create : public Node
 {
     using Super = Node;
 private:
-    std::map<TensorSpec::Address, Child> _spec;
+    std::map<TensorSpec::Address, Child> _map;
 public:
     Create(const ValueType &result_type_in, const std::map<TensorSpec::Address, TensorFunction::CREF> &spec_in)
-        : Super(result_type_in), _spec()
+        : Super(result_type_in), _map()
     {
         for (const auto &cell: spec_in) {
-            _spec.emplace(cell.first, Child(cell.second));
+            _map.emplace(cell.first, Child(cell.second));
         }
     }
-    const std::map<TensorSpec::Address, Child> &spec() const { return _spec; }
+    const std::map<TensorSpec::Address, Child> &map() const { return _map; }
+    // mapping from cell address to index of child that computes the cell value
+    using Spec = std::map<TensorSpec::Address, size_t>;
+    Spec make_spec() const;
     bool result_is_mutable() const override { return true; }
-    InterpretedFunction::Instruction compile_self(EngineOrFactory engine, Stash &stash) const final override;
+    InterpretedFunction::Instruction compile_self(const ValueBuilderFactory &factory, Stash &stash) const final override;
     void push_children(std::vector<Child::CREF> &children) const final override;
     void visit_children(vespalib::ObjectVisitor &visitor) const final override;
 };
@@ -346,7 +365,7 @@ public:
         return create_spec_impl(result_type(), params, _bindings, fun);
     }
     bool result_is_mutable() const override { return true; }
-    InterpretedFunction::Instruction compile_self(EngineOrFactory engine, Stash &stash) const final override;
+    InterpretedFunction::Instruction compile_self(const ValueBuilderFactory &factory, Stash &stash) const final override;
     void visit_self(vespalib::ObjectVisitor &visitor) const override;
 };
 
@@ -359,28 +378,33 @@ public:
     using MyLabel = std::variant<TensorSpec::Label, Child>;
 private:
     Child _param;
-    std::map<vespalib::string, MyLabel> _spec;
+    std::map<vespalib::string, MyLabel> _map;
 public:
     Peek(const ValueType &result_type_in, const TensorFunction &param,
          const std::map<vespalib::string, std::variant<TensorSpec::Label, TensorFunction::CREF>> &spec)
-        : Super(result_type_in), _param(param), _spec()
+        : Super(result_type_in), _param(param), _map()
     {
         for (const auto &dim: spec) {
             std::visit(vespalib::overload
                        {
                            [&](const TensorSpec::Label &label) {
-                               _spec.emplace(dim.first, label);
+                               _map.emplace(dim.first, label);
                            },
                            [&](const TensorFunction::CREF &ref) {
-                               _spec.emplace(dim.first, ref.get());
+                               _map.emplace(dim.first, ref.get());
                            }
                        }, dim.second);
         }
     }
-    const std::map<vespalib::string, MyLabel> &spec() const { return _spec; }
+    const std::map<vespalib::string, MyLabel> &map() const { return _map; }
+    // a verbatim label or the index of a child that computes the label value:
+    using LabelOrChildIndex = std::variant<TensorSpec::Label, size_t>;
+    // mapping from dimension name to verbatim label or child index:
+    using Spec = std::map<vespalib::string, LabelOrChildIndex>;
+    Spec make_spec() const;
     const ValueType &param_type() const { return _param.get().result_type(); }
     bool result_is_mutable() const override { return true; }
-    InterpretedFunction::Instruction compile_self(EngineOrFactory engine, Stash &stash) const final override;
+    InterpretedFunction::Instruction compile_self(const ValueBuilderFactory &factory, Stash &stash) const final override;
     void push_children(std::vector<Child::CREF> &children) const final override;
     void visit_children(vespalib::ObjectVisitor &visitor) const final override;
 };
@@ -402,7 +426,7 @@ public:
     const std::vector<vespalib::string> &from() const { return _from; }
     const std::vector<vespalib::string> &to() const { return _to; }
     bool result_is_mutable() const override { return true; }
-    InterpretedFunction::Instruction compile_self(EngineOrFactory engine, Stash &stash) const final override;
+    InterpretedFunction::Instruction compile_self(const ValueBuilderFactory &factory, Stash &stash) const final override;
     void visit_self(vespalib::ObjectVisitor &visitor) const override;
 };
 
@@ -428,7 +452,7 @@ public:
         return (true_child().result_is_mutable() &&
                 false_child().result_is_mutable());
     }
-    InterpretedFunction::Instruction compile_self(EngineOrFactory engine, Stash &stash) const final override;
+    InterpretedFunction::Instruction compile_self(const ValueBuilderFactory &factory, Stash &stash) const final override;
     void visit_children(vespalib::ObjectVisitor &visitor) const final override;
 };
 
@@ -443,6 +467,7 @@ const TensorFunction &merge(const TensorFunction &lhs, const TensorFunction &rhs
 const TensorFunction &concat(const TensorFunction &lhs, const TensorFunction &rhs, const vespalib::string &dimension, Stash &stash);
 const TensorFunction &create(const ValueType &type, const std::map<TensorSpec::Address, TensorFunction::CREF> &spec, Stash &stash);
 const TensorFunction &lambda(const ValueType &type, const std::vector<size_t> &bindings, const Function &function, NodeTypes node_types, Stash &stash);
+const TensorFunction &cell_cast(const TensorFunction &child, CellType cell_type, Stash &stash);
 const TensorFunction &peek(const TensorFunction &param, const std::map<vespalib::string, std::variant<TensorSpec::Label, TensorFunction::CREF>> &spec, Stash &stash);
 const TensorFunction &rename(const TensorFunction &child, const std::vector<vespalib::string> &from, const std::vector<vespalib::string> &to, Stash &stash);
 const TensorFunction &if_node(const TensorFunction &cond, const TensorFunction &true_child, const TensorFunction &false_child, Stash &stash);

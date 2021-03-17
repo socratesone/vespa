@@ -3,6 +3,7 @@ package com.yahoo.vespa.hosted.provision.autoscale;
 
 import com.yahoo.config.provision.ClusterResources;
 import com.yahoo.config.provision.NodeResources;
+import com.yahoo.vespa.hosted.provision.NodeList;
 import com.yahoo.vespa.hosted.provision.NodeRepository;
 
 import java.util.Optional;
@@ -38,12 +39,16 @@ public class AllocationOptimizer {
      */
     public Optional<AllocatableClusterResources> findBestAllocation(ResourceTarget target,
                                                                     AllocatableClusterResources current,
-                                                                    Limits limits,
-                                                                    boolean exclusive) {
+                                                                    Limits limits) {
+        int minimumNodes = AllocationOptimizer.minimumNodes;
         if (limits.isEmpty())
             limits = Limits.of(new ClusterResources(minimumNodes,    1, NodeResources.unspecified()),
                                new ClusterResources(maximumNodes, maximumNodes, NodeResources.unspecified()));
+        else
+            limits = atLeast(minimumNodes,  limits);
+
         Optional<AllocatableClusterResources> bestAllocation = Optional.empty();
+        NodeList hosts = nodeRepository.nodes().list().hosts();
         for (int groups = limits.min().groups(); groups <= limits.max().groups(); groups++) {
             for (int nodes = limits.min().nodes(); nodes <= limits.max().nodes(); nodes++) {
                 if (nodes % groups != 0) continue;
@@ -56,9 +61,11 @@ public class AllocationOptimizer {
 
                 ClusterResources next = new ClusterResources(nodes,
                                                              groups,
-                                                             nodeResourcesWith(nodesAdjustedForRedundancy, groupsAdjustedForRedundancy, limits, current, target));
+                                                             nodeResourcesWith(nodesAdjustedForRedundancy,
+                                                                               groupsAdjustedForRedundancy,
+                                                                               limits, current, target));
 
-                var allocatableResources = AllocatableClusterResources.from(next, exclusive, current.clusterType(), limits, nodeRepository);
+                var allocatableResources = AllocatableClusterResources.from(next, current.clusterSpec(), limits, hosts, nodeRepository);
                 if (allocatableResources.isEmpty()) continue;
                 if (bestAllocation.isEmpty() || allocatableResources.get().preferableTo(bestAllocation.get()))
                     bestAllocation = allocatableResources;
@@ -72,14 +79,18 @@ public class AllocationOptimizer {
      * For the observed load this instance is initialized with, returns the resources needed per node to be at
      * ideal load given a target node count
      */
-    private NodeResources nodeResourcesWith(int nodes, int groups, Limits limits, AllocatableClusterResources current, ResourceTarget target) {
+    private NodeResources nodeResourcesWith(int nodes,
+                                            int groups,
+                                            Limits limits,
+                                            AllocatableClusterResources current,
+                                            ResourceTarget target) {
         // Cpu: Scales with cluster size (TODO: Only reads, writes scales with group size)
         // Memory and disk: Scales with group size
         double cpu, memory, disk;
 
         int groupSize = nodes / groups;
 
-        if (current.clusterType().isContent()) { // load scales with node share of content
+        if (current.clusterSpec().isStateful()) { // load scales with node share of content
             // The fixed cost portion of cpu does not scale with changes to the node count
             // TODO: Only for the portion of cpu consumed by queries
             double cpuPerGroup = fixedCpuCostFraction * target.nodeCpu() +
@@ -97,9 +108,15 @@ public class AllocationOptimizer {
         // Combine the scaled resource values computed here
         // with the currently configured non-scaled values, given in the limits, if any
         NodeResources nonScaled = limits.isEmpty() || limits.min().nodeResources().isUnspecified()
-                                  ? current.toAdvertisedClusterResources().nodeResources()
+                                  ? current.advertisedResources().nodeResources()
                                   : limits.min().nodeResources(); // min=max for non-scaled
         return nonScaled.withVcpu(cpu).withMemoryGb(memory).withDiskGb(disk);
+    }
+
+    /** Returns a copy of the given limits where the minimum nodes are at least the given value when allowed */
+    private Limits atLeast(int min, Limits limits) {
+        if (limits.max().nodes() < min) return limits; // not allowed
+        return limits.withMin(limits.min().withNodes(Math.max(min, limits.min().nodes())));
     }
 
 }

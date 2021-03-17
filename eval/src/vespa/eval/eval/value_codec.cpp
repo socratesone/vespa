@@ -2,18 +2,19 @@
 
 #include "value_codec.h"
 #include "tensor_spec.h"
+#include "array_array_map.h"
 #include <vespa/vespalib/objects/nbostream.h>
 #include <vespa/vespalib/util/exceptions.h>
 #include <vespa/vespalib/util/typify.h>
+#include <vespa/vespalib/util/small_vector.h>
 #include <vespa/vespalib/util/stringfmt.h>
+#include <vespa/vespalib/util/shared_string_repo.h>
 
 using vespalib::make_string_short::fmt;
 
 namespace vespalib::eval {
 
 namespace {
-
-using CellType = ValueType::CellType;
 
 constexpr uint32_t DOUBLE_CELL_TYPE = 0;
 constexpr uint32_t FLOAT_CELL_TYPE = 1;
@@ -116,10 +117,12 @@ ValueType decode_type(nbostream &input, const Format &format) {
             dim_list.emplace_back(name, input.getInt1_4Bytes());
         }
     }
-    if (dim_list.empty()) {
-        assert(cell_type == ValueType::CellType::DOUBLE);
+    auto result = ValueType::make_type(cell_type, std::move(dim_list));
+    if (result.is_error()) {
+        throw IllegalArgumentException(fmt("Invalid type (with %zu dimensions and cell type %u)",
+                                           dim_list.size(), (uint32_t)cell_type));
     }
-    return ValueType::tensor_type(std::move(dim_list), cell_type);
+    return result;
 }
 
 size_t maybe_decode_num_blocks(nbostream &input, bool has_mapped_dims, const Format &format) {
@@ -129,13 +132,14 @@ size_t maybe_decode_num_blocks(nbostream &input, bool has_mapped_dims, const For
     return 1;
 }
 
-void encode_mapped_labels(nbostream &output, size_t num_mapped_dims, const std::vector<vespalib::stringref> &addr) {
+void encode_mapped_labels(nbostream &output, size_t num_mapped_dims, const SmallVector<string_id> &addr) {
     for (size_t i = 0; i < num_mapped_dims; ++i) {
-        output.writeSmallString(addr[i]);
+        vespalib::string str = SharedStringRepo::Handle::string_from_id(addr[i]);
+        output.writeSmallString(str);
     }
 }
 
-void decode_mapped_labels(nbostream &input, size_t num_mapped_dims, std::vector<vespalib::stringref> &addr) {
+void decode_mapped_labels(nbostream &input, size_t num_mapped_dims, SmallVector<vespalib::stringref> &addr) {
     for (size_t i = 0; i < num_mapped_dims; ++i) {
         size_t strSize = input.getInt1_4Bytes();
         addr[i] = vespalib::stringref(input.peek(), strSize);
@@ -162,7 +166,7 @@ struct DecodeState {
 struct ContentDecoder {
     template<typename T>
     static std::unique_ptr<Value> invoke(nbostream &input, const DecodeState &state, const ValueBuilderFactory &factory) {
-        std::vector<vespalib::stringref> address(state.num_mapped_dims);
+        SmallVector<vespalib::stringref> address(state.num_mapped_dims);
         if (state.num_blocks * state.subspace_size * sizeof(T) > input.size()) {
             auto err = fmt("serialized input claims %zu blocks of size %zu*%zu, but only %zu bytes available",
                            state.num_blocks, state.subspace_size, sizeof(T), input.size());
@@ -176,7 +180,7 @@ struct ContentDecoder {
         }
         // add implicit empty subspace
         if ((state.num_mapped_dims == 0) && (state.num_blocks == 0)) {
-            for (T &cell: builder->add_subspace({})) {
+            for (T &cell: builder->add_subspace()) {
                 cell = T{};
             }
         }
@@ -186,38 +190,40 @@ struct ContentDecoder {
 
 struct CreateValueFromTensorSpec {
     template <typename T> static std::unique_ptr<Value> invoke(const ValueType &type, const TensorSpec &spec, const ValueBuilderFactory &factory) {
-        using SparseKey = std::vector<vespalib::stringref>;
-        using DenseMap = std::map<size_t,T>;
-        std::map<SparseKey,DenseMap> map;
+        size_t dense_size = type.dense_subspace_size();
+        ArrayArrayMap<vespalib::stringref,T> map(type.count_mapped_dimensions(), dense_size,
+                                                 std::max(spec.cells().size() / dense_size, size_t(1)));
+        SmallVector<vespalib::stringref> sparse_key;
         for (const auto &entry: spec.cells()) {
-            SparseKey sparse_key;
+            sparse_key.clear();
             size_t dense_key = 0;
-            for (const auto &dim: type.dimensions()) {
-                auto pos = entry.first.find(dim.name);
-                assert(pos != entry.first.end());
-                assert(pos->second.is_mapped() == dim.is_mapped());
-                if (dim.is_mapped()) {
-                    sparse_key.push_back(pos->second.name);
+            auto dim = type.dimensions().begin();
+            auto binding = entry.first.begin();
+            for (; dim != type.dimensions().end(); ++dim, ++binding) {
+                assert(binding != entry.first.end());
+                assert(dim->name == binding->first);
+                assert(dim->is_mapped() == binding->second.is_mapped());
+                if (dim->is_mapped()) {
+                    sparse_key.push_back(binding->second.name);
                 } else {
-                    dense_key = (dense_key * dim.size) + pos->second.index;
+                    assert(binding->second.index < dim->size);
+                    dense_key = (dense_key * dim->size) + binding->second.index;
                 }
             }
-            map[sparse_key][dense_key] = entry.second;
+            assert(binding == entry.first.end());
+            assert(dense_key < map.values_per_entry());
+            auto [tag, ignore] = map.lookup_or_add_entry(ConstArrayRef<vespalib::stringref>(sparse_key));
+            map.get_values(tag)[dense_key] = entry.second;
         }
         // if spec is missing the required dense space, add it here:
-        if (map.empty() && type.count_mapped_dimensions() == 0) {
-            map[{}][0] = 0;
+        if ((map.keys_per_entry() == 0) && (map.size() == 0)) {
+            map.add_entry(ConstArrayRef<vespalib::stringref>());
         }
-        auto builder = factory.create_value_builder<T>(type, type.count_mapped_dimensions(), type.dense_subspace_size(), map.size());
-        for (const auto &entry: map) {
-            auto subspace = builder->add_subspace(entry.first);
-            for (T &cell: subspace) {
-                cell = T{};
-            }
-            for (const auto &cell: entry.second) {
-                subspace[cell.first] = cell.second;
-            }
-        }
+        auto builder = factory.create_value_builder<T>(type, map.keys_per_entry(), map.values_per_entry(), map.size());
+        map.each_entry([&](const auto &keys, const auto &values)
+                       {
+                           memcpy(builder->add_subspace(keys).begin(), values.begin(), values.size() * sizeof(T));
+                       });
         return builder->build(std::move(builder));
     }
 };
@@ -228,8 +234,8 @@ struct CreateTensorSpecFromValue {
         TensorSpec spec(value.type().to_spec());
         size_t subspace_id = 0;
         size_t subspace_size = value.type().dense_subspace_size();
-        std::vector<vespalib::stringref> labels(value.type().count_mapped_dimensions());
-        std::vector<vespalib::stringref*> label_refs;
+        SmallVector<string_id> labels(value.type().count_mapped_dimensions());
+        SmallVector<string_id*> label_refs;
         for (auto &label: labels) {
             label_refs.push_back(&label);
         }
@@ -240,7 +246,7 @@ struct CreateTensorSpecFromValue {
             TensorSpec::Address addr;
             for (const auto &dim: value.type().dimensions()) {
                 if (dim.is_mapped()) {
-                    addr.emplace(dim.name, labels[label_idx++]);
+                    addr.emplace(dim.name, SharedStringRepo::Handle::string_from_id(labels[label_idx++]));
                 }
             }
             for (size_t i = 0; i < subspace_size; ++i) {
@@ -269,8 +275,8 @@ struct EncodeState {
 struct ContentEncoder {
     template<typename T>
     static void invoke(const Value &value, const EncodeState &state, nbostream &output) {
-        std::vector<vespalib::stringref> address(state.num_mapped_dims);
-        std::vector<vespalib::stringref*> a_refs(state.num_mapped_dims);;
+        SmallVector<string_id> address(state.num_mapped_dims);
+        SmallVector<string_id*> a_refs(state.num_mapped_dims);;
         for (size_t i = 0; i < state.num_mapped_dims; ++i) {
             a_refs[i] = &address[i];
         }

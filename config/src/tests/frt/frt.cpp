@@ -1,5 +1,7 @@
 // Copyright 2017 Yahoo Holdings. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
+#include "config-my.h"
+#include "config-bar.h"
 #include <vespa/vespalib/testkit/test_kit.h>
 #include <vespa/config/common/iconfigholder.h>
 #include <vespa/config/common/trace.h>
@@ -11,14 +13,11 @@
 #include <vespa/vespalib/data/slime/slime.h>
 #include <vespa/vespalib/data/slime/json_format.h>
 #include <vespa/vespalib/data/simple_buffer.h>
-#include <vespa/fnet/fnet.h>
-#include <vespa/fnet/frt/frt.h>
 #include <vespa/fnet/frt/error.h>
+#include <vespa/fnet/frt/supervisor.h>
 #include <vespa/config/frt/protocol.h>
 #include <lz4.h>
-#include "config-my.h"
-#include "config-bar.h"
-
+#include <thread>
 
 using namespace config;
 using namespace vespalib;
@@ -219,7 +218,7 @@ namespace {
 
         FRTFixture(SourceFixture & f1)
             : result(2000, 10000),
-              requestFactory(1, 3, VespaVersion::fromString("1.2.3"), CompressionType::UNCOMPRESSED),
+              requestFactory(3, VespaVersion::fromString("1.2.3"), CompressionType::UNCOMPRESSED),
               src(ConnectionFactory::SP(new FactoryMock(&f1.conn)),
                   requestFactory,
                   ConfigAgent::UP(new AgentFixture(&result)),

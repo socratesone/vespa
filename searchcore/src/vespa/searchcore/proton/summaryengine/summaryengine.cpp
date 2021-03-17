@@ -1,6 +1,7 @@
 // Copyright 2017 Yahoo Holdings. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 #include "summaryengine.h"
 #include <vespa/vespalib/data/slime/slime.h>
+#include <vespa/vespalib/util/size_literals.h>
 
 #include <vespa/log/log.h>
 LOG_SETUP(".proton.summaryengine.summaryengine");
@@ -42,6 +43,8 @@ uint32_t getNumDocs(const DocsumReply &reply) {
     }
 }
 
+VESPA_THREAD_STACK_TAG(summary_engine_executor)
+
 } // namespace anonymous
 
 namespace proton {
@@ -60,7 +63,7 @@ SummaryEngine::SummaryEngine(size_t numThreads)
     : _lock(),
       _closed(false),
       _handlers(),
-      _executor(numThreads, 128 * 1024),
+      _executor(numThreads, 128_Ki, summary_engine_executor),
       _metrics(std::make_unique<DocsumMetrics>())
 { }
 

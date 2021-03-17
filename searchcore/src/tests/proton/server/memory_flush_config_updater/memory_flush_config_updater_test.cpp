@@ -2,6 +2,7 @@
 
 #include <vespa/vespalib/testkit/testapp.h>
 #include <vespa/searchcore/proton/server/memory_flush_config_updater.h>
+#include <vespa/vespalib/util/size_literals.h>
 
 using namespace proton;
 using vespa::config::search::core::ProtonConfig;
@@ -41,7 +42,7 @@ belowLimit()
     return ResourceUsageState(0.7, 0.6);
 }
 
-const HwInfo::Memory defaultMemory(8ul * 1024ul * 1024ul * 1024ul);
+const HwInfo::Memory defaultMemory(8_Gi);
 
 struct Fixture
 {
@@ -72,6 +73,19 @@ TEST_F("require that strategy is updated when setting new config", Fixture)
 {
     f.updater.setConfig(getConfig(6, 3, 30));
     TEST_DO(f.assertStrategyConfig(6, 3, 30));
+}
+
+TEST("require that we use configured memory limits") {
+    auto cfg = MemoryFlushConfigUpdater::convertConfig(getConfig(6, 3, 30), defaultMemory);
+    EXPECT_EQUAL(cfg.maxGlobalMemory, 6u);
+    EXPECT_EQUAL(cfg.maxMemoryGain, 3);
+}
+
+TEST("require that we cap configured limits based on available memory") {
+    const uint64_t LIMIT = defaultMemory.sizeBytes()/4;
+    auto cfg = MemoryFlushConfigUpdater::convertConfig(getConfig(4_Gi, 4_Gi, 30), defaultMemory);
+    EXPECT_EQUAL(cfg.maxGlobalMemory, LIMIT);
+    EXPECT_EQUAL(uint64_t(cfg.maxMemoryGain), LIMIT);
 }
 
 TEST_F("require that strategy is updated with normal values if no limits are reached", Fixture)

@@ -2,6 +2,7 @@
 #include "removeoperation.h"
 #include <vespa/storageapi/message/persistence.h>
 #include <vespa/storage/distributor/distributor_bucket_space.h>
+#include <vespa/vdslib/state/clusterstate.h>
 
 #include <vespa/log/log.h>
 LOG_SETUP(".distributor.operation.external.remove");
@@ -11,7 +12,8 @@ using namespace storage::distributor;
 using namespace storage;
 using document::BucketSpace;
 
-RemoveOperation::RemoveOperation(DistributorComponent& manager,
+RemoveOperation::RemoveOperation(DistributorNodeContext& node_ctx,
+                                 DistributorOperationContext& op_ctx,
                                  DistributorBucketSpace &bucketSpace,
                                  std::shared_ptr<api::RemoveCommand> msg,
                                  PersistenceOperationMetricSet& metric,
@@ -19,10 +21,10 @@ RemoveOperation::RemoveOperation(DistributorComponent& manager,
     : SequencedOperation(std::move(sequencingHandle)),
       _trackerInstance(metric,
                std::make_shared<api::RemoveReply>(*msg),
-               manager, msg->getTimestamp()),
+               node_ctx, op_ctx, msg->getTimestamp()),
       _tracker(_trackerInstance),
       _msg(std::move(msg)),
-      _manager(manager),
+      _node_ctx(node_ctx),
       _bucketSpace(bucketSpace)
 {
 }
@@ -35,7 +37,7 @@ RemoveOperation::onStart(DistributorMessageSender& sender)
     LOG(spam, "Started remove on document %s", _msg->getDocumentId().toString().c_str());
 
     document::BucketId bucketId(
-            _manager.getBucketIdFactory().getBucketId(
+            _node_ctx.bucket_id_factory().getBucketId(
                     _msg->getDocumentId()));
 
     std::vector<BucketDatabase::Entry> entries;

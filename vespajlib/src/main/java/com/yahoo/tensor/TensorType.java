@@ -112,7 +112,7 @@ public class TensorType {
 
     /**
      * Returns a tensor type instance from a
-     * <a href="https://docs.vespa.ai/documentation/reference/tensor.html#tensor-type-spec">tensor type spec</a>:
+     * <a href="https://docs.vespa.ai/en/reference/tensor.html#tensor-type-spec">tensor type spec</a>:
      * <code>tensor(dimension1, dimension2, ...)</code>
      * where each dimension is either
      * <ul>
@@ -520,27 +520,9 @@ public class TensorType {
             }
         }
 
-        private static final boolean supportsMixedTypes = false;
-
         private void addDimensionsOf(TensorType type, boolean allowDifferentSizes) {
-            if ( ! supportsMixedTypes) {  // TODO: Support it
-                addDimensionsOfAndDisallowMixedDimensions(type, allowDifferentSizes);
-            }
-            else {
-                for (Dimension dimension : type.dimensions)
-                    set(dimension.combineWith(Optional.ofNullable(dimensions.get(dimension.name())), allowDifferentSizes));
-            }
-        }
-
-        private void addDimensionsOfAndDisallowMixedDimensions(TensorType type, boolean allowDifferentSizes) {
-            boolean containsMapped = dimensions.values().stream().anyMatch(d -> ! d.isIndexed());
-            containsMapped = containsMapped || type.dimensions().stream().anyMatch(d -> ! d.isIndexed());
-
             for (Dimension dimension : type.dimensions) {
-                if (containsMapped)
-                    dimension = new MappedDimension(dimension.name());
-                Dimension existing = dimensions.get(dimension.name());
-                set(dimension.combineWith(Optional.ofNullable(existing), allowDifferentSizes));
+                set(dimension.combineWith(Optional.ofNullable(dimensions.get(dimension.name())), allowDifferentSizes));
             }
         }
 

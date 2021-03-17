@@ -2,13 +2,14 @@
 #include "translogserver.h"
 #include "domain.h"
 #include "client_common.h"
-#include <vespa/searchlib/common/gatecallback.h>
+#include <vespa/vespalib/util/destructor_callbacks.h>
 #include <vespa/vespalib/util/stringfmt.h>
 #include <vespa/vespalib/io/fileutil.h>
 #include <vespa/vespalib/util/exceptions.h>
+#include <vespa/vespalib/util/lambdatask.h>
+#include <vespa/vespalib/util/size_literals.h>
 #include <vespa/fnet/frt/supervisor.h>
 #include <vespa/fnet/frt/rpcrequest.h>
-#include <vespa/fnet/task.h>
 #include <vespa/fnet/transport.h>
 #include <fstream>
 #include <thread>
@@ -28,24 +29,25 @@ namespace search::transactionlog {
 
 namespace {
 
-class SyncHandler : public FNET_Task
+class SyncHandler : public std::enable_shared_from_this<SyncHandler>
 {
+    std::atomic<bool>         & _closed;
     FRT_RPCRequest            & _req;
     Domain::SP                  _domain;
     TransLogServer::Session::SP _session; 
     SerialNum                   _syncTo;
     
 public:
-    SyncHandler(FRT_Supervisor *supervisor, FRT_RPCRequest *req, const Domain::SP &domain,
-                const TransLogServer::Session::SP &session, SerialNum syncTo);
+    SyncHandler(std::atomic<bool>& closed, FRT_RPCRequest *req, const Domain::SP &domain,
+                const TransLogServer::Session::SP &session, SerialNum syncTo) noexcept;
 
-    ~SyncHandler() override;
-    void PerformTask() override;
+    ~SyncHandler();
+    void poll();
 };
 
-SyncHandler::SyncHandler(FRT_Supervisor *supervisor, FRT_RPCRequest *req, const Domain::SP &domain,
-                         const TransLogServer::Session::SP &session, SerialNum syncTo)
-    : FNET_Task(supervisor->GetScheduler()),
+SyncHandler::SyncHandler(std::atomic<bool>& closed, FRT_RPCRequest *req, const Domain::SP &domain,
+                         const TransLogServer::Session::SP &session, SerialNum syncTo) noexcept
+    : _closed(closed),
       _req(*req),
       _domain(domain),
       _session(session),
@@ -56,20 +58,20 @@ SyncHandler::SyncHandler(FRT_Supervisor *supervisor, FRT_RPCRequest *req, const 
 SyncHandler::~SyncHandler() = default;
 
 void
-SyncHandler::PerformTask()
+SyncHandler::poll()
 {
     SerialNum synced(_domain->getSynced());
     if (_session->getDown() ||
         _domain->getMarkedDeleted() ||
-        synced >= _syncTo) {
+        _closed.load(std::memory_order_acquire) ||
+        synced >= _syncTo)
+    {
         FRT_Values &rvals = *_req.GetReturn();
         rvals.AddInt32(0);
         rvals.AddInt64(synced);
         _req.Return();
-        delete this;
     } else {
-        _domain->triggerSyncNow();
-        Schedule(0.05); // Retry in 0.05 seconds
+        _domain->triggerSyncNow(vespalib::makeLambdaTask([self = shared_from_this()]() { self->poll(); }));
     }
 }
 
@@ -95,13 +97,14 @@ TransLogServer::TransLogServer(const vespalib::string &name, int listenPort, con
       _name(name),
       _baseDir(baseDir),
       _domainConfig(cfg),
-      _executor(maxThreads, 128 * 1024, tls_executor),
-      _threadPool(std::make_unique<FastOS_ThreadPool>(1024*120)),
+      _executor(maxThreads, 128_Ki, tls_executor),
+      _threadPool(std::make_unique<FastOS_ThreadPool>(120_Ki)),
       _transport(std::make_unique<FNET_Transport>()),
       _supervisor(std::make_unique<FRT_Supervisor>(_transport.get())),
       _domains(),
       _reqQ(),
-      _fileHeaderContext(fileHeaderContext)
+      _fileHeaderContext(fileHeaderContext),
+      _closed(false)
 {
     int retval(0);
     if ((retval = makeDirectory(_baseDir.c_str())) == 0) {
@@ -146,8 +149,10 @@ TransLogServer::TransLogServer(const vespalib::string &name, int listenPort, con
 
 TransLogServer::~TransLogServer()
 {
+    _closed = true;
     stop();
     join();
+    _executor.sync();
     _executor.shutdown();
     _executor.sync();
     _transport->ShutDown(true);
@@ -574,8 +579,8 @@ TransLogServer::domainCommit(FRT_RPCRequest *req)
             vespalib::Gate gate;
             {
                 // Need to scope in order to drain out all the callbacks.
-                domain->append(packet, make_shared<GateCallback>(gate));
-                auto keep = domain->startCommit(make_shared<IgnoreCallback>());
+                domain->append(packet, make_shared<vespalib::GateCallback>(gate));
+                auto keep = domain->startCommit(make_shared<vespalib::IgnoreCallback>());
             }
             gate.await();
             ret.AddInt32(0);
@@ -719,10 +724,9 @@ TransLogServer::domainSync(FRT_RPCRequest *req)
         req->Return();
         return;
     }
-    
-    SyncHandler *syncHandler = new SyncHandler(_supervisor.get(), req, domain, session, syncTo);
-    
-    syncHandler->ScheduleNow();
+
+    auto syncHandler = std::make_shared<SyncHandler>(_closed, req, domain, session, syncTo);
+    syncHandler->poll();
 }
 
 }

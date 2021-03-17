@@ -17,6 +17,7 @@ import com.yahoo.config.model.api.HostProvisioner;
 import com.yahoo.config.model.api.Model;
 import com.yahoo.config.model.api.ModelContext;
 import com.yahoo.config.model.api.Provisioned;
+import com.yahoo.config.model.api.Reindexing;
 import com.yahoo.config.model.api.ValidationParameters;
 import com.yahoo.config.model.application.provider.BaseDeployLogger;
 import com.yahoo.config.model.application.provider.MockFileRegistry;
@@ -40,6 +41,7 @@ import com.yahoo.vespa.model.container.search.SemanticRuleBuilder;
 import com.yahoo.vespa.model.container.search.SemanticRules;
 import com.yahoo.vespa.model.search.NamedSchema;
 
+import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.Reader;
@@ -50,8 +52,10 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.logging.Level;
 
 /**
  * Contains various state during deploy that should be available in all builders of a {@link com.yahoo.config.model.ConfigModel}
@@ -82,6 +86,7 @@ public class DeployState implements ConfigDefinitionStore {
     private final Instant now;
     private final HostProvisioner provisioner;
     private final Provisioned provisioned;
+    private final Reindexing reindexing;
 
     public static DeployState createTestState() {
         return new Builder().build();
@@ -115,7 +120,8 @@ public class DeployState implements ConfigDefinitionStore {
                         Instant now,
                         Version wantedNodeVespaVersion,
                         boolean accessLoggingEnabledByDefault,
-                        Optional<DockerImage> wantedDockerImageRepo) {
+                        Optional<DockerImage> wantedDockerImageRepo,
+                        Reindexing reindexing) {
         this.logger = deployLogger;
         this.fileRegistry = fileRegistry;
         this.rankProfileRegistry = rankProfileRegistry;
@@ -134,8 +140,7 @@ public class DeployState implements ConfigDefinitionStore {
         this.zone = zone;
         this.queryProfiles = queryProfiles; // TODO: Remove this by seeing how pagetemplates are propagated
         this.semanticRules = semanticRules; // TODO: Remove this by seeing how pagetemplates are propagated
-        this.importedModels = new ImportedMlModels(applicationPackage.getFileReference(ApplicationPackage.MODELS_DIR),
-                                                   modelImporters);
+        this.importedModels = importMlModels(applicationPackage, modelImporters, deployLogger);
 
         ValidationOverrides suppliedValidationOverrides = applicationPackage.getValidationOverrides().map(ValidationOverrides::fromXml)
                                                                             .orElse(ValidationOverrides.empty);
@@ -147,13 +152,15 @@ public class DeployState implements ConfigDefinitionStore {
         this.wantedNodeVespaVersion = wantedNodeVespaVersion;
         this.now = now;
         this.wantedDockerImageRepo = wantedDockerImageRepo;
+        this.reindexing = reindexing;
     }
 
     public static HostProvisioner getDefaultModelHostProvisioner(ApplicationPackage applicationPackage) {
-        if (applicationPackage.getHosts() == null) {
-            return new SingleNodeProvisioner();
-        } else {
-            return new HostsXmlProvisioner(applicationPackage.getHosts());
+        try (Reader hostsReader = applicationPackage.getHosts()) {
+            return hostsReader == null ? new SingleNodeProvisioner() : new HostsXmlProvisioner(hostsReader);
+        }
+        catch (IOException e) {
+            throw new IllegalStateException("Could not read hosts.xml", e);
         }
     }
 
@@ -201,6 +208,18 @@ public class DeployState implements ConfigDefinitionStore {
         return keyToRepo;
     }
 
+    private static ImportedMlModels importMlModels(ApplicationPackage applicationPackage,
+                                                   Collection<MlModelImporter> modelImporters,
+                                                   DeployLogger deployLogger) {
+        File importFrom = applicationPackage.getFileReference(ApplicationPackage.MODELS_DIR);
+        ImportedMlModels importedModels = new ImportedMlModels(importFrom, modelImporters);
+        for (var entry : importedModels.getSkippedModels().entrySet()) {
+            deployLogger.log(Level.WARNING, "Skipping import of model " + entry.getKey() + " as an exception " +
+                    "occurred during import. Error: " + entry.getValue());
+        }
+        return importedModels;
+    }
+
     // Global registry of rank profiles.
     // TODO: I think this can be removed when we remove "<search version=2.0>" and only support content.
     private final RankProfileRegistry rankProfileRegistry;
@@ -242,6 +261,8 @@ public class DeployState implements ConfigDefinitionStore {
     }
 
     public ModelContext.Properties getProperties() { return properties; }
+
+    public ModelContext.FeatureFlags featureFlags() { return properties.featureFlags(); }
 
     public Version getVespaVersion() { return vespaVersion; }
 
@@ -289,6 +310,8 @@ public class DeployState implements ConfigDefinitionStore {
         }
     }
 
+    public Optional<Reindexing> reindexing() { return Optional.ofNullable(reindexing); }
+
     public static class Builder {
 
         private ApplicationPackage applicationPackage = MockApplicationPackage.createEmpty();
@@ -308,6 +331,7 @@ public class DeployState implements ConfigDefinitionStore {
         private Version wantedNodeVespaVersion = Vtag.currentVersion;
         private boolean accessLoggingEnabledByDefault = true;
         private Optional<DockerImage> wantedDockerImageRepo = Optional.empty();
+        private Reindexing reindexing = null;
 
         public Builder applicationPackage(ApplicationPackage applicationPackage) {
             this.applicationPackage = applicationPackage;
@@ -398,6 +422,8 @@ public class DeployState implements ConfigDefinitionStore {
             return this;
         }
 
+        public Builder reindexing(Reindexing reindexing) { this.reindexing = Objects.requireNonNull(reindexing); return this; }
+
         public DeployState build() {
             return build(new ValidationParameters());
         }
@@ -427,7 +453,8 @@ public class DeployState implements ConfigDefinitionStore {
                                    now,
                                    wantedNodeVespaVersion,
                                    accessLoggingEnabledByDefault,
-                                   wantedDockerImageRepo);
+                                   wantedDockerImageRepo,
+                                   reindexing);
         }
 
         private SearchDocumentModel createSearchDocumentModel(RankProfileRegistry rankProfileRegistry,

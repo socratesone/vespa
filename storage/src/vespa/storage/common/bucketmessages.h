@@ -1,12 +1,9 @@
 // Copyright 2017 Yahoo Holdings. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 #pragma once
 
-#include <vespa/persistence/spi/persistenceprovider.h>
+#include <vespa/persistence/spi/result.h>
 #include <vespa/storageapi/message/internal.h>
-#include <vespa/document/bucket/bucket.h>
 #include <vespa/storageapi/buckets/bucketinfo.h>
-#include <vector>
-#include <set>
 
 namespace storage {
 
@@ -14,20 +11,18 @@ namespace storage {
  * @class ReadBucketList
  * @ingroup common
  *
- * @brief List buckets existing on a partition.
+ * @brief List buckets existing in a bucket space.
  */
 class ReadBucketList : public api::InternalCommand {
     document::BucketSpace _bucketSpace;
-    spi::PartitionId _partition;
 
 public:
     typedef std::unique_ptr<ReadBucketList> UP;
     static const uint32_t ID = 2003;
 
-    ReadBucketList(document::BucketSpace bucketSpace, spi::PartitionId partition);
+    ReadBucketList(document::BucketSpace bucketSpace);
     ~ReadBucketList();
     document::BucketSpace getBucketSpace() const { return _bucketSpace; }
-    spi::PartitionId getPartition() const { return _partition; }
     document::Bucket getBucket() const override;
 
     std::unique_ptr<api::StorageReply> makeReply() override;
@@ -42,7 +37,6 @@ public:
  */
 class ReadBucketListReply : public api::InternalReply {
     document::BucketSpace _bucketSpace;
-    spi::PartitionId _partition;
     spi::BucketIdListResult::List _buckets;
 
 public:
@@ -54,7 +48,6 @@ public:
     ~ReadBucketListReply();
 
     document::BucketSpace getBucketSpace() const { return _bucketSpace; }
-    spi::PartitionId getPartition() const { return _partition; }
     document::Bucket getBucket() const override;
 
     spi::BucketIdListResult::List& getBuckets() { return _buckets; }
@@ -85,7 +78,6 @@ public:
     ~ReadBucketInfo();
 
     document::Bucket getBucket() const override { return _bucket; }
-    bool hasSingleBucketId() const override { return true; }
 
     std::unique_ptr<api::StorageReply> makeReply() override;
 
@@ -109,63 +101,6 @@ public:
     ~ReadBucketInfoReply();
 
     document::Bucket getBucket() const override { return _bucket; }
-    bool hasSingleBucketId() const override { return true; }
-
-    void print(std::ostream& out, bool verbose, const std::string& indent) const override;
-};
-
-/**
- * @class InternalBucketJoinCommand
- * @ingroup common
- *
- * @brief Joins multiple versions of the same bucket.
- *
- * In case disks are reintroduced, we might have several copies of the same
- * bucket on multiple disks. In such cases we should join these buckets during
- * initialization as we cannot cope with multiple versions of the same bucket
- * while storage is running.
- */
-class InternalBucketJoinCommand : public api::InternalCommand {
-    document::Bucket _bucket;
-    uint16_t _keepOnDisk;
-    uint16_t _joinFromDisk;
-
-public:
-    static const uint32_t ID = 2015;
-
-    InternalBucketJoinCommand(const document::Bucket &bucket, uint16_t keepOnDisk, uint16_t joinFromDisk);
-    ~InternalBucketJoinCommand();
-
-    document::Bucket getBucket() const override { return _bucket; }
-    bool hasSingleBucketId() const override { return true; }
-
-    uint16_t getDiskOfInstanceToKeep() const { return _keepOnDisk; }
-    uint16_t getDiskOfInstanceToJoin() const { return _joinFromDisk; }
-
-    std::unique_ptr<api::StorageReply> makeReply() override;
-
-    void print(std::ostream& out, bool verbose, const std::string& indent) const override;
-};
-
-/**
- * @class InternalBucketJoinReply
- * @ingroup common
- */
-class InternalBucketJoinReply : public api::InternalReply {
-    document::Bucket _bucket;
-    api::BucketInfo _bucketInfo;
-
-public:
-    static const uint32_t ID = 2016;
-
-    InternalBucketJoinReply(const InternalBucketJoinCommand& cmd,
-                            const api::BucketInfo& info = api::BucketInfo());
-    ~InternalBucketJoinReply();
-
-    document::Bucket getBucket() const override { return _bucket; }
-    bool hasSingleBucketId() const override { return true; }
-
-    const api::BucketInfo& getBucketInfo() const { return _bucketInfo; }
 
     void print(std::ostream& out, bool verbose, const std::string& indent) const override;
 };

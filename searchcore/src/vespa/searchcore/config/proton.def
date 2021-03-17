@@ -29,8 +29,8 @@ numthreadspersearch int default=1 restart
 numsummarythreads int default=16 restart
 
 ## Perform extra validation of stored data on startup
-## It requires a restart to be turned, but no restart to turned off.
-## Hence it must always be followed by a manual restart.
+## It requires a restart to enable, but no restart to disable.
+## Hence it must always be followed by a manual restart when enabled.
 validate_and_sanitize_docstore enum {NO, YES} default = NO
 
 ## Maximum number of concurrent flushes outstanding.
@@ -125,14 +125,10 @@ indexing.optimize enum {LATENCY, THROUGHPUT, ADAPTIVE} default=LATENCY restart
 
 ## Maximum number of pending operations for each of the internal
 ## indexing threads.  Only used when visibility delay is zero.
-indexing.tasklimit int default=1000 restart
+indexing.tasklimit int default=1000
 
-## Parameter used to calculate maximum number of pending operations
-## for each of the internal indexing threads when visibility delay is
-## nonzero. The number is divided by the number of indexing threads,
-## i.e.  when indexing.threads is 4 and indexing.semiunboundtasklimit
-## is 40000 then effective task limit is 10000.
-indexing.semiunboundtasklimit int default = 1000 restart
+## Deprecated and ignored, will soon go away
+indexing.semiunboundtasklimit int default = 1000
 
 ## Kind of watermark for when to activate extra manpower
 ## Utilized if optimize is set to either THROUGHPUT or ADAPTIVE
@@ -310,6 +306,12 @@ documentdb[].allocation.amortizecount int default=10000
 ## used in multi-value attribute vectors to store underlying values.
 documentdb[].allocation.multivaluegrowfactor double default=0.2
 
+## The ratio of used bytes that can be dead before attempting to perform compaction.
+documentdb[].allocation.max_dead_bytes_ratio double default=0.2
+
+## The ratio of used address space that can be dead before attempting to perform compaction.
+documentdb[].allocation.max_dead_address_space_ratio double default=0.2
+
 ## The interval of when periodic tasks should be run
 periodic.interval double default=3600.0
 
@@ -361,7 +363,7 @@ lidspacecompaction.interval double default=10.0
 ##
 ## When considering compaction the lid bloat is calculated as (docIdLimit - numDocs).
 ## The lid bloat must be >= allowedlidbloat before considering compaction.
-lidspacecompaction.allowedlidbloat int default=1000
+lidspacecompaction.allowedlidbloat int default=1
 
 ## The allowed lid bloat factor (relative) before considering lid space compaction.
 ##
@@ -397,6 +399,15 @@ lidspacecompaction.removebatchblockrate double default=0.5
 ## is higher than the given block rate, the lid space compaction job is blocked.
 ## It is considered again at the next regular interval (see above).
 lidspacecompaction.removeblockrate double default=100.0
+
+## Set to true to enable bucket locking via content layer
+lidspacecompaction.usebucketexecutor bool default=false
+
+## Maximum docs to move in single operation per bucket
+bucketmove.maxdocstomoveperbucket int default=1
+
+## Set to true to enable bucket locking via content layer
+bucketmove.usebucketexecutor bool default=false
 
 ## This is the maximum value visibilitydelay you can have.
 ## A to higher value here will cost more memory while not improving too much.
@@ -503,4 +514,4 @@ bucketdb.checksumtype enum {LEGACY, XXHASH64} default = LEGACY restart
 ## TENSOR_ENGINE (default) uses DefaultTensorEngine, which has been the production implementation for years.
 ## FAST_VALUE uses the new and optimized FastValueBuilderFactory instead.
 ## TODO: Remove when default has been switched to FAST_VALUE.
-tensor_implementation enum {TENSOR_ENGINE, FAST_VALUE} default = TENSOR_ENGINE
+tensor_implementation enum {TENSOR_ENGINE, FAST_VALUE} default = FAST_VALUE

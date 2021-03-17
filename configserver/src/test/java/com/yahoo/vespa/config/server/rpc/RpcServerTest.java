@@ -25,7 +25,6 @@ import com.yahoo.vespa.config.server.ApplicationRepository;
 import com.yahoo.vespa.config.server.ServerCache;
 import com.yahoo.vespa.config.server.application.Application;
 import com.yahoo.vespa.config.server.application.ApplicationSet;
-import com.yahoo.vespa.config.server.application.TenantApplications;
 import com.yahoo.vespa.config.server.monitoring.MetricUpdater;
 import com.yahoo.vespa.config.server.session.PrepareParams;
 import com.yahoo.vespa.model.VespaModel;
@@ -63,30 +62,19 @@ public class RpcServerTest {
         try (RpcTester tester = new RpcTester(applicationId, temporaryFolder)) {
             ApplicationRepository applicationRepository = tester.applicationRepository();
             applicationRepository.deploy(testApp, new PrepareParams.Builder().applicationId(applicationId).build());
-            TenantApplications applicationRepo = tester.tenant().getApplicationRepo();
-            ApplicationSet applicationSet = tester.tenant().getSessionRepository().ensureApplicationLoaded(applicationRepository.getActiveRemoteSession(applicationId));
-            applicationRepo.reloadConfig(applicationSet);
             testPrintStatistics(tester);
             testGetConfig(tester);
             testEnabled(tester);
             testApplicationNotLoadedErrorWhenAppDeleted(tester);
-            testEmptySentinelConfigWhenAppDeletedOnHostedVespa();
         }
     }
 
-    private void testApplicationNotLoadedErrorWhenAppDeleted(RpcTester tester) throws InterruptedException, IOException {
-        tester.rpcServer().onTenantDelete(tenantName);
-        tester.rpcServer().onTenantsLoaded();
+    private void testApplicationNotLoadedErrorWhenAppDeleted(RpcTester tester) {
+        tester.applicationRepository().delete(applicationId);
         JRTClientConfigRequest clientReq = createSimpleRequest();
         tester.performRequest(clientReq.getRequest());
         assertFalse(clientReq.validateResponse());
         assertThat(clientReq.errorCode(), is(ErrorCode.APPLICATION_NOT_LOADED));
-        tester.stopRpc();
-        tester.createAndStartRpcServer();
-        tester.rpcServer().onTenantsLoaded();
-        clientReq = createSimpleRequest();
-        tester.performRequest(clientReq.getRequest());
-        assertTrue(clientReq.validateResponse());
     }
 
     @Test
@@ -129,11 +117,10 @@ public class RpcServerTest {
         Application app = new Application(new VespaModel(MockApplicationPackage.createEmpty()),
                                           new ServerCache(),
                                           2L,
-                                          false,
                                           new Version(1, 2, 3),
                                           MetricUpdater.createTestUpdater(),
                                           applicationId);
-        ApplicationSet appSet = ApplicationSet.fromSingle(app);
+        ApplicationSet appSet = ApplicationSet.from(app);
         tester.rpcServer().configActivated(appSet);
         ConfigKey<?> key = new ConfigKey<>(LbServicesConfig.class, "*");
         JRTClientConfigRequest clientReq  = createRequest(new RawConfig(key, LbServicesConfig.getDefMd5()));

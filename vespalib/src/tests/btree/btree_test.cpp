@@ -1,6 +1,5 @@
 // Copyright 2017 Yahoo Holdings. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
-#include <vespa/log/log.h>
-LOG_SETUP("btree_test");
+
 #include <vespa/vespalib/testkit/testapp.h>
 #include <string>
 #include <vespa/vespalib/btree/btreeroot.h>
@@ -18,7 +17,11 @@ LOG_SETUP("btree_test");
 #include <vespa/vespalib/btree/btreebuilder.hpp>
 #include <vespa/vespalib/btree/btree.hpp>
 #include <vespa/vespalib/btree/btreestore.hpp>
+#include <vespa/vespalib/datastore/buffer_type.hpp>
 #include <vespa/vespalib/test/btree/btree_printer.h>
+
+#include <vespa/log/log.h>
+LOG_SETUP("btree_test");
 
 using vespalib::GenerationHandler;
 using vespalib::datastore::EntryRef;
@@ -514,13 +517,17 @@ Test::requireThatNodeSplitInsertWorks()
     }
 }
 
+namespace {
+
 struct BTreeStealTraits
 {
-    static const size_t LEAF_SLOTS = 6;
-    static const size_t INTERNAL_SLOTS = 6;
-    static const size_t PATH_SIZE = 20;
-    static const bool BINARY_SEEK = true;
+    static constexpr size_t LEAF_SLOTS = 6;
+    static constexpr size_t INTERNAL_SLOTS = 6;
+    static constexpr size_t PATH_SIZE = 20;
+    [[maybe_unused]] static constexpr bool BINARY_SEEK = true;
 };
+
+}
 
 void
 Test::requireThatNodeStealWorks()

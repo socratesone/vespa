@@ -6,8 +6,8 @@
 #include "reconfig_params.h"
 #include "i_document_subdb_owner.h"
 #include "ibucketstatecalculator.h"
-#include <vespa/searchcore/proton/common/icommitable.h>
 #include <vespa/searchcore/proton/attribute/attribute_writer.h>
+#include <vespa/searchcore/proton/common/alloc_config.h>
 #include <vespa/searchcore/proton/flushengine/threadedflushtarget.h>
 #include <vespa/searchcore/proton/index/index_manager_initializer.h>
 #include <vespa/searchcore/proton/index/index_writer.h>
@@ -16,8 +16,7 @@
 #include <vespa/searchcore/proton/reference/gid_to_lid_change_handler.h>
 #include <vespa/searchlib/fef/indexproperties.h>
 #include <vespa/searchlib/fef/properties.h>
-#include <vespa/vespalib/util/closuretask.h>
-#include <vespa/eval/tensor/default_tensor_engine.h>
+#include <vespa/eval/eval/fast_value.h>
 
 using vespa::config::search::RankProfilesConfig;
 using proton::matching::MatchingStats;
@@ -29,7 +28,7 @@ using search::TuneFileDocumentDB;
 using search::index::Schema;
 using search::SerialNum;
 using vespalib::ThreadStackExecutorBase;
-using vespalib::eval::EngineOrFactory;
+using vespalib::eval::FastValueBuilderFactory;
 using namespace searchcorespi;
 
 namespace proton {
@@ -41,7 +40,7 @@ SearchableDocSubDB::SearchableDocSubDB(const Config &cfg, const Context &ctx)
       _indexWriter(),
       _rSearchView(),
       _rFeedView(),
-      _tensorLoader(EngineOrFactory::get()),
+      _tensorLoader(FastValueBuilderFactory::get()),
       _constantValueCache(_tensorLoader),
       _constantValueRepo(_constantValueCache),
       _configurer(_iSummaryMgr, _rSearchView, _rFeedView, ctx._queryLimiter, _constantValueRepo, ctx._clock,
@@ -66,7 +65,6 @@ SearchableDocSubDB::syncViews()
 {
     _iSearchView.set(_rSearchView.get());
     _iFeedView.set(_rFeedView.get());
-    _owner.syncFeedView();
 }
 
 SerialNum
@@ -146,7 +144,8 @@ IReprocessingTask::List
 SearchableDocSubDB::applyConfig(const DocumentDBConfig &newConfigSnapshot, const DocumentDBConfig &oldConfigSnapshot,
                                 SerialNum serialNum, const ReconfigParams &params, IDocumentDBReferenceResolver &resolver)
 {
-    StoreOnlyDocSubDB::reconfigure(newConfigSnapshot.getStoreConfig());
+    AllocStrategy alloc_strategy = newConfigSnapshot.get_alloc_config().make_alloc_strategy(_subDbType);
+    StoreOnlyDocSubDB::reconfigure(newConfigSnapshot.getStoreConfig(), alloc_strategy);
     IReprocessingTask::List tasks;
     applyFlushConfig(newConfigSnapshot.getMaintenanceConfigSP()->getFlushConfig());
     if (params.shouldMatchersChange() && _addMetrics) {
@@ -155,7 +154,7 @@ SearchableDocSubDB::applyConfig(const DocumentDBConfig &newConfigSnapshot, const
     if (params.shouldAttributeManagerChange()) {
         proton::IAttributeManager::SP oldMgr = getAttributeManager();
         AttributeCollectionSpec::UP attrSpec =
-            createAttributeSpec(newConfigSnapshot.getAttributesConfig(), serialNum);
+            createAttributeSpec(newConfigSnapshot.getAttributesConfig(), alloc_strategy, serialNum);
         IReprocessingInitializer::UP initializer =
                 _configurer.reconfigure(newConfigSnapshot, oldConfigSnapshot, *attrSpec, params, resolver);
         if (initializer && initializer->hasReprocessors()) {
@@ -242,12 +241,11 @@ SearchableDocSubDB::initFeedView(IAttributeWriter::SP attrWriter,
 /**
  * Handle reconfigure caused by index manager changing state.
  *
- * Flush engine is disabled (for all document dbs) during initial replay and
- * recovery feed modes, the flush engine has not started.  For a resurrected
- * document type, flushing might occur during replay.
+ * Flush engine is disabled (for all document dbs) during initial replay, the
+ * flush engine has not started.
  */
 bool
-SearchableDocSubDB::reconfigure(vespalib::Closure0<bool>::UP closure)
+SearchableDocSubDB::reconfigure(std::unique_ptr<Configure> configure)
 {
     assert(_writeService.master().isCurrentThread());
 
@@ -256,12 +254,11 @@ SearchableDocSubDB::reconfigure(vespalib::Closure0<bool>::UP closure)
     // Everything should be quiet now.
 
     SearchView::SP oldSearchView = _rSearchView.get();
-    IFeedView::SP oldFeedView = _iFeedView.get();
 
     bool ret = true;
 
-    if (closure)
-        ret = closure->call();  // Perform index manager reconfiguration now
+    if (configure)
+        ret = configure->configure();  // Perform index manager reconfiguration now
     reconfigureIndexSearchable();
     return ret;
 }
@@ -272,8 +269,8 @@ SearchableDocSubDB::reconfigureIndexSearchable()
     std::lock_guard<std::mutex> guard(_configMutex);
     // Create new views as needed.
     _configurer.reconfigureIndexSearchable();
-    // Activate new feed view at once
-    syncViews();
+    // Activate new search view at once
+    _iSearchView.set(_rSearchView.get());
 }
 
 IFlushTarget::List

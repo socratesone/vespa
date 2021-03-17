@@ -1,6 +1,7 @@
 // Copyright 2017 Yahoo Holdings. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.config.server.http.v2;
 
+import com.yahoo.cloud.config.ConfigserverConfig;
 import com.yahoo.config.provision.ApplicationId;
 import com.yahoo.config.provision.Environment;
 import com.yahoo.config.provision.RegionName;
@@ -10,12 +11,14 @@ import com.yahoo.container.jdisc.HttpRequest;
 import com.yahoo.container.jdisc.HttpResponse;
 import com.yahoo.jdisc.Response;
 import com.yahoo.jdisc.http.HttpRequest.Method;
-import com.yahoo.vespa.config.server.TestComponentRegistry;
 import com.yahoo.vespa.config.server.application.TenantApplications;
 import com.yahoo.vespa.config.server.http.SessionHandlerTest;
 import com.yahoo.vespa.config.server.tenant.TenantRepository;
+import com.yahoo.vespa.config.server.tenant.TestTenantRepository;
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
+import org.junit.rules.TemporaryFolder;
 
 import java.io.IOException;
 
@@ -34,14 +37,21 @@ public class ListApplicationsHandlerTest {
     private static final TenantName mytenant = TenantName.from("mytenant");
     private static final TenantName foobar = TenantName.from("foobar");
 
-    private final TestComponentRegistry componentRegistry = new TestComponentRegistry.Builder().build();
-
     private TenantApplications applicationRepo, applicationRepo2;
     private ListApplicationsHandler handler;
 
+    @Rule
+    public TemporaryFolder temporaryFolder = new TemporaryFolder();
+
     @Before
-    public void setup() {
-        TenantRepository tenantRepository = new TenantRepository(componentRegistry);
+    public void setup() throws IOException {
+        ConfigserverConfig configserverConfig = new ConfigserverConfig.Builder()
+                .configServerDBDir(temporaryFolder.newFolder().getAbsolutePath())
+                .configDefinitionsDir(temporaryFolder.newFolder().getAbsolutePath())
+                .build();
+        TenantRepository tenantRepository = new TestTenantRepository.Builder()
+                .withConfigserverConfig(configserverConfig)
+                .build();
         tenantRepository.addTenant(mytenant);
         tenantRepository.addTenant(foobar);
         applicationRepo = tenantRepository.getTenant(mytenant).getApplicationRepo();

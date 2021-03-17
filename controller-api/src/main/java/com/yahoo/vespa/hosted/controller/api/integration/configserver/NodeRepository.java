@@ -13,11 +13,14 @@ import com.yahoo.vespa.hosted.controller.api.integration.noderepository.NodeList
 import com.yahoo.vespa.hosted.controller.api.integration.noderepository.NodeMembership;
 import com.yahoo.vespa.hosted.controller.api.integration.noderepository.NodeRepositoryNode;
 import com.yahoo.vespa.hosted.controller.api.integration.noderepository.NodeState;
+import com.yahoo.vespa.hosted.controller.api.integration.noderepository.OrchestratorStatus;
 
+import java.net.URI;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Collection;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
@@ -73,6 +76,15 @@ public interface NodeRepository {
 
     Application getApplication(ZoneId zone, ApplicationId application);
 
+    void patchApplication(ZoneId zone, ApplicationId application,
+                          double currentReadShare, double maxReadShare);
+
+    Map<TenantName, URI> getArchiveUris(ZoneId zone);
+
+    void setArchiveUri(ZoneId zone, TenantName tenantName, URI archiveUri);
+
+    void removeArchiveUri(ZoneId zone, TenantName tenantName);
+
     /** Upgrade all nodes of given type to a new version */
     void upgrade(ZoneId zone, NodeType type, Version version);
 
@@ -89,6 +101,10 @@ public interface NodeRepository {
     void cancelFirmwareCheck(ZoneId zone);
 
     void retireAndDeprovision(ZoneId zoneId, String hostName);
+
+    void patchNode(ZoneId zoneId, String hostName, NodeRepositoryNode node);
+
+    void reboot(ZoneId zoneId, String hostName);
 
     private static Node toNode(NodeRepositoryNode node) {
         var application = Optional.ofNullable(node.getOwner())
@@ -114,7 +130,7 @@ public interface NodeRepository {
                         versionFrom(node.getWantedOsVersion()),
                         Optional.ofNullable(node.getCurrentFirmwareCheck()).map(Instant::ofEpochMilli),
                         Optional.ofNullable(node.getWantedFirmwareCheck()).map(Instant::ofEpochMilli),
-                        fromBoolean(node.getAllowedToBeDown()),
+                        toServiceState(node.getOrchestratorStatus()),
                         Optional.ofNullable(node.suspendedSinceMillis()).map(Instant::ofEpochMilli),
                         toInt(node.getCurrentRestartGeneration()),
                         toInt(node.getRestartGeneration()),
@@ -127,8 +143,14 @@ public interface NodeRepository {
                         node.getWantToRetire(),
                         node.getWantToDeprovision(),
                         Optional.ofNullable(node.getReservedTo()).map(TenantName::from),
+                        Optional.ofNullable(node.getExclusiveTo()).map(ApplicationId::fromSerializedForm),
                         dockerImageFrom(node.getWantedDockerImage()),
-                        dockerImageFrom(node.getCurrentDockerImage()));
+                        dockerImageFrom(node.getCurrentDockerImage()),
+                        node.getReports(),
+                        node.getHistory(),
+                        node.getAdditionalIpAddresses(),
+                        node.getOpenStackId(),
+                        Optional.ofNullable(node.getSwitchHostname()));
     }
 
     private static String clusterIdOf(NodeMembership nodeMembership) {
@@ -169,6 +191,7 @@ public interface NodeRepository {
             case dirty: return Node.State.dirty;
             case failed: return Node.State.failed;
             case parked: return Node.State.parked;
+            case breakfixed: return Node.State.breakfixed;
         }
         return Node.State.unknown;
     }
@@ -193,10 +216,14 @@ public interface NodeRepository {
         }
     }
 
-    private static Node.ServiceState fromBoolean(Boolean allowedDown) {
-        return (allowedDown == null)
-                ? Node.ServiceState.unorchestrated
-                : allowedDown ? Node.ServiceState.allowedDown : Node.ServiceState.expectedUp;
+    private static Node.ServiceState toServiceState(OrchestratorStatus orchestratorStatus) {
+        switch (orchestratorStatus) {
+            case ALLOWED_TO_BE_DOWN: return Node.ServiceState.allowedDown;
+            case PERMANENTLY_DOWN: return Node.ServiceState.permanentlyDown;
+            case NO_REMARKS: return Node.ServiceState.expectedUp;
+        }
+
+        return Node.ServiceState.unknown;
     }
 
     private static double toDouble(Double d) {

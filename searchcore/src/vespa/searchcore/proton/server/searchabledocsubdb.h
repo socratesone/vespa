@@ -1,7 +1,6 @@
 // Copyright 2017 Yahoo Holdings. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 #pragma once
 
-#include "executorthreadingservice.h"
 #include "fast_access_doc_subdb.h"
 #include "searchable_doc_subdb_configurer.h"
 #include "searchable_feed_view.h"
@@ -26,7 +25,6 @@ class DocumentDBConfig;
 struct IDocumentDBReferenceResolver;
 struct MetricsWireService;
 class GidToLidChangeHandler;
-class ICommitable;
 
 /**
  * The searchable sub database supports searching and keeps all attribute fields in memory and
@@ -95,7 +93,7 @@ private:
     void initFeedView(IAttributeWriter::SP attrWriter, const DocumentDBConfig &configSnapshot);
     void reconfigureMatchingMetrics(const vespa::config::search::RankProfilesConfig &config);
 
-    bool reconfigure(vespalib::Closure0<bool>::UP closure) override;
+    bool reconfigure(std::unique_ptr<Configure> configure) override;
     void reconfigureIndexSearchable();
     void syncViews();
     void applyFlushConfig(const DocumentDBFlushConfig &flushConfig);

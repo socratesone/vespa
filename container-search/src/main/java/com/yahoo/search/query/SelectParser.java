@@ -78,6 +78,7 @@ import static com.yahoo.search.yql.YqlParser.CONNECTIVITY;
 import static com.yahoo.search.yql.YqlParser.DEFAULT_TARGET_NUM_HITS;
 import static com.yahoo.search.yql.YqlParser.DESCENDING_HITS_ORDER;
 import static com.yahoo.search.yql.YqlParser.DISTANCE;
+import static com.yahoo.search.yql.YqlParser.DISTANCE_THRESHOLD;
 import static com.yahoo.search.yql.YqlParser.DOT_PRODUCT;
 import static com.yahoo.search.yql.YqlParser.EQUIV;
 import static com.yahoo.search.yql.YqlParser.FILTER;
@@ -481,6 +482,10 @@ public class SelectParser implements Parser {
                 if (TARGET_NUM_HITS.equals(annotation_name)){
                     item.setTargetNumHits((int)(annotation_value.asDouble()));
                 }
+                if (DISTANCE_THRESHOLD.equals(annotation_name)) {
+                    double distanceThreshold = annotation_value.asDouble();
+                    item.setDistanceThreshold(distanceThreshold);
+                }
                 if (HNSW_EXPLORE_ADDITIONAL_HITS.equals(annotation_name)) {
                     int hnswExploreAdditionalHits = (int)(annotation_value.asDouble());
                     item.setHnswExploreAdditionalHits(hnswExploreAdditionalHits);                    
@@ -497,20 +502,21 @@ public class SelectParser implements Parser {
         return item;
     }
 
+    @SuppressWarnings("deprecation")
     private CompositeItem buildWeakAnd(String key, Inspector value) {
         WeakAndItem weakAnd = new WeakAndItem();
         addItemsFromInspector(weakAnd, value);
         Inspector annotations = getAnnotations(value);
 
-        if (annotations != null){
+        if (annotations != null) {
             annotations.traverse((ObjectTraverser) (annotation_name, annotation_value) -> {
                 if (TARGET_HITS.equals(annotation_name)){
                     weakAnd.setN((int)(annotation_value.asDouble()));
                 }
-                if (TARGET_NUM_HITS.equals(annotation_name)){
+                if (TARGET_NUM_HITS.equals(annotation_name)) {
                     weakAnd.setN((int)(annotation_value.asDouble()));
                 }
-                if (SCORE_THRESHOLD.equals(annotation_name)){
+                if (SCORE_THRESHOLD.equals(annotation_name)) {
                     weakAnd.setScoreThreshold((int)(annotation_value.asDouble()));
                 }
             });

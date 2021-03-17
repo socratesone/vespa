@@ -38,6 +38,7 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.ByteBuffer;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -52,6 +53,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeoutException;
 import java.util.function.Function;
 import java.util.function.Predicate;
+import java.util.function.Supplier;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 import java.util.stream.Collectors;
@@ -104,7 +106,7 @@ public class CuratorDb {
     private final Curator curator;
     private final Duration tryLockTimeout;
 
-    // For each job id (path), store the ZK node version and its deserialised data — update when version changes. 
+    // For each job id (path), store the ZK node version and its deserialised data - update when version changes.
     private final Map<Path, Pair<Integer, NavigableMap<RunId, Run>>> cachedHistoricRuns = new ConcurrentHashMap<>();
 
     @Inject
@@ -186,6 +188,10 @@ public class CuratorDb {
 
     public Lock lockNameServiceQueue() {
         return curator.lock(lockRoot.append("nameServiceQueue"), defaultLockTimeout);
+    }
+
+    public Lock lockMeteringRefreshTime() throws TimeoutException {
+        return tryLock(lockRoot.append("meteringRefreshTime"));
     }
 
     // -------------- Helpers ------------------------------------------
@@ -292,7 +298,7 @@ public class CuratorDb {
     }
 
     public Optional<Tenant> readTenant(TenantName name) {
-        return readSlime(tenantPath(name)).map(tenantSerializer::tenantFrom);
+        return readSlime(tenantPath(name)).map(bytes -> tenantSerializer.tenantFrom(bytes));
     }
 
     public List<Tenant> readTenants() {
@@ -519,6 +525,18 @@ public class CuratorDb {
         return allEndpointCertificateMetadata;
     }
 
+    // -------------- Metering view refresh times ----------------------------
+
+    public void writeMeteringRefreshTime(long timestamp) {
+        curator.set(meteringRefreshPath(), Long.toString(timestamp).getBytes());
+    }
+
+    public long readMeteringRefreshTime() {
+        return curator.getData(meteringRefreshPath())
+                      .map(String::new).map(Long::parseLong)
+                      .orElse(0L);
+    }
+
     // -------------- Paths ---------------------------------------------------
 
     private Path lockPath(TenantName tenant) {
@@ -556,10 +574,6 @@ public class CuratorDb {
         return lockRoot
                 .append(provisionStatePath())
                 .append(provisionId);
-    }
-
-    private static Path inactiveJobsPath() {
-        return root.append("inactiveJobs");
     }
 
     private static Path upgradesPerMinutePath() {
@@ -638,6 +652,10 @@ public class CuratorDb {
 
     private static Path endpointCertificatePath(ApplicationId id) {
         return endpointCertificateRoot.append(id.serializedForm());
+    }
+
+    private static Path meteringRefreshPath() {
+        return root.append("meteringRefreshTime");
     }
 
 }

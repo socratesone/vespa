@@ -16,11 +16,11 @@
 #pragma once
 
 #include "filestorhandler.h"
-#include "mergestatus.h"
 #include <vespa/document/bucket/bucketid.h>
-#include <vespa/metrics/metrics.h>
+#include <vespa/metrics/metrictimer.h>
 #include <vespa/storage/common/servicelayercomponent.h>
 #include <vespa/storageframework/generic/metric/metricupdatehook.h>
+#include <vespa/storageapi/messageapi/storagereply.h>
 #include <boost/multi_index_container.hpp>
 #include <boost/multi_index/identity.hpp>
 #include <boost/multi_index/member.hpp>
@@ -54,7 +54,7 @@ public:
 
         MessageEntry(const std::shared_ptr<api::StorageMessage>& cmd, const document::Bucket &bId);
         MessageEntry(MessageEntry &&) noexcept ;
-        MessageEntry(const MessageEntry &);
+        MessageEntry(const MessageEntry &) noexcept;
         MessageEntry & operator = (const MessageEntry &) = delete;
         ~MessageEntry();
 
@@ -101,6 +101,7 @@ public:
         ~Stripe();
         void flush();
         bool schedule(MessageEntry messageEntry);
+        FileStorHandler::LockedMessage schedule_and_get_next_async_message(MessageEntry entry);
         void waitUntilNoLocks() const;
         void abort(std::vector<std::shared_ptr<api::StorageReply>> & aborted, const AbortBucketOperationsCommand& cmd);
         void waitInactive(const AbortBucketOperationsCommand& cmd) const;
@@ -137,6 +138,8 @@ public:
         void setMetrics(FileStorStripeMetrics * metrics) { _metrics = metrics; }
     private:
         bool hasActive(monitor_guard & monitor, const AbortBucketOperationsCommand& cmd) const;
+        FileStorHandler::LockedMessage get_next_async_message(monitor_guard& guard);
+
         // Precondition: the bucket used by `iter`s operation is not locked in a way that conflicts
         // with its locking requirements.
         FileStorHandler::LockedMessage getMessage(monitor_guard & guard, PriorityIdx & idx,
@@ -184,10 +187,10 @@ public:
     DiskState getDiskState() const override;
     void close() override;
     bool schedule(const std::shared_ptr<api::StorageMessage>&) override;
+    ScheduleAsyncResult schedule_and_get_next_async_message(const std::shared_ptr<api::StorageMessage>& msg) override;
 
     FileStorHandler::LockedMessage getNextMessage(uint32_t stripeId) override;
 
-    void remapQueueAfterDiskMove(const document::Bucket& bucket) override;
     void remapQueueAfterJoin(const RemapInfo& source, RemapInfo& target) override;
     void remapQueueAfterSplit(const RemapInfo& source, RemapInfo& target1, RemapInfo& target2) override;
 
@@ -208,19 +211,15 @@ public:
     void getStatus(std::ostream& out, const framework::HttpUrlPath& path) const override;
 
     uint32_t getQueueSize() const override;
-    uint32_t getNextStripeId() override {
-        return (_nextStripeId++) % _stripes.size();
-    }
 
     std::shared_ptr<FileStorHandler::BucketLockInterface>
     lock(const document::Bucket & bucket, api::LockingRequirements lockReq) override {
         return stripe(bucket).lock(bucket, lockReq);
     }
 
-    void addMergeStatus(const document::Bucket&, MergeStatus::SP) override;
+    void addMergeStatus(const document::Bucket&, std::shared_ptr<MergeStatus>) override;
     MergeStatus& editMergeStatus(const document::Bucket&) override;
     bool isMerging(const document::Bucket&) const override;
-    uint32_t getNumActiveMerges() const override;
     void clearMergeStatus(const document::Bucket& bucket) override;
     void clearMergeStatus(const document::Bucket& bucket, const api::ReturnCode& code) override;
 
@@ -236,20 +235,17 @@ public:
 private:
     ServiceLayerComponent   _component;
     std::atomic<DiskState>  _state;
-    uint32_t                _nextStripeId;
     FileStorDiskMetrics   * _metrics;
     std::vector<Stripe>     _stripes;
     MessageSender&          _messageSender;
     const document::BucketIdFactory& _bucketIdFactory;
     mutable std::mutex    _mergeStatesLock;
-    std::map<document::Bucket, MergeStatus::SP> _mergeStates;
+    std::map<document::Bucket, std::shared_ptr<MergeStatus>> _mergeStates;
     vespalib::duration    _getNextMessageTimeout;
     const uint32_t        _max_active_merges_per_stripe; // Read concurrently by stripes.
     mutable std::mutex              _pauseMonitor;
     mutable std::condition_variable _pauseCond;
     std::atomic<bool>               _paused;
-
-    void reply(api::StorageMessage&, DiskState state) const;
 
     // Returns the index in the targets array we are sending to, or -1 if none of them match.
     int calculateTargetBasedOnDocId(const api::StorageMessage& msg, std::vector<RemapInfo*>& targets);

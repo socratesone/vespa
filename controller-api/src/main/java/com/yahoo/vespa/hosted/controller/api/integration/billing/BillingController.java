@@ -1,7 +1,6 @@
 // Copyright Verizon Media. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.hosted.controller.api.integration.billing;
 
-import com.yahoo.config.provision.Environment;
 import com.yahoo.config.provision.TenantName;
 import com.yahoo.vespa.hosted.controller.api.integration.user.User;
 
@@ -17,7 +16,11 @@ public interface BillingController {
 
     PlanId getPlan(TenantName tenant);
 
-    Optional<Quota> getQuota(TenantName tenant, Environment environment);
+    List<TenantName> tenantsWithPlan(List<TenantName> existing, PlanId planId);
+
+    String getPlanDisplayName(PlanId planId);
+
+    Quota getQuota(TenantName tenant);
 
     /**
      * @return String containing error message if something went wrong. Empty otherwise
@@ -48,8 +51,17 @@ public interface BillingController {
 
     InstrumentList listInstruments(TenantName tenant, String userId);
 
-    List<Invoice> getInvoices(TenantName tenant);
+    List<Invoice> getInvoicesForTenant(TenantName tenant);
+
+    List<Invoice> getInvoices();
 
     void deleteBillingInfo(TenantName tenant, Set<User> users, boolean isPrivileged);
 
+    default CollectionMethod getCollectionMethod(TenantName tenant) {
+        return CollectionMethod.NONE;
+    }
+
+    default CollectionResult setCollectionMethod(TenantName tenant, CollectionMethod method) {
+        return CollectionResult.error("Method not implemented");
+    }
 }

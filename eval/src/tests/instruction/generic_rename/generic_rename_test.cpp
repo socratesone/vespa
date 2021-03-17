@@ -1,10 +1,12 @@
 // Copyright Verizon Media. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
 #include <vespa/eval/eval/simple_value.h>
+#include <vespa/eval/eval/fast_value.h>
 #include <vespa/eval/eval/value_codec.h>
 #include <vespa/eval/instruction/generic_rename.h>
 #include <vespa/eval/eval/interpreted_function.h>
-#include <vespa/eval/eval/test/tensor_model.hpp>
+#include <vespa/eval/eval/test/gen_spec.h>
+#include <vespa/eval/eval/test/reference_operations.h>
 #include <vespa/vespalib/util/stringfmt.h>
 #include <vespa/vespalib/gtest/gtest.h>
 
@@ -15,18 +17,17 @@ using namespace vespalib::eval::test;
 
 using vespalib::make_string_short::fmt;
 
-std::vector<Layout> rename_layouts = {
-    {x(3)},
-    {x(3),y(5)},
-    {x(3),y(5),z(7)},
-    float_cells({x(3),y(5),z(7)}),
-    {x({"a","b","c"})},
-    {x({"a","b","c"}),y({"foo","bar"})},
-    {x({"a","b","c"}),y({"foo","bar"}),z({"i","j","k","l"})},
-    float_cells({x({"a","b","c"}),y({"foo","bar"}),z({"i","j","k","l"})}),
-    {x(3),y({"foo", "bar"}),z(7)},
-    {x({"a","b","c"}),y(5),z({"i","j","k","l"})},
-    float_cells({x({"a","b","c"}),y(5),z({"i","j","k","l"})})
+GenSpec G() { return GenSpec(); }
+
+const std::vector<GenSpec> rename_layouts = {
+    G().idx("x", 3),
+    G().idx("x", 3).idx("y", 5),
+    G().idx("x", 3).idx("y", 5).idx("z", 7),
+    G().map("x", {"a","b","c"}),
+    G().map("x", {"a","b","c"}).map("y", {"foo","bar"}),
+    G().map("x", {"a","b","c"}).map("y", {"foo","bar"}).map("z", {"i","j","k","l"}),
+    G().idx("x", 3).map("y", {"foo", "bar"}).idx("z", 7),
+    G().map("x", {"a","b","c"}).idx("y", 5).map("z", {"i","j","k","l"})
 };
 
 struct FromTo {
@@ -52,8 +53,8 @@ TEST(GenericRenameTest, dense_rename_plan_can_be_created_and_executed) {
     std::vector<vespalib::string>   to({"f", "a", "b"});
     ValueType renamed = lhs.rename(from, to);
     auto plan = DenseRenamePlan(lhs, renamed, from, to);
-    std::vector<size_t> expect_loop = {15,2,7};
-    std::vector<size_t> expect_stride = {7,105,1};
+    SmallVector<size_t> expect_loop = {15,2,7};
+    SmallVector<size_t> expect_stride = {7,105,1};
     EXPECT_EQ(plan.subspace_size, 210);
     EXPECT_EQ(plan.loop_cnt, expect_loop);
     EXPECT_EQ(plan.stride, expect_stride);
@@ -83,7 +84,7 @@ TEST(GenericRenameTest, sparse_rename_plan_can_be_created) {
     ValueType renamed = lhs.rename(from, to);
     auto plan = SparseRenamePlan(lhs, renamed, from, to);
     EXPECT_EQ(plan.mapped_dims, 4);
-    std::vector<size_t> expect = {2,0,1,3};
+    SmallVector<size_t> expect = {2,0,1,3};
     EXPECT_EQ(plan.output_dimensions, expect);
 }
 
@@ -97,49 +98,41 @@ vespalib::string rename_dimension(const vespalib::string &name, const FromTo &ft
     return name;
 }
 
-TensorSpec reference_rename(const TensorSpec &a, const FromTo &ft) {
-    ValueType res_type = ValueType::from_spec(a.type()).rename(ft.from, ft.to);
-    EXPECT_FALSE(res_type.is_error());
-    TensorSpec result(res_type.to_spec());
-    for (const auto &cell: a.cells()) {
-        TensorSpec::Address addr;
-        for (const auto &dim: cell.first) {
-            addr.insert_or_assign(rename_dimension(dim.first, ft), dim.second);
-        }
-        result.add(addr, cell.second);
-    }
-    return result;
-}
-
 TensorSpec perform_generic_rename(const TensorSpec &a,
                                   const FromTo &ft, const ValueBuilderFactory &factory)
 {
     Stash stash;
     auto lhs = value_from_spec(a, factory);
-    auto my_op = GenericRename::make_instruction(lhs->type(), ft.from, ft.to, factory, stash);
+    auto res_type = lhs->type().rename(ft.from, ft.to);
+    auto my_op = GenericRename::make_instruction(res_type, lhs->type(), ft.from, ft.to, factory, stash);
     InterpretedFunction::EvalSingle single(factory, my_op);
     return spec_from_value(single.eval(std::vector<Value::CREF>({*lhs})));
 }
 
-void test_generic_rename(const ValueBuilderFactory &factory) {
-    for (const auto & layout : rename_layouts) {
-        TensorSpec lhs = spec(layout, N());
-        ValueType lhs_type = ValueType::from_spec(lhs.type());
-        // printf("lhs_type: %s\n", lhs_type.to_spec().c_str());
-        for (const auto & from_to : rename_from_to) {
-            ValueType renamed_type = lhs_type.rename(from_to.from, from_to.to);
-            if (renamed_type.is_error()) continue;
-            // printf("type %s -> %s\n", lhs_type.to_spec().c_str(), renamed_type.to_spec().c_str());
-            SCOPED_TRACE(fmt("\n===\nLHS: %s\n===\n", lhs.to_string().c_str()));
-            auto expect = reference_rename(lhs, from_to);
-            auto actual = perform_generic_rename(lhs, from_to, factory);
-            EXPECT_EQ(actual, expect);
+void test_generic_rename_with(const ValueBuilderFactory &factory) {
+    for (const auto &layout : rename_layouts) {
+        for (CellType ct : CellTypeUtils::list_types()) {
+            auto lhs = layout.cpy().cells(ct);
+            ValueType lhs_type = lhs.type();
+            for (const auto & from_to : rename_from_to) {
+                ValueType renamed_type = lhs_type.rename(from_to.from, from_to.to);
+                if (renamed_type.is_error()) continue;
+                // printf("type %s -> %s\n", lhs_type.to_spec().c_str(), renamed_type.to_spec().c_str());
+                SCOPED_TRACE(fmt("\n===\nLHS: %s\n===\n", lhs.gen().to_string().c_str()));
+                auto expect = ReferenceOperations::rename(lhs, from_to.from, from_to.to);
+                auto actual = perform_generic_rename(lhs, from_to, factory);
+                EXPECT_EQ(actual, expect);
+            }
         }
     }
 }
 
 TEST(GenericRenameTest, generic_rename_works_for_simple_values) {
-    test_generic_rename(SimpleValueBuilderFactory::get());
+    test_generic_rename_with(SimpleValueBuilderFactory::get());
+}
+
+TEST(GenericRenameTest, generic_rename_works_for_fast_values) {
+    test_generic_rename_with(FastValueBuilderFactory::get());
 }
 
 GTEST_MAIN_RUN_ALL_TESTS()

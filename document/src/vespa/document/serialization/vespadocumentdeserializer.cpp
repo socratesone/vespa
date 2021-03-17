@@ -22,7 +22,8 @@
 #include <vespa/vespalib/data/slime/slime.h>
 #include <vespa/vespalib/stllike/asciistream.h>
 #include <vespa/vespalib/util/backtrace.h>
-#include <vespa/eval/eval/engine_or_factory.h>
+#include <vespa/eval/eval/fast_value.h>
+#include <vespa/eval/eval/value_codec.h>
 #include <vespa/eval/eval/value.h>
 #include <vespa/document/util/serializableexceptions.h>
 #include <vespa/document/base/exceptions.h>
@@ -41,7 +42,7 @@ using vespalib::nbostream;
 using vespalib::Memory;
 using vespalib::stringref;
 using vespalib::compression::CompressionConfig;
-using vespalib::eval::EngineOrFactory;
+using vespalib::eval::FastValueBuilderFactory;
 
 namespace document {
 
@@ -355,9 +356,14 @@ void VespaDocumentDeserializer::read(WeightedSetFieldValue &value) {
     }
 }
 
-
 void
 VespaDocumentDeserializer::read(TensorFieldValue &value)
+{
+    value.assignDeserialized(readTensor());
+}
+
+std::unique_ptr<vespalib::eval::Value>
+VespaDocumentDeserializer::readTensor()
 {
     size_t length = _stream.getInt1_4Bytes();
     if (length > _stream.size()) {
@@ -367,13 +373,13 @@ VespaDocumentDeserializer::read(TensorFieldValue &value)
     std::unique_ptr<vespalib::eval::Value> tensor;
     if (length != 0) {
         nbostream wrapStream(_stream.peek(), length);
-        tensor = EngineOrFactory::get().decode(wrapStream);
+        tensor = vespalib::eval::decode_value(wrapStream, FastValueBuilderFactory::get());
         if (wrapStream.size() != 0) {
             throw DeserializeException("Leftover bytes deserializing tensor field value.", VESPA_STRLOC);
         }
     }
-    value.assignDeserialized(std::move(tensor));
     _stream.adjustReadPos(length);
+    return tensor;
 }
 
 void VespaDocumentDeserializer::read(ReferenceFieldValue& value) {

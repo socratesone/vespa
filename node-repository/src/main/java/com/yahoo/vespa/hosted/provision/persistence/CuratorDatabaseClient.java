@@ -5,10 +5,12 @@ import com.google.common.util.concurrent.UncheckedTimeoutException;
 import com.yahoo.component.Version;
 import com.yahoo.config.provision.ApplicationId;
 import com.yahoo.config.provision.ApplicationLockException;
+import com.yahoo.config.provision.ApplicationTransaction;
 import com.yahoo.config.provision.DockerImage;
 import com.yahoo.config.provision.HostName;
 import com.yahoo.config.provision.NodeFlavors;
 import com.yahoo.config.provision.NodeType;
+import com.yahoo.config.provision.TenantName;
 import com.yahoo.config.provision.Zone;
 import com.yahoo.path.Path;
 import com.yahoo.transaction.NestedTransaction;
@@ -66,10 +68,11 @@ public class CuratorDatabaseClient {
     private static final Path inactiveJobsPath = root.append("inactiveJobs");
     private static final Path infrastructureVersionsPath = root.append("infrastructureVersions");
     private static final Path osVersionsPath = root.append("osVersions");
-    private static final Path dockerImagesPath = root.append("dockerImages");
+    private static final Path containerImagesPath = root.append("dockerImages");
     private static final Path firmwareCheckPath = root.append("firmwareCheck");
+    private static final Path archiveUrisPath = root.append("archiveUris");
 
-    private static final Duration defaultLockTimeout = Duration.ofMinutes(2);
+    private static final Duration defaultLockTimeout = Duration.ofMinutes(6);
 
     private final NodeSerializer nodeSerializer;
     private final CuratorDatabase db;
@@ -99,8 +102,9 @@ public class CuratorDatabaseClient {
         db.create(inactiveJobsPath);
         db.create(infrastructureVersionsPath);
         db.create(osVersionsPath);
-        db.create(dockerImagesPath);
+        db.create(containerImagesPath);
         db.create(firmwareCheckPath);
+        db.create(archiveUrisPath);
         db.create(loadBalancersPath);
         provisionIndexCounter.initialize(100);
     }
@@ -213,7 +217,7 @@ public class CuratorDatabaseClient {
                                     toState.isAllocated() ? node.allocation() : Optional.empty(),
                                     node.history().recordStateTransition(node.state(), toState, agent, clock.instant()),
                                     node.type(), node.reports(), node.modelName(), node.reservedTo(),
-                                    node.switchHostname());
+                                    node.exclusiveTo(), node.switchHostname());
             writeNode(toState, curatorTransaction, node, newNode);
             writtenNodes.add(newNode);
         }
@@ -260,6 +264,8 @@ public class CuratorDatabaseClient {
     /**
      * Returns all nodes which are in one of the given states.
      * If no states are given this returns all nodes.
+     *
+     * @return the nodes in a mutable list owned by the caller
      */
     public List<Node> readNodes(Node.State ... states) {
         List<Node> nodes = new ArrayList<>();
@@ -272,16 +278,6 @@ public class CuratorDatabaseClient {
                 node.ifPresent(nodes::add); // node might disappear between getChildren and getNode
             }
         }
-        return nodes;
-    }
-
-    /** 
-     * Returns all nodes allocated to the given application which are in one of the given states 
-     * If no states are given this returns all nodes.
-     */
-    public List<Node> readNodes(ApplicationId applicationId, Node.State ... states) {
-        List<Node> nodes = readNodes(states);
-        nodes.removeIf(node -> ! node.allocation().isPresent() || ! node.allocation().get().owner().equals(applicationId));
         return nodes;
     }
 
@@ -338,6 +334,7 @@ public class CuratorDatabaseClient {
             case ready: return "ready";
             case reserved: return "reserved";
             case deprovisioned: return "deprovisioned";
+            case breakfixed: return "breakfixed";
             default: throw new RuntimeException("Node state " + state + " does not map to a directory name");
         }
     }
@@ -380,10 +377,10 @@ public class CuratorDatabaseClient {
                                         ApplicationSerializer.toJson(application)));
     }
 
-    public void deleteApplication(ApplicationId application, NestedTransaction transaction) {
-        if (db.exists(applicationPath(application)))
-            db.newCuratorTransactionIn(transaction)
-              .add(CuratorOperations.delete(applicationPath(application).getAbsolute()));
+    public void deleteApplication(ApplicationTransaction transaction) {
+        if (db.exists(applicationPath(transaction.application())))
+            db.newCuratorTransactionIn(transaction.nested())
+              .add(CuratorOperations.delete(applicationPath(transaction.application()).getAbsolute()));
     }
 
     private Path applicationPath(ApplicationId id) {
@@ -432,21 +429,21 @@ public class CuratorDatabaseClient {
         return db.lock(lockPath.append("osVersionsLock"), defaultLockTimeout);
     }
 
-    // Docker images -----------------------------------------------------------
+    // Container images -----------------------------------------------------------
 
-    public Map<NodeType, DockerImage> readDockerImages() {
-        return read(dockerImagesPath, NodeTypeDockerImagesSerializer::fromJson).orElseGet(TreeMap::new);
+    public Map<NodeType, DockerImage> readContainerImages() {
+        return read(containerImagesPath, NodeTypeContainerImagesSerializer::fromJson).orElseGet(TreeMap::new);
     }
 
-    public void writeDockerImages(Map<NodeType, DockerImage> dockerImages) {
+    public void writeContainerImages(Map<NodeType, DockerImage> images) {
         NestedTransaction transaction = new NestedTransaction();
         CuratorTransaction curatorTransaction = db.newCuratorTransactionIn(transaction);
-        curatorTransaction.add(CuratorOperations.setData(dockerImagesPath.getAbsolute(),
-                NodeTypeDockerImagesSerializer.toJson(dockerImages)));
+        curatorTransaction.add(CuratorOperations.setData(containerImagesPath.getAbsolute(),
+                                                         NodeTypeContainerImagesSerializer.toJson(images)));
         transaction.commit();
     }
 
-    public Lock lockDockerImages() {
+    public Lock lockContainerImages() {
         return db.lock(lockPath.append("dockerImagesLock"), defaultLockTimeout);
     }
 
@@ -465,6 +462,24 @@ public class CuratorDatabaseClient {
     /** Returns the instant after which a firmware check is required, if any. */
     public Optional<Instant> readFirmwareCheck() {
         return read(firmwareCheckPath, data -> Instant.ofEpochMilli(Long.parseLong(new String(data))));
+    }
+
+    // Archive URIs -----------------------------------------------------------
+
+    public void writeArchiveUris(Map<TenantName, String> archiveUris) {
+        byte[] data = TenantArchiveUriSerializer.toJson(archiveUris);
+        NestedTransaction transaction = new NestedTransaction();
+        CuratorTransaction curatorTransaction = db.newCuratorTransactionIn(transaction);
+        curatorTransaction.add(CuratorOperations.setData(archiveUrisPath.getAbsolute(), data));
+        transaction.commit();
+    }
+
+    public Map<TenantName, String> readArchiveUris() {
+        return read(archiveUrisPath, TenantArchiveUriSerializer::fromJson).orElseGet(Map::of);
+    }
+
+    public Lock lockArchiveUris() {
+        return db.lock(lockPath.append("archiveUris"), defaultLockTimeout);
     }
 
     // Load balancers -----------------------------------------------------------
@@ -518,15 +533,15 @@ public class CuratorDatabaseClient {
                  .collect(Collectors.toUnmodifiableList());
     }
 
-    /** Returns a given number of unique provision indexes */
-    public List<Integer> getProvisionIndexes(int numIndexes) {
-        if (numIndexes < 1)
-            throw new IllegalArgumentException("numIndexes must be a positive integer, was " + numIndexes);
+    /** Returns a given number of unique provision indices */
+    public List<Integer> readProvisionIndices(int count) {
+        if (count < 1)
+            throw new IllegalArgumentException("count must be a positive integer, was " + count);
 
-        int firstProvisionIndex = (int) provisionIndexCounter.add(numIndexes) - numIndexes;
-        return IntStream.range(0, numIndexes)
-                .mapToObj(i -> firstProvisionIndex + i)
-                .collect(Collectors.toList());
+        int firstIndex = (int) provisionIndexCounter.add(count) - count;
+        return IntStream.range(0, count)
+                        .mapToObj(i -> firstIndex + i)
+                        .collect(Collectors.toList());
     }
 
     public CacheStats cacheStats() {

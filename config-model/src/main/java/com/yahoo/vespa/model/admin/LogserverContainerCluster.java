@@ -1,4 +1,4 @@
-// Copyright 2019 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Verizon Media. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.model.admin;
 
 import com.yahoo.config.model.deploy.DeployState;
@@ -14,10 +14,11 @@ import com.yahoo.vespa.model.container.component.SystemBindingPattern;
 public class LogserverContainerCluster extends ContainerCluster<LogserverContainer> {
 
     public LogserverContainerCluster(AbstractConfigProducer<?> parent, String name, DeployState deployState) {
-        super(parent, name, name, deployState);
+        super(parent, name, name, deployState, true);
 
         addDefaultHandlersWithVip();
         addLogHandler();
+        setJvmGCOptions(deployState.getProperties().jvmGCOptions());
     }
 
     @Override
@@ -26,8 +27,8 @@ public class LogserverContainerCluster extends ContainerCluster<LogserverContain
     @Override
     public void getConfig(QrStartConfig.Builder builder) {
         super.getConfig(builder);
-        builder.jvm.heapsize(384)
-               .verbosegc(true);
+        builder.jvm.heapsize(128)
+                   .verbosegc(true);
     }
 
     protected boolean messageBusEnabled() { return false; }

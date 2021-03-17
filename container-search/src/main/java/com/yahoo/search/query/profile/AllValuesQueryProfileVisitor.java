@@ -3,9 +3,6 @@ package com.yahoo.search.query.profile;
 
 import com.yahoo.processing.request.CompoundName;
 import com.yahoo.search.query.profile.compiled.ValueWithSource;
-import com.yahoo.search.query.profile.types.FieldDescription;
-import com.yahoo.search.query.profile.types.QueryProfileFieldType;
-import com.yahoo.search.query.profile.types.QueryProfileType;
 
 import java.util.Collections;
 import java.util.HashMap;
@@ -16,11 +13,11 @@ import java.util.Map;
  */
 final class AllValuesQueryProfileVisitor extends PrefixQueryProfileVisitor {
 
-    private Map<String, ValueWithSource> values = new HashMap<>();
+    private final Map<String, ValueWithSource> values = new HashMap<>();
 
     /* Lists all values starting at prefix */
-    public AllValuesQueryProfileVisitor(CompoundName prefix) {
-        super(prefix);
+    public AllValuesQueryProfileVisitor(CompoundName prefix, CompoundNameChildCache pathCache) {
+        super(prefix, pathCache);
     }
 
     @Override
@@ -46,7 +43,7 @@ final class AllValuesQueryProfileVisitor extends PrefixQueryProfileVisitor {
                           QueryProfile owner,
                           DimensionValues variant,
                           DimensionBinding binding) {
-        CompoundName fullName = currentPrefix.append(key);
+        CompoundName fullName = cache.append(currentPrefix, key);
 
         ValueWithSource existing = values.get(fullName.toString());
 

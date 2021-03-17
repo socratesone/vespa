@@ -4,6 +4,7 @@
 #include "testandsethelper.h"
 #include "persistenceutil.h"
 #include "fieldvisitor.h"
+#include <vespa/persistence/spi/persistenceprovider.h>
 #include <vespa/document/select/parser.h>
 #include <vespa/document/repo/documenttyperepo.h>
 #include <vespa/vespalib/util/stringfmt.h>
@@ -24,8 +25,9 @@ void TestAndSetHelper::resolveDocumentType(const document::DocumentTypeRepo & do
     }
 }
 
-void TestAndSetHelper::parseDocumentSelection(const document::DocumentTypeRepo & documentTypeRepo) {
-    document::select::Parser parser(documentTypeRepo, _env._bucketFactory);
+void TestAndSetHelper::parseDocumentSelection(const document::DocumentTypeRepo & documentTypeRepo,
+                                              const document::BucketIdFactory & bucketIdFactory) {
+    document::select::Parser parser(documentTypeRepo, bucketIdFactory);
 
     try {
         _docSelectionUp = parser.parse(_cmd.getCondition().getSelection());
@@ -35,10 +37,11 @@ void TestAndSetHelper::parseDocumentSelection(const document::DocumentTypeRepo &
 }
 
 spi::GetResult TestAndSetHelper::retrieveDocument(const document::FieldSet & fieldSet, spi::Context & context) {
-    return _spi.get(_env.getBucket(_docId, _cmd.getBucket()), fieldSet,_cmd.getDocumentId(),context);
+    return _spi.get(_env.getBucket(_docId, _cmd.getBucket()), fieldSet, _cmd.getDocumentId(), context);
 }
 
 TestAndSetHelper::TestAndSetHelper(const PersistenceUtil & env, const spi::PersistenceProvider  & spi,
+                                   const document::BucketIdFactory & bucketFactory,
                                    const api::TestAndSetCommand & cmd, bool missingDocumentImpliesMatch)
     : _env(env),
       _spi(spi),
@@ -47,8 +50,9 @@ TestAndSetHelper::TestAndSetHelper(const PersistenceUtil & env, const spi::Persi
       _docTypePtr(_cmd.getDocumentType()),
       _missingDocumentImpliesMatch(missingDocumentImpliesMatch)
 {
-    resolveDocumentType(*env._repo);
-    parseDocumentSelection(*env._repo);
+    const auto & repo = _env.getDocumentTypeRepo();
+    resolveDocumentType(repo);
+    parseDocumentSelection(repo, bucketFactory);
 }
 
 TestAndSetHelper::~TestAndSetHelper() = default;

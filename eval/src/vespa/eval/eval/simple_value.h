@@ -3,13 +3,18 @@
 #pragma once
 
 #include "value.h"
-#include <vespa/vespalib/stllike/string.h>
+#include <vespa/vespalib/util/shared_string_repo.h>
 #include <vector>
 #include <map>
 
-namespace vespalib { class Stash; }
+namespace vespalib {
+class Stash;
+class nbostream;
+}
 
 namespace vespalib::eval {
+
+class TensorSpec;
 
 /**
  * A simple implementation of a generic value that can also be used to
@@ -21,7 +26,8 @@ namespace vespalib::eval {
 class SimpleValue : public Value, public Value::Index
 {
 private:
-    using Labels = std::vector<vespalib::string>;
+    using Handle = SharedStringRepo::Handle;
+    using Labels = std::vector<Handle>;
 
     ValueType _type;
     size_t _num_mapped_dims;
@@ -31,6 +37,7 @@ protected:
     size_t num_mapped_dims() const { return _num_mapped_dims; }
     size_t subspace_size() const { return _subspace_size; }
     void add_mapping(ConstArrayRef<vespalib::stringref> addr);
+    void add_mapping(ConstArrayRef<string_id> addr);
     MemoryUsage estimate_extra_memory_usage() const;
 public:
     SimpleValue(const ValueType &type, size_t num_mapped_dims_in, size_t subspace_size_in);
@@ -38,7 +45,10 @@ public:
     const ValueType &type() const override { return _type; }
     const Value::Index &index() const override { return *this; }
     size_t size() const override { return _index.size(); }
-    std::unique_ptr<View> create_view(const std::vector<size_t> &dims) const override;
+    std::unique_ptr<View> create_view(ConstArrayRef<size_t> dims) const override;
+    static Value::UP from_spec(const TensorSpec &spec);
+    static Value::UP from_value(const Value &value);
+    static Value::UP from_stream(nbostream &stream);
 };
 
 /**
@@ -54,6 +64,7 @@ public:
     ~SimpleValueT() override;
     TypedCells cells() const override { return TypedCells(ConstArrayRef<T>(_cells)); }
     ArrayRef<T> add_subspace(ConstArrayRef<vespalib::stringref> addr) override;
+    ArrayRef<T> add_subspace(ConstArrayRef<string_id> addr) override;
     std::unique_ptr<Value> build(std::unique_ptr<ValueBuilder<T>> self) override {
         if (num_mapped_dims() == 0) {
             assert(size() == 1);
@@ -79,7 +90,7 @@ class SimpleValueBuilderFactory : public ValueBuilderFactory {
 private:
     SimpleValueBuilderFactory();
     static SimpleValueBuilderFactory _factory;
-    std::unique_ptr<ValueBuilderBase> create_value_builder_base(const ValueType &type,
+    std::unique_ptr<ValueBuilderBase> create_value_builder_base(const ValueType &type, bool transient,
             size_t num_mapped_dims, size_t subspace_size, size_t expected_subspaces) const override;
 public:
     static const SimpleValueBuilderFactory &get() { return _factory; }

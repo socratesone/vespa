@@ -1,9 +1,9 @@
 // Copyright 2017 Yahoo Holdings. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
-#include <vespa/eval/eval/engine_or_factory.h>
 #include <vespa/eval/eval/value.h>
+#include <vespa/eval/eval/simple_value.h>
+#include <vespa/eval/eval/tensor_spec.h>
 #include <vespa/eval/eval/test/value_compare.h>
-#include <vespa/eval/tensor/default_tensor_engine.h>
 #include <vespa/searchcommon/attribute/search_context_params.h>
 #include <vespa/searchlib/fef/termfieldmatchdata.h>
 #include <vespa/searchlib/tensor/i_tensor_attribute.h>
@@ -16,10 +16,10 @@ using search::tensor::TensorAttribute;
 using vespalib::eval::Value;
 using vespalib::eval::ValueType;
 using vespalib::eval::TensorSpec;
-using vespalib::eval::EngineOrFactory;
+using vespalib::eval::SimpleValue;
 
 Value::UP createTensor(const TensorSpec &spec) {
-    return EngineOrFactory::get().from_spec(spec);
+    return SimpleValue::from_spec(spec);
 }
 
 namespace search::attribute {
@@ -224,6 +224,20 @@ TEST_F("isUndefined() works for primitive attribute type", Fixture) {
 
     EXPECT_FALSE(f.get_imported_attr()->isUndefined(DocId(3))); // Mapped
     EXPECT_TRUE(f.get_imported_attr()->isUndefined(DocId(2))); // Not mapped
+}
+
+TEST_F("original lid range is used by read guard", Fixture)
+{
+    reset_with_single_value_reference_mappings<IntegerAttribute, int32_t>(
+            f, BasicType::INT32,
+            {{DocId(1), dummy_gid(3), DocId(3), 1234}});
+    auto first_guard = f.get_imported_attr();
+    add_n_docs_with_undefined_values(*f.reference_attr, 1);
+    f.map_reference(DocId(10), dummy_gid(3), DocId(3));
+    auto second_guard = f.get_imported_attr();
+    EXPECT_EQUAL(1234, second_guard->getInt(DocId(10)));
+    EXPECT_NOT_EQUAL(1234, first_guard->getInt(DocId(10)));
+    EXPECT_EQUAL(getUndefined<int>(), first_guard->getInt(DocId(10)));
 }
 
 struct SingleStringAttrFixture : Fixture {

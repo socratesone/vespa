@@ -4,7 +4,6 @@
 #include "generic_join.h"
 #include <vespa/eval/eval/value.h>
 #include <vespa/eval/eval/wrap_param.h>
-#include <vespa/eval/tensor/dense/dense_tensor_view.h>
 #include <vespa/vespalib/util/overload.h>
 #include <vespa/vespalib/util/stash.h>
 #include <vespa/vespalib/util/typify.h>
@@ -27,9 +26,10 @@ struct ConcatParam
     DenseConcatPlan dense_plan;
     const ValueBuilderFactory &factory;
 
-    ConcatParam(const ValueType &lhs_type, const ValueType &rhs_type,
+    ConcatParam(const ValueType &res_type_in,
+                const ValueType &lhs_type, const ValueType &rhs_type,
                 const vespalib::string &dimension, const ValueBuilderFactory &factory_in)
-      : res_type(ValueType::concat(lhs_type, rhs_type, dimension)),
+      : res_type(res_type_in),
         sparse_plan(lhs_type, rhs_type),
         dense_plan(lhs_type, rhs_type, dimension, res_type),
         factory(factory_in)
@@ -48,10 +48,10 @@ generic_concat(const Value &a, const Value &b,
     auto a_cells = a.cells().typify<LCT>();
     auto b_cells = b.cells().typify<RCT>();
     SparseJoinState sparse(sparse_plan, a.index(), b.index());
-    auto builder = factory.create_value_builder<OCT>(res_type,
-                                                     sparse_plan.sources.size(),
-                                                     dense_plan.output_size,
-                                                     sparse.first_index.size());
+    auto builder = factory.create_transient_value_builder<OCT>(res_type,
+                                                               sparse_plan.sources.size(),
+                                                               dense_plan.output_size,
+                                                               sparse.first_index.size());
     auto outer = sparse.first_index.create_view({});
     auto inner = sparse.second_index.create_view(sparse.second_view_dims);
     outer->lookup({});
@@ -88,6 +88,40 @@ void my_generic_concat_op(State &state, uint64_t param_in) {
     state.pop_pop_push(result_ref);
 }
 
+template <typename LCT, typename RCT, typename OCT, bool forward_lhs>
+void my_mixed_dense_concat_op(State &state, uint64_t param_in) {
+    const auto &param = unwrap_param<ConcatParam>(param_in);
+    const DenseConcatPlan &dense_plan = param.dense_plan;
+    auto lhs_cells = state.peek(1).cells().typify<LCT>();
+    auto rhs_cells = state.peek(0).cells().typify<RCT>();
+    const auto &index = state.peek(forward_lhs ? 1 : 0).index();
+    size_t num_subspaces = index.size();
+    size_t num_out_cells = dense_plan.output_size * num_subspaces;
+    ArrayRef<OCT> out_cells = state.stash.create_uninitialized_array<OCT>(num_out_cells);
+    OCT *dst = out_cells.begin();
+    const LCT *lhs = lhs_cells.begin();
+    const RCT *rhs = rhs_cells.begin();
+    auto copy_left = [&](size_t in_idx, size_t out_idx) { dst[out_idx] = lhs[in_idx]; };
+    auto copy_right = [&](size_t in_idx, size_t out_idx) { dst[out_idx] = rhs[in_idx]; };
+    for (size_t i = 0; i < num_subspaces; ++i) {
+        dense_plan.left.execute(0, 0, copy_left);
+        dense_plan.right.execute(0, dense_plan.right_offset, copy_right);
+        if (forward_lhs) {
+            lhs += dense_plan.left.input_size;
+        } else {
+            rhs += dense_plan.right.input_size;
+        }
+        dst += dense_plan.output_size;
+    }
+    if (forward_lhs) {
+        assert(lhs == lhs_cells.end());
+    } else {
+        assert(rhs == rhs_cells.end());
+    }
+    assert(dst == out_cells.end());
+    state.pop_pop_push(state.stash.create<ValueView>(param.res_type, index, TypedCells(out_cells)));
+}
+
 template <typename LCT, typename RCT, typename OCT>
 void my_dense_simple_concat_op(State &state, uint64_t param_in) {
     const auto &param = unwrap_param<ConcatParam>(param_in);
@@ -95,7 +129,7 @@ void my_dense_simple_concat_op(State &state, uint64_t param_in) {
     const Value &rhs = state.peek(0);
     const auto a = lhs.cells().typify<LCT>();
     const auto b = rhs.cells().typify<RCT>();
-    ArrayRef<OCT> result = state.stash.create_array<OCT>(a.size() + b.size());
+    ArrayRef<OCT> result = state.stash.create_uninitialized_array<OCT>(a.size() + b.size());
     auto pos = result.begin();
     for (size_t i = 0; i < a.size(); ++i) {
         *pos++ = a[i];
@@ -103,12 +137,16 @@ void my_dense_simple_concat_op(State &state, uint64_t param_in) {
     for (size_t i = 0; i < b.size(); ++i) {
         *pos++ = b[i];
     }
-    Value &ref = state.stash.create<tensor::DenseTensorView>(param.res_type, TypedCells(result));
+    Value &ref = state.stash.create<DenseValueView>(param.res_type, TypedCells(result));
     state.pop_pop_push(ref);
 }
 
 struct SelectGenericConcatOp {
-    template <typename LCT, typename RCT, typename OCT> static auto invoke(const ConcatParam &param) {
+    template <typename LCM, typename RCM> static auto invoke(const ConcatParam &param) {
+        using LCT = CellValueType<LCM::value.cell_type>;
+        using RCT = CellValueType<RCM::value.cell_type>;
+        constexpr CellMeta ocm = CellMeta::concat(LCM::value, RCM::value);
+        using OCT = CellValueType<ocm.cell_type>;
         if (param.sparse_plan.sources.empty() && param.res_type.is_dense()) {
             auto & dp = param.dense_plan;
             if ((dp.output_size == (dp.left.input_size + dp.right.input_size))
@@ -116,6 +154,12 @@ struct SelectGenericConcatOp {
             {
                 return my_dense_simple_concat_op<LCT, RCT, OCT>;
             }
+        }
+        if (param.sparse_plan.should_forward_lhs_index()) {
+            return my_mixed_dense_concat_op<LCT, RCT, OCT, true>;
+        }
+        if (param.sparse_plan.should_forward_rhs_index()) {
+            return my_mixed_dense_concat_op<LCT, RCT, OCT, false>;
         }
         return my_generic_concat_op<LCT, RCT, OCT>;
     }
@@ -130,7 +174,7 @@ DenseConcatPlan::InOutLoop::fill_from(const ValueType &in_type,
                                       std::string concat_dimension,
                                       const ValueType &out_type)
 {
-    std::vector<size_t> out_loop_cnt;
+    SmallVector<size_t> out_loop_cnt;
     Case prev_case = Case::NONE;
     auto update_plan = [&](Case my_case, size_t in_size, size_t out_size, size_t in_val, size_t out_val) {
         if (my_case == prev_case) {
@@ -183,18 +227,6 @@ DenseConcatPlan::InOutLoop::fill_from(const ValueType &in_type,
     return std::make_pair(offset_for_concat, output_size_for_concat);
 }
 
-InterpretedFunction::Instruction
-GenericConcat::make_instruction(const ValueType &lhs_type, const ValueType &rhs_type,
-                                const vespalib::string &dimension,
-                                const ValueBuilderFactory &factory, Stash &stash)
-{
-    auto &param = stash.create<ConcatParam>(lhs_type, rhs_type, dimension, factory);
-    auto fun = typify_invoke<3,TypifyCellType,SelectGenericConcatOp>(
-            lhs_type.cell_type(), rhs_type.cell_type(), param.res_type.cell_type(),
-            param);
-    return Instruction(fun, wrap_param<ConcatParam>(param));
-}
-
 DenseConcatPlan::DenseConcatPlan(const ValueType &lhs_type,
                                  const ValueType &rhs_type, 
                                  std::string concat_dimension,
@@ -208,5 +240,20 @@ DenseConcatPlan::DenseConcatPlan(const ValueType &lhs_type,
 
 DenseConcatPlan::~DenseConcatPlan() = default;
 DenseConcatPlan::InOutLoop::~InOutLoop() = default;
+
+
+InterpretedFunction::Instruction
+GenericConcat::make_instruction(const ValueType &result_type,
+                                const ValueType &lhs_type, const ValueType &rhs_type,
+                                const vespalib::string &dimension,
+                                const ValueBuilderFactory &factory, Stash &stash)
+{
+    auto &param = stash.create<ConcatParam>(result_type, lhs_type, rhs_type, dimension, factory);
+    assert(result_type == ValueType::concat(lhs_type, rhs_type, dimension));
+    auto fun = typify_invoke<2,TypifyCellMeta,SelectGenericConcatOp>(
+            lhs_type.cell_meta(), rhs_type.cell_meta(),
+            param);
+    return Instruction(fun, wrap_param<ConcatParam>(param));
+}
 
 } // namespace

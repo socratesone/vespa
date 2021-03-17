@@ -348,7 +348,7 @@
                                 <id>generate-javadoc</id>
                                 <phase>package</phase>
                                 <goals>
-                                    <goal>javadoc</goal>
+                                    <goal>javadoc-no-fork</goal>
                                 </goals>
                             </execution>
                             <execution>
@@ -413,6 +413,16 @@
             <dependency>
                 <groupId>com.amazonaws</groupId>
                 <artifactId>aws-java-sdk-core</artifactId>
+                <version>${aws.sdk.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.amazonaws</groupId>
+                <artifactId>aws-java-sdk-ssm</artifactId>
+                <version>${aws.sdk.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.amazonaws</groupId>
+                <artifactId>aws-java-sdk-sts</artifactId>
                 <version>${aws.sdk.version}</version>
             </dependency>
             <dependency>
@@ -570,9 +580,19 @@
                 <version>${apache.httpclient.version}</version>
             </dependency>
             <dependency>
+                <groupId>org.apache.commons</groupId>
+                <artifactId>commons-csv</artifactId>
+                <version>1.8</version>
+            </dependency>
+            <dependency>
                 <groupId>org.apache.httpcomponents</groupId>
                 <artifactId>httpcore</artifactId>
                 <version>${apache.httpcore.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.apache.httpcomponents.client5</groupId>
+                <artifactId>httpclient5</artifactId>
+                <version>${apache.httpclient5.version}</version>
             </dependency>
             <dependency>
                 <groupId>org.apache.httpcomponents</groupId>
@@ -691,6 +711,11 @@
             </dependency>
             <dependency>
                 <groupId>org.junit.jupiter</groupId>
+                <artifactId>junit-jupiter</artifactId>
+                <version>${junit.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.junit.jupiter</groupId>
                 <artifactId>junit-jupiter-engine</artifactId>
                 <version>${junit.version}</version>
             </dependency>
@@ -741,6 +766,11 @@
                 <artifactId>xercesImpl</artifactId>
                 <version>2.12.0</version>
             </dependency>
+            <dependency>
+                <groupId>io.airlift</groupId>
+                <artifactId>aircompressor</artifactId>
+                <version>0.17</version>
+            </dependency>
         </dependencies>
     </dependencyManagement>
 
@@ -749,20 +779,21 @@
         <antlr4.version>4.5</antlr4.version>
         <apache.httpclient.version>4.5.12</apache.httpclient.version>
         <apache.httpcore.version>4.4.13</apache.httpcore.version>
+        <apache.httpclient5.version>5.0.3</apache.httpclient5.version>
         <asm.version>7.0</asm.version>
         <!-- Athenz dependencies. Make sure these dependencies match those in Vespa's internal repositories -->
         <athenz.version>1.8.49</athenz.version>
-        <aws.sdk.version>1.11.542</aws.sdk.version>
+        <aws.sdk.version>1.11.974</aws.sdk.version>
         <!-- WARNING: If you change curator version, you also need to update
                  zkfacade/src/main/java/org/apache/curator/**/package-info.java
              using something like
                  find zkfacade/src/main/java/org/apache/curator -name package-info.java | \
-                     xargs perl -pi -e 's/major = [0-9]+, minor = [0-9]+, micro = [0-9]+/major = 2, minor = 9, micro = 1/g'
+                     xargs perl -pi -e 's/major = [0-9]+, minor = [0-9]+, micro = [0-9]+/major = 4, minor = 3, micro = 0/g'
         -->
-        <curator.version>2.13.0</curator.version>
+        <curator.version>5.1.0</curator.version>
         <jna.version>4.5.2</jna.version>
         <commons.math3.version>3.6.1</commons.math3.version>
-        <junit.version>5.6.2</junit.version>
+        <junit.version>5.7.0</junit.version>
         <maven-assembly-plugin.version>3.1.1</maven-assembly-plugin.version>
         <!-- TODO: in order to upgrade above 4.1.0, we probably need to convert fat-model-deps to a jar artifact. -->
         <maven-bundle-plugin.version>4.1.0</maven-bundle-plugin.version>
@@ -782,8 +813,7 @@
         <protobuf.version>3.7.0</protobuf.version>
         <surefire.version>2.22.0</surefire.version>
         <tensorflow.version>1.12.0</tensorflow.version>
-        <zookeeper.client.version>3.5.8</zookeeper.client.version>
-        <zookeeper.server.version>3.5.6</zookeeper.server.version>
+        <zookeeper.client.version>3.6.2</zookeeper.client.version>
 
         <doclint>all</doclint>
         <test.hide>true</test.hide>

@@ -9,7 +9,6 @@
 #include "operation_routing_snapshot.h"
 #include "outdated_nodes_map.h"
 #include <vespa/document/bucket/bucket.h>
-#include <vespa/storageapi/messageapi/returncode.h>
 #include <vespa/storageapi/message/bucket.h>
 #include <vespa/vdslib/state/clusterstate.h>
 #include <vespa/storage/common/storagelink.h>
@@ -34,7 +33,6 @@ class BucketDBUpdater : public framework::StatusReporter,
                         public api::MessageHandler
 {
 public:
-    using OutdatedNodes = dbtransition::OutdatedNodes;
     using OutdatedNodesMap = dbtransition::OutdatedNodesMap;
     BucketDBUpdater(Distributor& owner,
                     DistributorBucketSpaceRepo& bucketSpaceRepo,
@@ -44,9 +42,6 @@ public:
     ~BucketDBUpdater() override;
 
     void flush();
-    // If there is a pending state, returns ownership state of bucket in it.
-    // Otherwise always returns "is owned", i.e. it must also be checked in the current state.
-    BucketOwnership checkOwnershipInPendingState(const document::Bucket&) const;
     const lib::ClusterState* pendingClusterStateOrNull(const document::BucketSpace&) const;
     void recheckBucketInfo(uint32_t nodeIdx, const document::Bucket& bucket);
 
@@ -233,6 +228,7 @@ private:
         std::vector<bool> _available_nodes;
         std::vector<BucketDatabase::Entry> _nonOwnedBuckets;
         size_t _removed_buckets;
+        size_t _removed_documents;
 
         uint16_t _localIndex;
         const lib::Distribution& _distribution;

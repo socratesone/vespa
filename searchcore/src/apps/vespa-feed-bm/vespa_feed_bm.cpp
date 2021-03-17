@@ -15,7 +15,6 @@
 #include <vespa/config-bucketspaces.h>
 #include <vespa/config-imported-fields.h>
 #include <vespa/config-indexschema.h>
-#include <vespa/config-load-type.h>
 #include <vespa/config-persistence.h>
 #include <vespa/config-rank-profiles.h>
 #include <vespa/config-slobroks.h>
@@ -39,6 +38,7 @@
 #include <vespa/messagebus/testlib/slobrok.h>
 #include <vespa/metrics/config-metricsmanager.h>
 #include <vespa/searchcommon/common/schemaconfigurer.h>
+#include <vespa/searchcore/proton/common/alloc_config.h>
 #include <vespa/searchcore/proton/common/hw_info.h>
 #include <vespa/searchcore/proton/matching/querylimiter.h>
 #include <vespa/searchcore/proton/metrics/metricswireservice.h>
@@ -51,6 +51,8 @@
 #include <vespa/searchcore/proton/server/fileconfigmanager.h>
 #include <vespa/searchcore/proton/server/memoryconfigstore.h>
 #include <vespa/searchcore/proton/server/persistencehandlerproxy.h>
+#include <vespa/searchcore/proton/server/threading_service_config.h>
+#include <vespa/searchcore/proton/test/disk_mem_usage_notifier.h>
 #include <vespa/searchlib/index/dummyfileheadercontext.h>
 #include <vespa/searchlib/transactionlog/translogserver.h>
 #include <vespa/searchsummary/config/config-juniperrc.h>
@@ -72,8 +74,10 @@
 #include <vespa/vespalib/io/fileutil.h>
 #include <vespa/vespalib/testkit/testapp.h>
 #include <vespa/vespalib/util/lambdatask.h>
+#include <vespa/vespalib/util/size_literals.h>
 #include <getopt.h>
 #include <iostream>
+#include <thread>
 
 #include <vespa/log/log.h>
 LOG_SETUP("vespa-feed-bm");
@@ -85,7 +89,6 @@ using namespace std::chrono_literals;
 using namespace vespa::config::search::core;
 using namespace vespa::config::search::summary;
 using namespace vespa::config::search;
-using vespa::config::content::LoadTypeConfigBuilder;
 using vespa::config::content::PersistenceConfigBuilder;
 using vespa::config::content::StorDistributionConfigBuilder;
 using vespa::config::content::StorFilestorConfigBuilder;
@@ -146,6 +149,7 @@ using storage::rpc::StorageApiRpcService;
 using storage::spi::PersistenceProvider;
 using vespalib::compression::CompressionConfig;
 using vespalib::makeLambdaTask;
+using proton::ThreadingServiceConfig;
 
 using DocumentDBMap = std::map<DocTypeName, std::shared_ptr<DocumentDB>>;
 
@@ -196,6 +200,8 @@ std::shared_ptr<DocumentDBConfig> make_document_db_config(std::shared_ptr<Docume
             schema,
             std::make_shared<DocumentDBMaintenanceConfig>(),
             search::LogDocumentStore::Config(),
+            std::make_shared<const ThreadingServiceConfig>(ThreadingServiceConfig::make(1)),
+            std::make_shared<const AllocConfig>(),
             "client",
             doc_type_name.getName());
 }
@@ -268,6 +274,7 @@ class BMParams {
     uint32_t _update_passes;
     uint32_t _remove_passes;
     uint32_t _rpc_network_threads;
+    uint32_t _rpc_events_before_wakeup;
     uint32_t _rpc_targets_per_node;
     uint32_t _response_threads;
     uint32_t _max_pending;
@@ -277,7 +284,8 @@ class BMParams {
     bool     _use_document_api;
     bool     _use_message_bus;
     bool     _use_storage_chain;
-    bool     _use_legacy_bucket_db;
+    bool     _use_async_message_handling_on_schedule;
+    uint32_t _bucket_db_stripe_bits;
     uint32_t get_start(uint32_t thread_id) const {
         return (_documents / _client_threads) * thread_id + std::min(thread_id, _documents % _client_threads);
     }
@@ -290,7 +298,8 @@ public:
           _put_passes(2),
           _update_passes(1),
           _remove_passes(2),
-          _rpc_network_threads(1), // Same default as in stor-communicationmanager.def
+          _rpc_network_threads(1), // Same default as previous in stor-communicationmanager.def
+          _rpc_events_before_wakeup(1), // Same default as in stor-communicationmanager.def
           _rpc_targets_per_node(1), // Same default as in stor-communicationmanager.def
           _response_threads(2), // Same default as in stor-filestor.def
           _max_pending(1000),
@@ -300,7 +309,8 @@ public:
           _use_document_api(false),
           _use_message_bus(false),
           _use_storage_chain(false),
-          _use_legacy_bucket_db(false)
+          _use_async_message_handling_on_schedule(false),
+          _bucket_db_stripe_bits(0)
     {
     }
     BMRange get_range(uint32_t thread_id) const {
@@ -315,6 +325,7 @@ public:
     uint32_t get_update_passes() const { return _update_passes; }
     uint32_t get_remove_passes() const { return _remove_passes; }
     uint32_t get_rpc_network_threads() const { return _rpc_network_threads; }
+    uint32_t get_rpc_events_before_wakup() const { return _rpc_events_before_wakeup; }
     uint32_t get_rpc_targets_per_node() const { return _rpc_targets_per_node; }
     uint32_t get_response_threads() const { return _response_threads; }
     bool get_enable_distributor() const { return _enable_distributor; }
@@ -322,7 +333,8 @@ public:
     bool get_use_document_api() const { return _use_document_api; }
     bool get_use_message_bus() const { return _use_message_bus; }
     bool get_use_storage_chain() const { return _use_storage_chain; }
-    bool get_use_legacy_bucket_db() const { return _use_legacy_bucket_db; }
+    bool get_use_async_message_handling_on_schedule() const { return _use_async_message_handling_on_schedule; }
+    uint32_t get_bucket_db_stripe_bits() const { return _bucket_db_stripe_bits; }
     void set_documents(uint32_t documents_in) { _documents = documents_in; }
     void set_max_pending(uint32_t max_pending_in) { _max_pending = max_pending_in; }
     void set_client_threads(uint32_t threads_in) { _client_threads = threads_in; }
@@ -332,15 +344,17 @@ public:
     void set_update_passes(uint32_t update_passes_in) { _update_passes = update_passes_in; }
     void set_remove_passes(uint32_t remove_passes_in) { _remove_passes = remove_passes_in; }
     void set_rpc_network_threads(uint32_t threads_in) { _rpc_network_threads = threads_in; }
+    void set_rpc_events_before_wakeup(uint32_t value) { _rpc_events_before_wakeup = value; }
     void set_rpc_targets_per_node(uint32_t targets_in) { _rpc_targets_per_node = targets_in; }
     void set_response_threads(uint32_t threads_in) { _response_threads = threads_in; }
-    void set_enable_distributor(bool enable_distributor_in) { _enable_distributor = enable_distributor_in; }
-    void set_enable_service_layer(bool enable_service_layer_in) { _enable_service_layer = enable_service_layer_in; }
-    void set_skip_get_spi_bucket_info(bool skip_get_spi_bucket_info_in) { _skip_get_spi_bucket_info = skip_get_spi_bucket_info_in; }
-    void set_use_document_api(bool use_document_api_in) { _use_document_api = use_document_api_in; }
-    void set_use_message_bus(bool use_message_bus_in) { _use_message_bus = use_message_bus_in; }
-    void set_use_storage_chain(bool use_storage_chain_in) { _use_storage_chain = use_storage_chain_in; }
-    void set_use_legacy_bucket_db(bool use_legacy_bucket_db_in) { _use_legacy_bucket_db = use_legacy_bucket_db_in; }
+    void set_enable_distributor(bool value) { _enable_distributor = value; }
+    void set_enable_service_layer(bool value) { _enable_service_layer = value; }
+    void set_skip_get_spi_bucket_info(bool value) { _skip_get_spi_bucket_info = value; }
+    void set_use_document_api(bool value) { _use_document_api = value; }
+    void set_use_message_bus(bool value) { _use_message_bus = value; }
+    void set_use_storage_chain(bool value) { _use_storage_chain = value; }
+    void set_use_async_message_handling_on_schedule(bool value) { _use_async_message_handling_on_schedule = value; }
+    void set_bucket_db_stripe_bits(uint32_t value) { _bucket_db_stripe_bits = value; }
     bool check() const;
     bool needs_service_layer() const { return _enable_service_layer || _enable_distributor || _use_storage_chain || _use_message_bus || _use_document_api; }
     bool needs_distributor() const { return _enable_distributor || _use_document_api; }
@@ -437,7 +451,6 @@ struct MyStorageConfig
     StorServerConfigBuilder       stor_server;
     StorStatusConfigBuilder       stor_status;
     BucketspacesConfigBuilder     bucketspaces;
-    LoadTypeConfigBuilder         load_type;
     MetricsmanagerConfigBuilder   metricsmanager;
     SlobroksConfigBuilder         slobroks;
     MessagebusConfigBuilder       messagebus;
@@ -455,7 +468,6 @@ struct MyStorageConfig
           stor_server(),
           stor_status(),
           bucketspaces(),
-          load_type(),
           metricsmanager(),
           slobroks(),
           messagebus()
@@ -479,15 +491,15 @@ struct MyStorageConfig
             dc.readyCopies = 1;
         }
         stor_server.isDistributor = distributor;
-        stor_server.useContentNodeBtreeBucketDb = !params.get_use_legacy_bucket_db();
+        stor_server.contentNodeBucketDbStripeBits = params.get_bucket_db_stripe_bits();
         if (distributor) {
             stor_server.rootFolder = "distributor";
         } else {
             stor_server.rootFolder = "storage";
         }
         make_slobroks_config(slobroks, slobrok_port);
-        stor_communicationmanager.useDirectStorageapiRpc = true;
         stor_communicationmanager.rpc.numNetworkThreads = params.get_rpc_network_threads();
+        stor_communicationmanager.rpc.eventsBeforeWakeup = params.get_rpc_events_before_wakup();
         stor_communicationmanager.rpc.numTargetsPerNode = params.get_rpc_targets_per_node();
         stor_communicationmanager.mbusport = mbus_port;
         stor_communicationmanager.rpcport = rpc_port;
@@ -509,7 +521,6 @@ struct MyStorageConfig
         set.addBuilder(config_id, &stor_server);
         set.addBuilder(config_id, &stor_status);
         set.addBuilder(config_id, &bucketspaces);
-        set.addBuilder(config_id, &load_type);
         set.addBuilder(config_id, &metricsmanager);
         set.addBuilder(config_id, &slobroks);
         set.addBuilder(config_id, &messagebus);
@@ -534,6 +545,8 @@ struct MyServiceLayerConfig : public MyStorageConfig
           stor_visitor()
     {
         stor_filestor.numResponseThreads = params.get_response_threads();
+        stor_filestor.numNetworkThreads = params.get_rpc_network_threads();
+        stor_filestor.useAsyncMessageHandlingOnSchedule = params.get_use_async_message_handling_on_schedule();
     }
 
     ~MyServiceLayerConfig();
@@ -646,6 +659,7 @@ struct PersistenceProviderFixture {
     std::shared_ptr<DocumentDB>                _document_db;
     MyPersistenceEngineOwner                   _persistence_owner;
     MyResourceWriteFilter                      _write_filter;
+    test::DiskMemUsageNotifier                 _disk_mem_usage_notifier;
     std::shared_ptr<PersistenceEngine>         _persistence_engine;
     std::unique_ptr<const FieldSetRepo>        _field_set_repo;
     uint32_t                                   _bucket_bits;
@@ -709,12 +723,13 @@ PersistenceProviderFixture::PersistenceProviderFixture(const BMParams& params)
       _clock(),
       _metrics_wire_service(),
       _config_stores(),
-      _summary_executor(8, 128 * 1024),
+      _summary_executor(8, 128_Ki),
       _document_db_owner(),
       _bucket_space(makeBucketSpace(_doc_type_name.getName())),
       _document_db(),
       _persistence_owner(),
       _write_filter(),
+      _disk_mem_usage_notifier(),
       _persistence_engine(),
       _field_set_repo(std::make_unique<const FieldSetRepo>(*_repo)),
       _bucket_bits(16),
@@ -734,7 +749,7 @@ PersistenceProviderFixture::PersistenceProviderFixture(const BMParams& params)
       _message_bus()
 {
     create_document_db(params);
-    _persistence_engine = std::make_unique<PersistenceEngine>(_persistence_owner, _write_filter, -1, false);
+    _persistence_engine = std::make_unique<PersistenceEngine>(_persistence_owner, _write_filter, _disk_mem_usage_notifier, -1, false);
     auto proxy = std::make_shared<PersistenceHandlerProxy>(_document_db);
     _persistence_engine->putHandler(_persistence_engine->getWLock(), _bucket_space, _doc_type_name, proxy);
     _service_layer_config.add_builders(_config_set);
@@ -794,11 +809,12 @@ PersistenceProviderFixture::create_document_db(const BMParams & params)
                                                 _document_db_owner,
                                                 _summary_executor,
                                                 _summary_executor,
+                                                *_persistence_engine,
                                                 _tls,
                                                 _metrics_wire_service,
                                                 _file_header_context,
                                                 _config_stores.getConfigStore(_doc_type_name.toString()),
-                                                std::make_shared<vespalib::ThreadStackExecutor>(16, 128 * 1024),
+                                                std::make_shared<vespalib::ThreadStackExecutor>(16, 128_Ki),
                                                 HwInfo());
     _document_db->start();
     _document_db->waitForOnlineState();
@@ -874,7 +890,8 @@ PersistenceProviderFixture::start_service_layer(const BMParams& params)
     _service_layer->getNode().waitUntilInitialized();
     LOG(info, "start rpc client shared resources");
     config::ConfigUri client_config_uri("bm-rpc-client", _config_context);
-    _rpc_client_shared_rpc_resources = std::make_unique<SharedRpcResources>(client_config_uri, _rpc_client_port, 100);
+    _rpc_client_shared_rpc_resources = std::make_unique<SharedRpcResources>
+            (client_config_uri, _rpc_client_port, 100, params.get_rpc_events_before_wakup());
     _rpc_client_shared_rpc_resources->start_server_and_register_slobrok("bm-rpc-client");
     wait_slobrok("storage/cluster.storage/storage/0/default");
     wait_slobrok("storage/cluster.storage/storage/0");
@@ -910,9 +927,7 @@ PersistenceProviderFixture::start_message_bus()
 {
     config::ConfigUri config_uri("bm-message-bus", _config_context);
     LOG(info, "Starting message bus");
-    _message_bus = std::make_unique<BmMessageBus>(config_uri,
-                                                  _repo,
-                                                  documentapi::LoadTypeSet());
+    _message_bus = std::make_unique<BmMessageBus>(config_uri, _repo);
     LOG(info, "Started message bus");
 }
 
@@ -1300,7 +1315,7 @@ void benchmark_async_spi(const BMParams &bm_params)
     LOG(info, "start initialize");
     provider.initialize();
     LOG(info, "create %u buckets", f.num_buckets());
-    if (!f._feed_handler->manages_buckets()) {
+    if (!bm_params.needs_distributor()) {
         f.create_buckets();
     }
     if (bm_params.needs_service_layer()) {
@@ -1313,7 +1328,7 @@ void benchmark_async_spi(const BMParams &bm_params)
         f.start_message_bus();
     }
     f.create_feed_handler(bm_params);
-    vespalib::ThreadStackExecutor executor(bm_params.get_client_threads(), 128 * 1024);
+    vespalib::ThreadStackExecutor executor(bm_params.get_client_threads(), 128_Ki);
     auto put_feed = make_feed(executor, bm_params, [&f](BMRange range, BucketSelector bucket_selector) { return make_put_feed(f, range, bucket_selector); }, f.num_buckets(), "put");
     auto update_feed = make_feed(executor, bm_params, [&f](BMRange range, BucketSelector bucket_selector) { return make_update_feed(f, range, bucket_selector); }, f.num_buckets(), "update");
     auto remove_feed = make_feed(executor, bm_params, [&f](BMRange range, BucketSelector bucket_selector) { return make_remove_feed(f, range, bucket_selector); }, f.num_buckets(), "remove");
@@ -1358,6 +1373,7 @@ App::usage()
         "USAGE:\n";
     std::cerr <<
         "vespa-feed-bm\n"
+        "[--bucket-db-stripe-bits]\n"
         "[--client-threads threads]\n"
         "[--get-passes get-passes]\n"
         "[--indexing-sequencer [latency,throughput,adaptive]]\n"
@@ -1366,6 +1382,7 @@ App::usage()
         "[--put-passes put-passes]\n"
         "[--update-passes update-passes]\n"
         "[--remove-passes remove-passes]\n"
+        "[--rpc-events-before-wakeup events]\n"
         "[--rpc-network-threads threads]\n"
         "[--rpc-targets-per-node targets]\n"
         "[--response-threads threads]\n"
@@ -1373,9 +1390,9 @@ App::usage()
         "[--enable-service-layer]\n"
         "[--skip-get-spi-bucket-info]\n"
         "[--use-document-api]\n"
+        "[--use-async-message-handling]\n"
         "[--use-message-bus\n"
-        "[--use-storage-chain]\n"
-        "[--use-legacy-bucket-db]" << std::endl;
+        "[--use-storage-chain]" << std::endl;
 }
 
 bool
@@ -1385,6 +1402,7 @@ App::get_options()
     const char *opt_argument = nullptr;
     int long_opt_index = 0;
     static struct option long_opts[] = {
+        { "bucket-db-stripe-bits", 1, nullptr, 0 },
         { "client-threads", 1, nullptr, 0 },
         { "documents", 1, nullptr, 0 },
         { "enable-distributor", 0, nullptr, 0 },
@@ -1393,18 +1411,20 @@ App::get_options()
         { "indexing-sequencer", 1, nullptr, 0 },
         { "max-pending", 1, nullptr, 0 },
         { "put-passes", 1, nullptr, 0 },
-        { "update-passes", 1, nullptr, 0 },
         { "remove-passes", 1, nullptr, 0 },
         { "response-threads", 1, nullptr, 0 },
+        { "rpc-events-before-wakeup", 1, nullptr, 0 },
         { "rpc-network-threads", 1, nullptr, 0 },
         { "rpc-targets-per-node", 1, nullptr, 0 },
         { "skip-get-spi-bucket-info", 0, nullptr, 0 },
+        { "update-passes", 1, nullptr, 0 },
+        { "use-async-message-handling", 0, nullptr, 0 },
         { "use-document-api", 0, nullptr, 0 },
-        { "use-legacy-bucket-db", 0, nullptr, 0 },
         { "use-message-bus", 0, nullptr, 0 },
         { "use-storage-chain", 0, nullptr, 0 }
     };
     enum longopts_enum {
+        LONGOPT_BUCKET_DB_STRIPE_BITS,
         LONGOPT_CLIENT_THREADS,
         LONGOPT_DOCUMENTS,
         LONGOPT_ENABLE_DISTRIBUTOR,
@@ -1413,14 +1433,15 @@ App::get_options()
         LONGOPT_INDEXING_SEQUENCER,
         LONGOPT_MAX_PENDING,
         LONGOPT_PUT_PASSES,
-        LONGOPT_UPDATE_PASSES,
         LONGOPT_REMOVE_PASSES,
         LONGOPT_RESPONSE_THREADS,
+        LONGOPT_RPC_EVENTS_BEFORE_WAKEUP,
         LONGOPT_RPC_NETWORK_THREADS,
         LONGOPT_RPC_TARGETS_PER_NODE,
         LONGOPT_SKIP_GET_SPI_BUCKET_INFO,
+        LONGOPT_UPDATE_PASSES,
+        LONGOPT_USE_ASYNC_MESSAGE_HANDLING,
         LONGOPT_USE_DOCUMENT_API,
-        LONGOPT_USE_LEGACY_BUCKET_DB,
         LONGOPT_USE_MESSAGE_BUS,
         LONGOPT_USE_STORAGE_CHAIN
     };
@@ -1430,6 +1451,9 @@ App::get_options()
         switch (c) {
         case 0:
             switch(long_opt_index) {
+            case LONGOPT_BUCKET_DB_STRIPE_BITS:
+                _bm_params.set_bucket_db_stripe_bits(atoi(opt_argument));
+                break;
             case LONGOPT_CLIENT_THREADS:
                 _bm_params.set_client_threads(atoi(opt_argument));
                 break;
@@ -1463,6 +1487,9 @@ App::get_options()
             case LONGOPT_RESPONSE_THREADS:
                 _bm_params.set_response_threads(atoi(opt_argument));
                 break;
+            case LONGOPT_RPC_EVENTS_BEFORE_WAKEUP:
+                _bm_params.set_rpc_events_before_wakeup(atoi(opt_argument));
+                break;
             case LONGOPT_RPC_NETWORK_THREADS:
                 _bm_params.set_rpc_network_threads(atoi(opt_argument));
                 break;
@@ -1472,11 +1499,11 @@ App::get_options()
             case LONGOPT_SKIP_GET_SPI_BUCKET_INFO:
                 _bm_params.set_skip_get_spi_bucket_info(true);
                 break;
+            case LONGOPT_USE_ASYNC_MESSAGE_HANDLING:
+                _bm_params.set_use_async_message_handling_on_schedule(true);
+                break;
             case LONGOPT_USE_DOCUMENT_API:
                 _bm_params.set_use_document_api(true);
-                break;
-            case LONGOPT_USE_LEGACY_BUCKET_DB:
-                _bm_params.set_use_legacy_bucket_db(true);
                 break;
             case LONGOPT_USE_MESSAGE_BUS:
                 _bm_params.set_use_message_bus(true);

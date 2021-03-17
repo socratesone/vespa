@@ -6,6 +6,8 @@ import com.yahoo.component.ComponentSpecification;
 import com.yahoo.container.bundle.BundleInstantiationSpecification;
 import com.yahoo.jdisc.http.ServerConfig;
 import com.yahoo.osgi.provider.model.ComponentModel;
+import com.yahoo.vespa.model.container.ApplicationContainerCluster;
+import com.yahoo.vespa.model.container.ContainerCluster;
 import com.yahoo.vespa.model.container.component.SimpleComponent;
 
 import java.util.ArrayList;
@@ -20,32 +22,28 @@ import static com.yahoo.component.ComponentSpecification.fromString;
  */
 public class JettyHttpServer extends SimpleComponent implements ServerConfig.Producer {
 
-    private final boolean isHostedVespa;
+    private final ContainerCluster<?> cluster;
+    private volatile boolean isHostedVespa;
     private final List<ConnectorFactory> connectorFactories = new ArrayList<>();
 
-    public JettyHttpServer(ComponentId id, boolean isHostedVespa) {
+    public JettyHttpServer(ComponentId id, ContainerCluster<?> cluster, boolean isHostedVespa) {
         super(new ComponentModel(
                 new BundleInstantiationSpecification(id,
                                                      fromString("com.yahoo.jdisc.http.server.jetty.JettyHttpServer"),
                                                      fromString("jdisc_http_service"))
         ));
         this.isHostedVespa = isHostedVespa;
+        this.cluster = cluster;
         final FilterBindingsProviderComponent filterBindingsProviderComponent = new FilterBindingsProviderComponent(id);
         addChild(filterBindingsProviderComponent);
         inject(filterBindingsProviderComponent);
     }
 
+    public void setHostedVespa(boolean isHostedVespa) { this.isHostedVespa = isHostedVespa; }
+
     public void addConnector(ConnectorFactory connectorFactory) {
         connectorFactories.add(connectorFactory);
         addChild(connectorFactory);
-    }
-
-    public void removeConnector(ConnectorFactory connectorFactory) {
-        if (connectorFactory == null) {
-            return;
-        }
-        removeChild(connectorFactory);
-        connectorFactories.remove(connectorFactory);
     }
 
     public List<ConnectorFactory> getConnectorFactories() {
@@ -63,11 +61,31 @@ public class JettyHttpServer extends SimpleComponent implements ServerConfig.Pro
             builder.accessLog(new ServerConfig.AccessLog.Builder()
                     .remoteAddressHeaders(List.of())
                     .remotePortHeaders(List.of()));
+
+            // Enable connection log hosted Vespa
+            builder.connectionLog(new ServerConfig.ConnectionLog.Builder().enabled(true));
         } else {
             // TODO Vespa 8: Remove legacy Yahoo headers
             builder.accessLog(new ServerConfig.AccessLog.Builder()
                     .remoteAddressHeaders(List.of("x-forwarded-for", "y-ra", "yahooremoteip", "client-ip"))
                     .remotePortHeaders(List.of("X-Forwarded-Port", "y-rp")));
+        }
+        configureJettyThreadpool(builder);
+    }
+
+    private void configureJettyThreadpool(ServerConfig.Builder builder) {
+        if (cluster == null) return;
+        if (cluster instanceof ApplicationContainerCluster) {
+            configureApplicationClusterJettyThreadPool(builder);
+        } else {
+            builder.minWorkerThreads(4).maxWorkerThreads(4);
+        }
+    }
+    private void configureApplicationClusterJettyThreadPool(ServerConfig.Builder builder) {
+        double vcpu = cluster.vcpu().orElse(0);
+        if (vcpu > 0) {
+            int threads = 16 + (int) Math.ceil(vcpu);
+            builder.minWorkerThreads(threads).maxWorkerThreads(threads);
         }
     }
 

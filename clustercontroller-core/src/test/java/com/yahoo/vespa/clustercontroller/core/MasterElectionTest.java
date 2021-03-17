@@ -1,4 +1,4 @@
-// Copyright 2017 Yahoo Holdings. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Verizon Media. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.clustercontroller.core;
 
 import com.yahoo.jrt.Request;
@@ -12,6 +12,7 @@ import com.yahoo.vdslib.state.ClusterState;
 import com.yahoo.vdslib.state.NodeState;
 import com.yahoo.vdslib.state.NodeType;
 import com.yahoo.vdslib.state.State;
+import com.yahoo.vespa.clustercontroller.core.status.StatusHandler;
 import org.junit.Ignore;
 import org.junit.Rule;
 import org.junit.Test;
@@ -60,7 +61,7 @@ public class MasterElectionTest extends FleetControllerTest {
         for (int i=0; i<count; ++i) {
             FleetControllerOptions nodeOptions = options.clone();
             nodeOptions.fleetControllerIndex = i;
-            fleetControllers.add(createFleetController(usingFakeTimer, nodeOptions, true, null));
+            fleetControllers.add(createFleetController(usingFakeTimer, nodeOptions, true, new StatusHandler.ContainerStatusPageServer()));
         }
     }
 
@@ -81,7 +82,7 @@ public class MasterElectionTest extends FleetControllerTest {
         for (FleetController f : fleetControllers) {
             while (f.hasZookeeperConnection()) {
                 timer.advanceTime(1000);
-                try { Thread.sleep(1); } catch (InterruptedException e) {}
+                try { Thread.sleep(1); } catch (InterruptedException e) { /* ignore */ }
                 if (System.currentTimeMillis() > maxTime)
                     throw new TimeoutException("Failed to notice zookeeper down within timeout of " + timeoutMS + " ms");
             }
@@ -137,20 +138,21 @@ public class MasterElectionTest extends FleetControllerTest {
         log.log(Level.INFO, "SHUTTING DOWN FLEET CONTROLLER 2");
         fleetControllers.get(2).shutdown();
 
-            // Too few for there to be a master at this point
+        // Too few for there to be a master at this point
         for (int i=0; i<fleetControllers.size(); ++i) {
             if (fleetControllers.get(i).isRunning()) waitForCompleteCycle(i);
             assertFalse("Fleet controller " + i, fleetControllers.get(i).isMaster());
         }
 
+        StatusHandler.ContainerStatusPageServer statusPageServer = new StatusHandler.ContainerStatusPageServer();
         log.log(Level.INFO, "STARTING FLEET CONTROLLER 2");
-        fleetControllers.set(2, createFleetController(usingFakeTimer, fleetControllers.get(2).getOptions(), true, null));
+        fleetControllers.set(2, createFleetController(usingFakeTimer, fleetControllers.get(2).getOptions(), true, statusPageServer));
         waitForMaster(2);
         log.log(Level.INFO, "STARTING FLEET CONTROLLER 0");
-        fleetControllers.set(0, createFleetController(usingFakeTimer, fleetControllers.get(0).getOptions(), true, null));
+        fleetControllers.set(0, createFleetController(usingFakeTimer, fleetControllers.get(0).getOptions(), true, statusPageServer));
         waitForMaster(0);
         log.log(Level.INFO, "STARTING FLEET CONTROLLER 1");
-        fleetControllers.set(1, createFleetController(usingFakeTimer, fleetControllers.get(1).getOptions(), true, null));
+        fleetControllers.set(1, createFleetController(usingFakeTimer, fleetControllers.get(1).getOptions(), true, statusPageServer));
         waitForMaster(0);
 
         log.log(Level.INFO, "SHUTTING DOWN FLEET CONTROLLER 4");
@@ -192,7 +194,7 @@ public class MasterElectionTest extends FleetControllerTest {
                 }
             }
                 // Have to wait to get zookeeper communication chance to happen.
-            try{ Thread.sleep(100); } catch (InterruptedException e) {}
+            try{ Thread.sleep(100); } catch (InterruptedException e) { /* ignore */ }
         }
 
         if (!isOnlyMaster) {
@@ -346,7 +348,7 @@ public class MasterElectionTest extends FleetControllerTest {
                 }
             }
             if (allOk) return;
-            try{ Thread.sleep(100); } catch (InterruptedException e) {}
+            try{ Thread.sleep(100); } catch (InterruptedException e) { /* ignore */ }
         }
         throw new IllegalStateException("Did not get master reason '" + reason
                 + "' within timeout of " + timeoutMS + " ms");
@@ -538,7 +540,7 @@ public class MasterElectionTest extends FleetControllerTest {
         waitForMaster(1);
         waitForCompleteCycle(1);
 
-        fleetControllers.set(0, createFleetController(usingFakeTimer, fleetControllers.get(0).getOptions(), true, null));
+        fleetControllers.set(0, createFleetController(usingFakeTimer, fleetControllers.get(0).getOptions(), true, new StatusHandler.ContainerStatusPageServer()));
         waitForMaster(0);
         waitForCompleteCycle(0);
 

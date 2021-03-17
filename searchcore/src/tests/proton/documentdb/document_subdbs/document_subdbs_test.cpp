@@ -5,7 +5,6 @@
 #include <vespa/searchcore/proton/attribute/imported_attributes_repo.h>
 #include <vespa/searchcore/proton/bucketdb/bucketdbhandler.h>
 #include <vespa/searchcore/proton/common/hw_info.h>
-#include <vespa/searchcore/proton/common/icommitable.h>
 #include <vespa/searchcore/proton/initializer/task_runner.h>
 #include <vespa/searchcore/proton/metrics/attribute_metrics.h>
 #include <vespa/searchcore/proton/metrics/documentdb_tagged_metrics.h>
@@ -19,17 +18,22 @@
 #include <vespa/searchcore/proton/server/fast_access_document_retriever.h>
 #include <vespa/searchcore/proton/server/i_document_subdb_owner.h>
 #include <vespa/searchcore/proton/server/igetserialnum.h>
+#include <vespa/searchcore/proton/server/executorthreadingservice.h>
 #include <vespa/searchcore/proton/server/minimal_document_retriever.h>
 #include <vespa/searchcore/proton/server/searchabledocsubdb.h>
+#include <vespa/searchcore/proton/server/document_subdb_initializer.h>
+#include <vespa/searchcore/proton/server/reconfig_params.h>
 #include <vespa/searchcore/proton/matching/querylimiter.h>
 #include <vespa/searchcore/proton/test/test.h>
 #include <vespa/searchcore/proton/test/thread_utils.h>
-#include <vespa/searchlib/common/idestructorcallback.h>
+#include <vespa/vespalib/util/idestructorcallback.h>
 #include <vespa/searchlib/index/docbuilder.h>
 #include <vespa/searchlib/test/directory_handler.h>
 #include <vespa/vespalib/test/insertion_operators.h>
 #include <vespa/vespalib/testkit/test_kit.h>
 #include <vespa/vespalib/util/lambdatask.h>
+#include <vespa/vespalib/util/size_literals.h>
+#include <vespa/vespalib/util/threadstackexecutor.h>
 
 using namespace cloud::config::filedistribution;
 using namespace document;
@@ -47,7 +51,7 @@ using document::test::makeBucketSpace;
 using proton::bucketdb::BucketDBHandler;
 using proton::bucketdb::IBucketDBHandler;
 using proton::bucketdb::IBucketDBHandlerInitializer;
-using search::IDestructorCallback;
+using vespalib::IDestructorCallback;
 using search::test::DirectoryHandler;
 using searchcorespi::IFlushTarget;
 using searchcorespi::index::IThreadingService;
@@ -77,9 +81,6 @@ struct ConfigDir4 { static vespalib::string dir() { return TEST_PATH("cfg4"); } 
 
 struct MySubDBOwner : public IDocumentSubDBOwner
 {
-    uint32_t _syncCnt;
-    MySubDBOwner() : _syncCnt(0) {}
-    void syncFeedView() override { ++_syncCnt; }
     document::BucketSpace getBucketSpace() const override { return makeBucketSpace(); }
     vespalib::string getName() const override { return "owner"; }
     uint32_t getDistributionKey() const override { return -1; }
@@ -127,8 +128,7 @@ struct MyStoreOnlyConfig
         : _cfg(DocTypeName(DOCTYPE_NAME),
               SUB_NAME,
               BASE_DIR,
-              search::GrowStrategy(),
-              0, 0, SubDbType::READY)
+              0, SubDbType::READY)
     {
     }
 };
@@ -144,7 +144,7 @@ struct MyStoreOnlyContext
     HwInfo           _hwInfo;
     StoreOnlyContext _ctx;
     MyStoreOnlyContext(IThreadingService &writeService,
-                       std::shared_ptr<BucketDBOwner> bucketDB,
+                       std::shared_ptr<bucketdb::BucketDBOwner> bucketDB,
                        IBucketDBHandlerInitializer & bucketDBHandlerInitializer);
     ~MyStoreOnlyContext();
     const MySubDBOwner &getOwner() const {
@@ -153,7 +153,7 @@ struct MyStoreOnlyContext
 };
 
 MyStoreOnlyContext::MyStoreOnlyContext(IThreadingService &writeService,
-                                       std::shared_ptr<BucketDBOwner> bucketDB,
+                                       std::shared_ptr<bucketdb::BucketDBOwner> bucketDB,
                                        IBucketDBHandlerInitializer &bucketDBHandlerInitializer)
     : _owner(), _syncProxy(), _getSerialNum(), _fileHeader(),
       _metrics(DOCTYPE_NAME, 1), _configMutex(), _hwInfo(),
@@ -180,7 +180,7 @@ struct MyFastAccessContext
     MyMetricsWireService _wireService;
     FastAccessContext _ctx;
     MyFastAccessContext(IThreadingService &writeService,
-                        std::shared_ptr<BucketDBOwner> bucketDB,
+                        std::shared_ptr<bucketdb::BucketDBOwner> bucketDB,
                         IBucketDBHandlerInitializer & bucketDBHandlerInitializer);
     ~MyFastAccessContext();
     const MyMetricsWireService &getWireService() const {
@@ -192,7 +192,7 @@ struct MyFastAccessContext
 };
 
 MyFastAccessContext::MyFastAccessContext(IThreadingService &writeService,
-                                         std::shared_ptr<BucketDBOwner> bucketDB,
+                                         std::shared_ptr<bucketdb::BucketDBOwner> bucketDB,
                                          IBucketDBHandlerInitializer & bucketDBHandlerInitializer)
     : _storeOnlyCtx(writeService, bucketDB, bucketDBHandlerInitializer),
       _attributeMetrics(nullptr),
@@ -217,7 +217,7 @@ struct MySearchableContext
     vespalib::Clock _clock;
     SearchableContext _ctx;
     MySearchableContext(IThreadingService &writeService,
-                        std::shared_ptr<BucketDBOwner> bucketDB,
+                        std::shared_ptr<bucketdb::BucketDBOwner> bucketDB,
                         IBucketDBHandlerInitializer & bucketDBHandlerInitializer);
     ~MySearchableContext();
     const MyMetricsWireService &getWireService() const {
@@ -230,7 +230,7 @@ struct MySearchableContext
 
 
 MySearchableContext::MySearchableContext(IThreadingService &writeService,
-                                         std::shared_ptr<BucketDBOwner> bucketDB,
+                                         std::shared_ptr<bucketdb::BucketDBOwner> bucketDB,
                                          IBucketDBHandlerInitializer & bucketDBHandlerInitializer)
     : _fastUpdCtx(writeService, bucketDB, bucketDBHandlerInitializer),
       _queryLimiter(), _clock(),
@@ -253,20 +253,6 @@ struct TwoAttrSchema : public OneAttrSchema
     }
 };
 
-struct Committer : public ICommitable {
-    size_t _commitCount;
-    size_t _commitAndWaitCount;
-    Committer() : _commitCount(0), _commitAndWaitCount(0) { }
-    void commit() override { _commitCount++; }
-    void commitAndWait(ILidCommitState & ) override { _commitAndWaitCount++; }
-    void commitAndWait(ILidCommitState & tracker, uint32_t ) override {
-        commitAndWait(tracker);
-    }
-    void commitAndWait(ILidCommitState & tracker, const std::vector<uint32_t> & ) override {
-        commitAndWait(tracker);
-    }
-};
-
 struct MyConfigSnapshot
 {
     typedef std::unique_ptr<MyConfigSnapshot> UP;
@@ -281,7 +267,7 @@ struct MyConfigSnapshot
           _bootstrap()
     {
         auto documenttypesConfig = std::make_shared<DocumenttypesConfig>(_builder.getDocumenttypesConfig());
-        TuneFileDocumentDB::SP tuneFileDocumentDB(new TuneFileDocumentDB());
+        auto tuneFileDocumentDB = std::make_shared<TuneFileDocumentDB>();
         _bootstrap = std::make_shared<BootstrapConfig>(1,
                                  documenttypesConfig,
                                  _builder.getDocumentTypeRepo(),
@@ -303,7 +289,7 @@ struct FixtureBase
     ThreadStackExecutor _summaryExecutor;
     ExecutorThreadingService _writeService;
     typename Traits::Config _cfg;
-    std::shared_ptr<BucketDBOwner> _bucketDB;
+    std::shared_ptr<bucketdb::BucketDBOwner> _bucketDB;
     BucketDBHandler _bucketDBHandler;
     typename Traits::Context _ctx;
     typename Traits::Schema _baseSchema;
@@ -312,10 +298,10 @@ struct FixtureBase
     typename Traits::SubDB _subDb;
     IFeedView::SP _tmpFeedView;
     FixtureBase()
-        : _summaryExecutor(1, 64 * 1024),
+        : _summaryExecutor(1, 64_Ki),
           _writeService(_summaryExecutor),
           _cfg(),
-          _bucketDB(std::make_shared<BucketDBOwner>()),
+          _bucketDB(std::make_shared<bucketdb::BucketDBOwner>()),
           _bucketDBHandler(*_bucketDB),
           _ctx(_writeService, _bucketDB, _bucketDBHandler),
           _baseSchema(),
@@ -336,11 +322,11 @@ struct FixtureBase
         proton::test::runInMaster(_writeService, func);
     }
     void init() {
-                DocumentSubDbInitializer::SP task =
-                    _subDb.createInitializer(*_snapshot->_cfg, Traits::configSerial(), IndexConfig());
-                vespalib::ThreadStackExecutor executor(1, 1024 * 1024);
-                initializer::TaskRunner taskRunner(executor);
-                taskRunner.runTask(task);
+        DocumentSubDbInitializer::SP task =
+            _subDb.createInitializer(*_snapshot->_cfg, Traits::configSerial(), IndexConfig());
+        vespalib::ThreadStackExecutor executor(1, 1_Mi);
+        initializer::TaskRunner taskRunner(executor);
+        taskRunner.runTask(task);
         auto sessionMgr = std::make_shared<SessionManager>(1);
         runInMaster([&] () { _subDb.initViews(*_snapshot->_cfg, sessionMgr); });
     }
@@ -591,32 +577,6 @@ TEST_F("require that reconfigured attributes are accessible via feed view", Sear
 
 template <typename Fixture>
 void
-requireThatOwnerIsNotifiedWhenFeedViewChanges(Fixture &f)
-{
-    EXPECT_EQUAL(0u, f.getOwner()._syncCnt);
-    f.basicReconfig(10);
-    EXPECT_EQUAL(1u, f.getOwner()._syncCnt);
-}
-
-TEST_F("require that owner is noticed when feed view changes", StoreOnlyFixture)
-{
-    requireThatOwnerIsNotifiedWhenFeedViewChanges(f);
-}
-
-TEST_F("require that owner is noticed when feed view changes", FastAccessFixture)
-{
-    requireThatOwnerIsNotifiedWhenFeedViewChanges(f);
-}
-
-TEST_F("require that owner is noticed when feed view changes", SearchableFixture)
-{
-    EXPECT_EQUAL(1u, f.getOwner()._syncCnt); // NOTE: init also notifies owner
-    f.basicReconfig(10);
-    EXPECT_EQUAL(2u, f.getOwner()._syncCnt);
-}
-
-template <typename Fixture>
-void
 requireThatAttributeMetricsAreRegistered(Fixture &f)
 {
     EXPECT_EQUAL(2u, f.getWireService()._attributes.size());
@@ -769,18 +729,27 @@ struct DocumentHandler
     }
     void putDoc(PutOperation &op) {
         IFeedView::SP feedView = _f._subDb.getFeedView();
-        _f.runInMaster([&]() {    feedView->preparePut(op);
-                                  feedView->handlePut(FeedToken(), op); } );
+        _f.runInMaster([&]() {
+            feedView->preparePut(op);
+            feedView->handlePut(FeedToken(), op);
+            feedView->forceCommit(op.getSerialNum());
+        } );
     }
     void moveDoc(MoveOperation &op) {
         IFeedView::SP feedView = _f._subDb.getFeedView();
-        _f.runInMaster([&]() {    feedView->handleMove(op, IDestructorCallback::SP()); } );
+        _f.runInMaster([&]() {
+            feedView->handleMove(op, IDestructorCallback::SP());
+            feedView->forceCommit(op.getSerialNum());
+        } );
     }
     void removeDoc(RemoveOperation &op)
     {
         IFeedView::SP feedView = _f._subDb.getFeedView();
-        _f.runInMaster([&]() {    feedView->prepareRemove(op);
-                                  feedView->handleRemove(FeedToken(), op); } );
+        _f.runInMaster([&]() {
+            feedView->prepareRemove(op);
+            feedView->handleRemove(FeedToken(), op);
+            feedView->forceCommit(op.getSerialNum());
+        } );
     }
     void putDocs() {
         PutOperation putOp = createPut(std::move(createDoc(1, 22, 33)), Timestamp(10), 10);

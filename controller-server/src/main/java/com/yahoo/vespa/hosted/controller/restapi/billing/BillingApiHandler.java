@@ -1,7 +1,6 @@
 // Copyright Verizon Media. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.hosted.controller.restapi.billing;
 
-import com.yahoo.config.provision.ApplicationId;
 import com.yahoo.config.provision.TenantName;
 import com.yahoo.container.jdisc.HttpRequest;
 import com.yahoo.container.jdisc.HttpResponse;
@@ -19,17 +18,23 @@ import com.yahoo.slime.Slime;
 import com.yahoo.slime.SlimeUtils;
 import com.yahoo.vespa.hosted.controller.ApplicationController;
 import com.yahoo.vespa.hosted.controller.Controller;
+import com.yahoo.vespa.hosted.controller.TenantController;
+import com.yahoo.vespa.hosted.controller.api.integration.billing.CollectionMethod;
 import com.yahoo.vespa.hosted.controller.api.integration.billing.PaymentInstrument;
 import com.yahoo.vespa.hosted.controller.api.integration.billing.Invoice;
 import com.yahoo.vespa.hosted.controller.api.integration.billing.InstrumentOwner;
 import com.yahoo.vespa.hosted.controller.api.integration.billing.BillingController;
 import com.yahoo.vespa.hosted.controller.api.integration.billing.PlanId;
+import com.yahoo.vespa.hosted.controller.tenant.Tenant;
 import com.yahoo.yolean.Exceptions;
+import org.apache.commons.csv.CSVFormat;
 
 import javax.ws.rs.BadRequestException;
 import javax.ws.rs.ForbiddenException;
 import javax.ws.rs.NotFoundException;
 import java.io.IOException;
+import java.io.OutputStream;
+import java.io.OutputStreamWriter;
 import java.math.BigDecimal;
 import java.security.Principal;
 import java.time.LocalDate;
@@ -37,10 +42,12 @@ import java.time.ZoneId;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.Executor;
 import java.util.logging.Level;
+import java.util.stream.Collectors;
 
 /**
  * @author andreer
@@ -51,16 +58,16 @@ public class BillingApiHandler extends LoggingRequestHandler {
     private static final String OPTIONAL_PREFIX = "/api";
     private static final DateTimeFormatter DATE_TIME_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd");
 
-
     private final BillingController billingController;
     private final ApplicationController applicationController;
+    private final TenantController tenantController;
 
     public BillingApiHandler(Executor executor,
-                             AccessLog accessLog,
                              Controller controller) {
-        super(executor, accessLog);
+        super(executor);
         this.billingController = controller.serviceRegistry().billingController();
         this.applicationController = controller.applications();
+        this.tenantController = controller.tenants();
     }
 
     @Override
@@ -97,13 +104,33 @@ public class BillingApiHandler extends LoggingRequestHandler {
         if (path.matches("/billing/v1/tenant/{tenant}/billing")) return getBilling(path.get("tenant"), request.getProperty("until"));
         if (path.matches("/billing/v1/tenant/{tenant}/plan")) return getPlan(path.get("tenant"));
         if (path.matches("/billing/v1/billing")) return getBillingAllTenants(request.getProperty("until"));
+        if (path.matches("/billing/v1/invoice/export")) return getAllInvoices();
         if (path.matches("/billing/v1/invoice/tenant/{tenant}/line-item")) return getLineItems(path.get("tenant"));
         return ErrorResponse.notFoundError("Nothing at " + path);
+    }
+
+    private HttpResponse getAllInvoices() {
+        var invoices = billingController.getInvoices();
+        var headers = new String[]{ "ID", "Tenant", "From", "To", "CpuHours", "MemoryHours", "DiskHours", "Cpu", "Memory", "Disk", "Additional" };
+        var rows = invoices.stream()
+                .map(invoice -> {
+                    return new Object[] {
+                            invoice.id().value(), invoice.tenant().value(),
+                            invoice.getStartTime().format(DateTimeFormatter.ISO_LOCAL_DATE),
+                            invoice.getEndTime().format(DateTimeFormatter.ISO_LOCAL_DATE),
+                            invoice.sumCpuHours(), invoice.sumMemoryHours(), invoice.sumDiskHours(),
+                            invoice.sumCpuCost(), invoice.sumMemoryCost(), invoice.sumDiskCost(),
+                            invoice.sumAdditionalCost()
+                    };
+                })
+                .collect(Collectors.toList());
+        return new CsvResponse(headers, rows);
     }
 
     private HttpResponse handlePATCH(HttpRequest request, Path path, String userId) {
         if (path.matches("/billing/v1/tenant/{tenant}/instrument")) return patchActiveInstrument(request, path.get("tenant"), userId);
         if (path.matches("/billing/v1/tenant/{tenant}/plan")) return patchPlan(request, path.get("tenant"));
+        if (path.matches("/billing/v1/tenant/{tenant}/collection")) return patchCollectionMethod(request, path.get("tenant"));
         return ErrorResponse.notFoundError("Nothing at " + path);
 
     }
@@ -146,6 +173,25 @@ public class BillingApiHandler extends LoggingRequestHandler {
         return ErrorResponse.forbidden(result.getErrorMessage().orElse("Invalid plan change"));
     }
 
+    private HttpResponse patchCollectionMethod(HttpRequest request, String tenant) {
+        var tenantName = TenantName.from(tenant);
+        var slime = inspectorOrThrow(request);
+        var newMethod = slime.field("collection").valid() ?
+                slime.field("collection").asString().toUpperCase() :
+                slime.field("collectionMethod").asString().toUpperCase();
+        if (newMethod.isEmpty()) return ErrorResponse.badRequest("No collection method specified");
+
+        try {
+            var result = billingController.setCollectionMethod(tenantName, CollectionMethod.valueOf(newMethod));
+            if (result.isSuccess())
+                return new StringResponse("Collection method updated to " + newMethod);
+
+            return ErrorResponse.forbidden(result.getErrorMessage().orElse("Invalid collection method change"));
+        } catch (IllegalArgumentException iea){
+            return ErrorResponse.badRequest("Invalid collection method: " + newMethod);
+        }
+    }
+
     private HttpResponse getBillingAllTenants(String until) {
         try {
             var untilDate = untilParameter(until);
@@ -156,14 +202,16 @@ public class BillingApiHandler extends LoggingRequestHandler {
             root.setString("until", untilDate.format(DateTimeFormatter.ISO_DATE));
             var tenants = root.setArray("tenants");
 
-            uncommittedInvoices.forEach((tenant, invoice) -> {
+            tenantController.asList().stream().sorted(Comparator.comparing(Tenant::name)).forEach(tenant -> {
+                var invoice = uncommittedInvoices.get(tenant.name());
                 var tc = tenants.addObject();
-                tc.setString("tenant", tenant.value());
-                getPlanForTenant(tc, tenant);
+                tc.setString("tenant", tenant.name().value());
+                getPlanForTenant(tc, tenant.name());
+                getCollectionForTenant(tc, tenant.name());
                 renderCurrentUsage(tc.setObject("current"), invoice);
-                renderAdditionalItems(tc.setObject("additional").setArray("items"), billingController.getUnusedLineItems(tenant));
+                renderAdditionalItems(tc.setObject("additional").setArray("items"), billingController.getUnusedLineItems(tenant.name()));
 
-                billingController.getDefaultInstrument(tenant).ifPresent(card ->
+                billingController.getDefaultInstrument(tenant.name()).ifPresent(card ->
                         renderInstrument(tc.setObject("payment"), card)
                 );
             });
@@ -172,6 +220,11 @@ public class BillingApiHandler extends LoggingRequestHandler {
         } catch (DateTimeParseException e) {
             return ErrorResponse.badRequest("Could not parse date: " + until);
         }
+    }
+
+    private void getCollectionForTenant(Cursor tc, TenantName tenant) {
+        var collection = billingController.getCollectionMethod(tenant);
+        tc.setString("collection", collection.name());
     }
 
     private HttpResponse addLineItem(HttpRequest request, String tenant) {
@@ -232,6 +285,7 @@ public class BillingApiHandler extends LoggingRequestHandler {
                 renderInstrument(root.setObject("payment"), card)
             );
 
+            root.setString("collection", billingController.getCollectionMethod(tenantId).name());
             return new SlimeJsonResponse(slimeResponse);
         } catch (DateTimeParseException e) {
             return ErrorResponse.badRequest("Could not parse date: " + until);
@@ -253,7 +307,9 @@ public class BillingApiHandler extends LoggingRequestHandler {
     }
 
     private void getPlanForTenant(Cursor cursor, TenantName tenant) {
-        cursor.setString("plan", billingController.getPlan(tenant).value());
+        PlanId plan = billingController.getPlan(tenant);
+        cursor.setString("plan", plan.value());
+        cursor.setString("planName", billingController.getPlanDisplayName(plan));
     }
 
     private void renderInstrument(Cursor cursor, PaymentInstrument instrument) {
@@ -274,6 +330,7 @@ public class BillingApiHandler extends LoggingRequestHandler {
     }
 
     private void renderCurrentUsage(Cursor cursor, Invoice currentUsage) {
+        if (currentUsage == null) return;
         cursor.setString("amount", currentUsage.sum().toPlainString());
         cursor.setString("status", "accrued");
         cursor.setString("from", currentUsage.getStartTime().format(DATE_TIME_FORMATTER));
@@ -295,7 +352,7 @@ public class BillingApiHandler extends LoggingRequestHandler {
     }
 
     private List<Invoice> getInvoicesForTenant(TenantName tenant) {
-        return billingController.getInvoices(tenant);
+        return billingController.getInvoicesForTenant(tenant);
     }
 
     private void renderInvoices(Cursor cursor, List<Invoice> invoices) {
@@ -338,9 +395,36 @@ public class BillingApiHandler extends LoggingRequestHandler {
         cursor.setString("id", lineItem.id());
         cursor.setString("description", lineItem.description());
         cursor.setString("amount", lineItem.amount().toString());
+        cursor.setString("plan", lineItem.plan());
+        cursor.setString("planName", billingController.getPlanDisplayName(PlanId.from(lineItem.plan())));
+
         lineItem.applicationId().ifPresent(appId -> {
             cursor.setString("application", appId.application().value());
+            cursor.setString("instance", appId.instance().value());
         });
+        lineItem.zoneId().ifPresent(zoneId ->
+            cursor.setString("zone", zoneId.value())
+        );
+
+        lineItem.getCpuHours().ifPresent(cpuHours ->
+                cursor.setString("cpuHours", cpuHours.toString())
+        );
+        lineItem.getMemoryHours().ifPresent(memoryHours ->
+                cursor.setString("memoryHours", memoryHours.toString())
+        );
+        lineItem.getDiskHours().ifPresent(diskHours ->
+                cursor.setString("diskHours", diskHours.toString())
+        );
+        lineItem.getCpuCost().ifPresent(cpuCost ->
+                cursor.setString("cpuCost", cpuCost.toString())
+        );
+        lineItem.getMemoryCost().ifPresent(memoryCost ->
+                cursor.setString("memoryCost", memoryCost.toString())
+        );
+        lineItem.getDiskCost().ifPresent(diskCost ->
+                cursor.setString("diskCost", diskCost.toString())
+        );
+
     }
 
     private HttpResponse deleteInstrument(String tenant, String userId, String instrument) {
@@ -400,4 +484,27 @@ public class BillingApiHandler extends LoggingRequestHandler {
                 .count() > 0;
     }
 
+    private static class CsvResponse extends HttpResponse {
+        private final String[] header;
+        private final List<Object[]> rows;
+
+        CsvResponse(String[] header, List<Object[]> rows) {
+            super(200);
+            this.header = header;
+            this.rows = rows;
+        }
+
+        @Override
+        public void render(OutputStream outputStream) throws IOException {
+            var writer = new OutputStreamWriter(outputStream);
+            var printer = CSVFormat.DEFAULT.withRecordSeparator('\n').withHeader(this.header).print(writer);
+            for (var row : this.rows) printer.printRecord(row);
+            printer.flush();
+        }
+
+        @Override
+        public String getContentType() {
+            return "text/csv; encoding=utf-8";
+        }
+    }
 }

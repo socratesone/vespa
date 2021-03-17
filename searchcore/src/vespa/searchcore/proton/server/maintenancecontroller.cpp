@@ -5,7 +5,6 @@
 #include "document_db_maintenance_config.h"
 #include "i_blockable_maintenance_job.h"
 #include <vespa/searchcorespi/index/i_thread_service.h>
-#include <vespa/vespalib/util/closuretask.h>
 #include <vespa/vespalib/util/lambdatask.h>
 #include <vespa/vespalib/util/scheduledexecutor.h>
 
@@ -14,8 +13,6 @@ LOG_SETUP(".proton.server.maintenancecontroller");
 
 using document::BucketId;
 using vespalib::Executor;
-using vespalib::makeClosure;
-using vespalib::makeTask;
 using vespalib::makeLambdaTask;
 
 namespace proton {
@@ -28,7 +25,7 @@ private:
     MaintenanceJobRunner *_job;
 public:
     JobWrapperTask(MaintenanceJobRunner *job) : _job(job) {}
-    virtual void run() override { _job->run(); }
+    void run() override { _job->run(); }
 };
 
 }
@@ -45,8 +42,7 @@ MaintenanceController::MaintenanceController(IThreadService &masterThread,
       _periodicTimer(),
       _config(),
       _frozenBuckets(masterThread),
-      _started(false),
-      _stopping(false),
+      _state(State::INITIALIZING),
       _docTypeName(docTypeName),
       _jobs(),
       _jobsLock()
@@ -86,6 +82,9 @@ MaintenanceController::registerJob(Executor & executor, IMaintenanceJob::UP job)
 void
 MaintenanceController::killJobs()
 {
+    if (_state == State::STARTED) {
+        _state = State::PAUSED;
+    }
     // Called by master write thread
     assert(_masterThread.isCurrentThread());
     LOG(debug, "killJobs(): threadId=%zu", (size_t)FastOS_Thread::GetCurrentThreadId());
@@ -102,7 +101,18 @@ MaintenanceController::killJobs()
         _jobs.clear();
     }
     // Hold jobs until existing tasks have been drained
-    _masterThread.execute(makeTask(makeClosure(this, &MaintenanceController::performHoldJobs, tmpJobs)));
+    _masterThread.execute(makeLambdaTask([this, jobs=std::move(tmpJobs)]() {
+        performHoldJobs(std::move(jobs));
+    }));
+}
+
+void
+MaintenanceController::updateMetrics(DocumentDBTaggedMetrics & metrics)
+{
+    Guard guard(_jobsLock);
+    for (auto &job : _jobs) {
+        job->getJob().updateMetrics(metrics); // Make sure no more tasks are added to the executor
+    }
 }
 
 void
@@ -117,7 +127,7 @@ void
 MaintenanceController::stop()
 {
     assert(!_masterThread.isCurrentThread());
-    _masterThread.execute(makeLambdaTask([this]() { _stopping = true; killJobs(); }));
+    _masterThread.execute(makeLambdaTask([this]() { _state = State::STOPPING; killJobs(); }));
     _masterThread.sync();  // Wait for killJobs()
     _masterThread.sync();  // Wait for already scheduled maintenance jobs and performHoldJobs
 }
@@ -135,9 +145,9 @@ void
 MaintenanceController::start(const DocumentDBMaintenanceConfig::SP &config)
 {
     // Called by master write thread
-    assert(!_started);
+    assert(_state == State::INITIALIZING);
     _config = config;
-    _started = true;
+    _state = State::STARTED;
     restart();
 }
 
@@ -146,7 +156,7 @@ void
 MaintenanceController::restart()
 {
     // Called by master write thread
-    if (!_started || _stopping || !_readySubDB.valid()) {
+    if (!getStarted() || getStopping() || !_readySubDB.valid()) {
         return;
     }
     _periodicTimer = std::make_unique<vespalib::ScheduledExecutor>();
@@ -208,7 +218,7 @@ MaintenanceController::syncSubDBs(const MaintenanceDocumentSubDB &readySubDB,
     _readySubDB = readySubDB;
     _remSubDB = remSubDB;
     _notReadySubDB = notReadySubDB;
-    if (!oldValid && _started) {
+    if (!oldValid && getStarted()) {
         restart();
     }
 }

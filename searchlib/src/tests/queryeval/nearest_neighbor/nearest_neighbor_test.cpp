@@ -3,7 +3,8 @@
 #include <vespa/vespalib/testkit/test_kit.h>
 #include <vespa/vespalib/util/stringfmt.h>
 
-#include <vespa/eval/eval/engine_or_factory.h>
+#include <vespa/eval/eval/simple_value.h>
+#include <vespa/eval/eval/tensor_spec.h>
 #include <vespa/searchlib/common/bitvector.h>
 #include <vespa/searchlib/common/feature.h>
 #include <vespa/searchlib/fef/matchdata.h>
@@ -25,9 +26,9 @@ using search::AttributeVector;
 using search::BitVector;
 using vespalib::eval::Value;
 using vespalib::eval::ValueType;
-using CellType = vespalib::eval::ValueType::CellType;
+using vespalib::eval::CellType;
 using vespalib::eval::TensorSpec;
-using vespalib::eval::EngineOrFactory;
+using vespalib::eval::SimpleValue;
 using search::tensor::DistanceFunction;
 using search::attribute::DistanceMetric;
 
@@ -41,7 +42,7 @@ DistanceFunction::UP euclid_d = search::tensor::make_distance_function(DistanceM
 DistanceFunction::UP euclid_f = search::tensor::make_distance_function(DistanceMetric::Euclidean, CellType::FLOAT);
 
 std::unique_ptr<Value> createTensor(const TensorSpec &spec) {
-    return EngineOrFactory::get().from_spec(spec);
+    return SimpleValue::from_spec(spec);
 }
 
 std::unique_ptr<Value> createTensor(const vespalib::string& type_spec, double v1, double v2) {
@@ -120,11 +121,12 @@ struct Fixture
 };
 
 template <bool strict>
-SimpleResult find_matches(Fixture &env, const Value &qtv) {
+SimpleResult find_matches(Fixture &env, const Value &qtv, double threshold = std::numeric_limits<double>::max()) {
     auto md = MatchData::makeTestInstance(2, 2);
     auto &tfmd = *(md->resolveTermField(0));
     auto &attr = *(env._tensorAttr);
     NearestNeighborDistanceHeap dh(2);
+    dh.set_distance_threshold(env.dist_fun()->convert_threshold(threshold));
     const BitVector *filter = env._global_filter.get();
     auto search = NearestNeighborIterator::create(strict, tfmd, qtv, attr, dh, filter, env.dist_fun());
     if (strict) {
@@ -158,6 +160,19 @@ verify_iterator_returns_expected_results(const vespalib::string& attribute_tenso
     EXPECT_EQUAL(result, farExpect);
     result = find_matches<false>(fixture, *farTensor);
     EXPECT_EQUAL(result, farExpect);
+
+    SimpleResult null_thr5_exp({1,4,6});
+    result = find_matches<true>(fixture, *nullTensor, 5.0);
+    EXPECT_EQUAL(result, null_thr5_exp);
+    result = find_matches<false>(fixture, *nullTensor, 5.0);
+    EXPECT_EQUAL(result, null_thr5_exp);
+
+    SimpleResult far_thr4_exp({2,5});
+    result = find_matches<true>(fixture, *farTensor, 4.0);
+    EXPECT_EQUAL(result, far_thr4_exp);
+    result = find_matches<false>(fixture, *farTensor, 4.0);
+    EXPECT_EQUAL(result, far_thr4_exp);
+
 }
 
 TEST("require that NearestNeighborIterator returns expected results") {

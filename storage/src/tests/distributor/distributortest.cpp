@@ -13,8 +13,10 @@
 #include <vespa/document/test/make_bucket_space.h>
 #include <vespa/storage/config/config-stor-distributormanager.h>
 #include <vespa/storage/distributor/distributor.h>
+#include <vespa/storage/distributor/distributor_bucket_space.h>
 #include <vespa/storage/distributor/distributormetricsset.h>
 #include <vespa/vespalib/text/stringtokenizer.h>
+#include <vespa/metrics/updatehook.h>
 #include <thread>
 #include <vespa/vespalib/gtest/gtest.h>
 #include <gmock/gmock.h>
@@ -119,14 +121,14 @@ struct DistributorTest : Test, DistributorTestUtil {
                 }
             }
 
-            getExternalOperationHandler().removeNodesFromDB(makeDocumentBucket(document::BucketId(16, 1)), removedNodes);
+            distributor_component().removeNodesFromDB(makeDocumentBucket(document::BucketId(16, 1)), removedNodes);
 
             uint32_t flags(DatabaseUpdate::CREATE_IF_NONEXISTING
                            | (resetTrusted ? DatabaseUpdate::RESET_TRUSTED : 0));
 
-            getExternalOperationHandler().updateBucketDatabase(makeDocumentBucket(document::BucketId(16, 1)),
-                                            changedNodes,
-                                            flags);
+            distributor_component().updateBucketDatabase(makeDocumentBucket(document::BucketId(16, 1)),
+                                                         changedNodes,
+                                                         flags);
         }
 
         std::string retVal = dumpBucket(document::BucketId(16, 1));
@@ -197,6 +199,18 @@ struct DistributorTest : Test, DistributorTestUtil {
     void configure_metadata_update_phase_enabled(bool enabled) {
         ConfigBuilder builder;
         builder.enableMetadataOnlyFetchPhaseForInconsistentUpdates = enabled;
+        configureDistributor(builder);
+    }
+
+    void configure_prioritize_global_bucket_merges(bool enabled) {
+        ConfigBuilder builder;
+        builder.prioritizeGlobalBucketMerges = enabled;
+        configureDistributor(builder);
+    }
+
+    void configure_max_activation_inhibited_out_of_sync_groups(uint32_t n_groups) {
+        ConfigBuilder builder;
+        builder.maxActivationInhibitedOutOfSyncGroups = n_groups;
         configureDistributor(builder);
     }
 
@@ -421,7 +435,7 @@ TEST_F(DistributorTest, metric_update_hook_updates_pending_maintenance_metrics) 
     getConfig().setMaxPendingMaintenanceOps(1);
 
     // 1 bucket must be merged, 1 must be split, 1 should be activated.
-    addNodesToBucketDB(document::BucketId(16, 1), "0=1/1/1/t/a,1=2/2/2");
+    addNodesToBucketDB(document::BucketId(16, 1), "0=2/2/2/t/a,1=1/1/1");
     addNodesToBucketDB(document::BucketId(16, 2),
                        "0=100/10000000/200000/t/a,1=100/10000000/200000/t");
     addNodesToBucketDB(document::BucketId(16, 3),
@@ -446,7 +460,7 @@ TEST_F(DistributorTest, metric_update_hook_updates_pending_maintenance_metrics) 
 
     // Force trigger update hook
     std::mutex l;
-    distributor_metric_update_hook().updateMetrics(std::unique_lock(l));
+    distributor_metric_update_hook().updateMetrics(metrics::MetricLockGuard(l));
     // Metrics should now be updated to the last complete working state
     {
         const IdealStateMetricSet& metrics(getIdealStateManager().getMetrics());
@@ -475,7 +489,7 @@ TEST_F(DistributorTest, bucket_db_memory_usage_metrics_only_updated_at_fixed_tim
     tickDistributorNTimes(10);
 
     std::mutex l;
-    distributor_metric_update_hook().updateMetrics(std::unique_lock(l));
+    distributor_metric_update_hook().updateMetrics(metrics::MetricLockGuard(l));
     auto* m = getDistributor().getMetrics().mutable_dbs.memory_usage.getMetric("used_bytes");
     ASSERT_TRUE(m != nullptr);
     auto last_used = m->getLongValue("last");
@@ -489,7 +503,7 @@ TEST_F(DistributorTest, bucket_db_memory_usage_metrics_only_updated_at_fixed_tim
     const auto sample_interval_sec = db_sample_interval_sec(getDistributor());
     getClock().setAbsoluteTimeInSeconds(1000 + sample_interval_sec - 1); // Not there yet.
     tickDistributorNTimes(50);
-    distributor_metric_update_hook().updateMetrics(std::unique_lock(l));
+    distributor_metric_update_hook().updateMetrics(metrics::MetricLockGuard(l));
 
     m = getDistributor().getMetrics().mutable_dbs.memory_usage.getMetric("used_bytes");
     auto now_used = m->getLongValue("last");
@@ -497,7 +511,7 @@ TEST_F(DistributorTest, bucket_db_memory_usage_metrics_only_updated_at_fixed_tim
 
     getClock().setAbsoluteTimeInSeconds(1000 + sample_interval_sec + 1);
     tickDistributorNTimes(10);
-    distributor_metric_update_hook().updateMetrics(std::unique_lock(l));
+    distributor_metric_update_hook().updateMetrics(metrics::MetricLockGuard(l));
 
     m = getDistributor().getMetrics().mutable_dbs.memory_usage.getMetric("used_bytes");
     now_used = m->getLongValue("last");
@@ -521,6 +535,7 @@ TEST_F(DistributorTest, priority_config_is_propagated_to_distributor_configurati
     builder.prioritySplitLargeBucket = 9;
     builder.prioritySplitInconsistentBucket = 10;
     builder.priorityGarbageCollection = 11;
+    builder.priorityMergeGlobalBuckets = 12;
 
     getConfig().configure(builder);
 
@@ -536,6 +551,7 @@ TEST_F(DistributorTest, priority_config_is_propagated_to_distributor_configurati
     EXPECT_EQ(9, static_cast<int>(mp.splitLargeBucket));
     EXPECT_EQ(10, static_cast<int>(mp.splitInconsistentBucket));
     EXPECT_EQ(11, static_cast<int>(mp.garbageCollection));
+    EXPECT_EQ(12, static_cast<int>(mp.mergeGlobalBuckets));
 }
 
 TEST_F(DistributorTest, no_db_resurrection_for_bucket_not_owned_in_pending_state) {
@@ -548,15 +564,13 @@ TEST_F(DistributorTest, no_db_resurrection_for_bucket_not_owned_in_pending_state
     getBucketDBUpdater().onSetSystemState(stateCmd);
 
     document::BucketId nonOwnedBucket(16, 3);
-    EXPECT_FALSE(getBucketDBUpdater().checkOwnershipInPendingState(makeDocumentBucket(nonOwnedBucket)).isOwned());
-    EXPECT_FALSE(getBucketDBUpdater().getDistributorComponent()
-                     .checkOwnershipInPendingAndCurrentState(makeDocumentBucket(nonOwnedBucket))
-                     .isOwned());
+    EXPECT_FALSE(getDistributorBucketSpace().get_bucket_ownership_flags(nonOwnedBucket).owned_in_pending_state());
+    EXPECT_FALSE(getDistributorBucketSpace().check_ownership_in_pending_and_current_state(nonOwnedBucket).isOwned());
 
     std::vector<BucketCopy> copies;
     copies.emplace_back(1234, 0, api::BucketInfo(0x567, 1, 2));
-    getExternalOperationHandler().updateBucketDatabase(makeDocumentBucket(nonOwnedBucket), copies,
-                                    DatabaseUpdate::CREATE_IF_NONEXISTING);
+    distributor_component().updateBucketDatabase(makeDocumentBucket(nonOwnedBucket), copies,
+                                                 DatabaseUpdate::CREATE_IF_NONEXISTING);
 
     EXPECT_EQ("NONEXISTING", dumpBucket(nonOwnedBucket));
 }
@@ -568,8 +582,8 @@ TEST_F(DistributorTest, added_db_buckets_without_gc_timestamp_implicitly_get_cur
 
     std::vector<BucketCopy> copies;
     copies.emplace_back(1234, 0, api::BucketInfo(0x567, 1, 2));
-    getExternalOperationHandler().updateBucketDatabase(makeDocumentBucket(bucket), copies,
-                                    DatabaseUpdate::CREATE_IF_NONEXISTING);
+    distributor_component().updateBucketDatabase(makeDocumentBucket(bucket), copies,
+                                                 DatabaseUpdate::CREATE_IF_NONEXISTING);
     BucketDatabase::Entry e(getBucket(bucket));
     EXPECT_EQ(101234, e->getLastGarbageCollectionTime());
 }
@@ -1167,6 +1181,39 @@ TEST_F(DistributorTest, closing_aborts_gets_started_outside_main_distributor_thr
     _distributor->close();
     ASSERT_EQ(1, _sender.replies().size());
     EXPECT_EQ(api::ReturnCode::ABORTED, _sender.reply(0)->getResult().getResult());
+}
+
+TEST_F(DistributorTest, prioritize_global_bucket_merges_config_is_propagated_to_internal_config) {
+    createLinks();
+    setupDistributor(Redundancy(1), NodeCount(1), "distributor:1 storage:1");
+
+    configure_prioritize_global_bucket_merges(true);
+    EXPECT_TRUE(getConfig().prioritize_global_bucket_merges());
+
+    configure_prioritize_global_bucket_merges(false);
+    EXPECT_FALSE(getConfig().prioritize_global_bucket_merges());
+}
+
+TEST_F(DistributorTest, max_activation_inhibited_out_of_sync_groups_config_is_propagated_to_internal_config) {
+    createLinks();
+    setupDistributor(Redundancy(1), NodeCount(1), "distributor:1 storage:1");
+
+    configure_max_activation_inhibited_out_of_sync_groups(3);
+    EXPECT_EQ(getConfig().max_activation_inhibited_out_of_sync_groups(), 3);
+
+    configure_max_activation_inhibited_out_of_sync_groups(0);
+    EXPECT_EQ(getConfig().max_activation_inhibited_out_of_sync_groups(), 0);
+}
+
+TEST_F(DistributorTest, wanted_split_bit_count_is_lower_bounded) {
+    createLinks();
+    setupDistributor(Redundancy(1), NodeCount(1), "distributor:1 storage:1");
+
+    ConfigBuilder builder;
+    builder.minsplitcount = 7;
+    configureDistributor(builder);
+
+    EXPECT_EQ(getConfig().getMinimalBucketSplit(), 8);
 }
 
 }

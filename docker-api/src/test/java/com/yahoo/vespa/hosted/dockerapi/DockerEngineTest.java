@@ -14,15 +14,20 @@ import com.github.dockerjava.api.command.PullImageCmd;
 import com.github.dockerjava.api.exception.NotFoundException;
 import com.github.dockerjava.core.command.ExecStartResultCallback;
 import com.yahoo.config.provision.DockerImage;
+import com.yahoo.test.ManualClock;
+import com.yahoo.vespa.hosted.dockerapi.metrics.DimensionMetrics;
 import com.yahoo.vespa.hosted.dockerapi.metrics.Metrics;
 import org.junit.Test;
 import org.mockito.ArgumentCaptor;
 import org.mockito.ArgumentMatchers;
 
+import java.time.Duration;
+import java.util.Optional;
 import java.util.OptionalLong;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
@@ -36,7 +41,8 @@ public class DockerEngineTest {
 
     private final DockerClient dockerClient = mock(DockerClient.class);
     private final Metrics metrics = new Metrics();
-    private final DockerEngine docker = new DockerEngine(dockerClient, metrics);
+    private final ManualClock clock = new ManualClock();
+    private final DockerEngine docker = new DockerEngine(dockerClient, metrics, clock);
 
     @Test
     public void testExecuteCompletes() {
@@ -75,7 +81,7 @@ public class DockerEngineTest {
     @Test
     @SuppressWarnings({"unchecked", "rawtypes"})
     public void pullImageAsyncIfNeededSuccessfully() {
-        final DockerImage image = DockerImage.fromString("test:1.2.3");
+        final DockerImage image = DockerImage.fromString("registry.example.com/test:1.2.3");
 
         InspectImageResponse inspectImageResponse = mock(InspectImageResponse.class);
         when(inspectImageResponse.getId()).thenReturn(image.asString());
@@ -85,7 +91,6 @@ public class DockerEngineTest {
                 .thenThrow(new NotFoundException("Image not found"))
                 .thenReturn(inspectImageResponse);
 
-        // Array to make it final
         ArgumentCaptor<ResultCallback> resultCallback = ArgumentCaptor.forClass(ResultCallback.class);
         PullImageCmd pullImageCmd = mock(PullImageCmd.class);
         when(pullImageCmd.exec(resultCallback.capture())).thenReturn(null);
@@ -93,23 +98,24 @@ public class DockerEngineTest {
         when(dockerClient.inspectImageCmd(image.asString())).thenReturn(imageInspectCmd);
         when(dockerClient.pullImageCmd(eq(image.asString()))).thenReturn(pullImageCmd);
 
-        assertTrue("Should return true, we just scheduled the pull", docker.pullImageAsyncIfNeeded(image));
-        assertTrue("Should return true, the pull i still ongoing", docker.pullImageAsyncIfNeeded(image));
+        assertTrue("Should return true, we just scheduled the pull", docker.pullImageAsyncIfNeeded(image, RegistryCredentials.none));
+        assertTrue("Should return true, the pull i still ongoing", docker.pullImageAsyncIfNeeded(image, RegistryCredentials.none));
 
         assertTrue(docker.imageIsDownloaded(image));
+        clock.advance(Duration.ofMinutes(10));
         resultCallback.getValue().onComplete();
-        assertFalse(docker.pullImageAsyncIfNeeded(image));
+        assertPullDuration(Duration.ofMinutes(10), image.asString());
+        assertFalse(docker.pullImageAsyncIfNeeded(image, RegistryCredentials.none));
     }
 
     @Test
     @SuppressWarnings({"unchecked", "rawtypes"})
     public void pullImageAsyncIfNeededWithError() {
-        final DockerImage image = DockerImage.fromString("test:1.2.3");
+        final DockerImage image = DockerImage.fromString("registry.example.com/test:1.2.3");
 
         InspectImageCmd imageInspectCmd = mock(InspectImageCmd.class);
         when(imageInspectCmd.exec()).thenThrow(new NotFoundException("Image not found"));
 
-        // Array to make it final
         ArgumentCaptor<ResultCallback> resultCallback = ArgumentCaptor.forClass(ResultCallback.class);
         PullImageCmd pullImageCmd = mock(PullImageCmd.class);
         when(pullImageCmd.exec(resultCallback.capture())).thenReturn(null);
@@ -117,14 +123,25 @@ public class DockerEngineTest {
         when(dockerClient.inspectImageCmd(image.asString())).thenReturn(imageInspectCmd);
         when(dockerClient.pullImageCmd(eq(image.asString()))).thenReturn(pullImageCmd);
 
-        assertTrue("Should return true, we just scheduled the pull", docker.pullImageAsyncIfNeeded(image));
-        assertTrue("Should return true, the pull i still ongoing", docker.pullImageAsyncIfNeeded(image));
+        assertTrue("Should return true, we just scheduled the pull", docker.pullImageAsyncIfNeeded(image, RegistryCredentials.none));
+        assertTrue("Should return true, the pull is still ongoing", docker.pullImageAsyncIfNeeded(image, RegistryCredentials.none));
 
         try {
             resultCallback.getValue().onComplete();
         } catch (Exception ignored) { }
 
         assertFalse(docker.imageIsDownloaded(image));
-        assertTrue("Should return true, new pull scheduled", docker.pullImageAsyncIfNeeded(image));
+        assertTrue("Should return true, new pull scheduled", docker.pullImageAsyncIfNeeded(image, RegistryCredentials.none));
     }
+
+    private void assertPullDuration(Duration duration, String image) {
+        Optional<DimensionMetrics> byImage = metrics.getDefaultMetrics().stream()
+                                                         .filter(metrics -> image.equals(metrics.getDimensions().asMap().get("image")))
+                                                         .findFirst();
+        assertTrue("Found metric for image=" + image, byImage.isPresent());
+        Number durationInSecs = byImage.get().getMetrics().get("docker.imagePullDurationSecs");
+        assertNotNull(durationInSecs);
+        assertEquals(duration, Duration.ofSeconds(durationInSecs.longValue()));
+    }
+
 }

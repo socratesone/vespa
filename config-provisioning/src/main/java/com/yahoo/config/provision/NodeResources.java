@@ -104,10 +104,10 @@ public class NodeResources {
     }
 
     public NodeResources(double vcpu, double memoryGb, double diskGb, double bandwidthGbps, DiskSpeed diskSpeed, StorageType storageType) {
-        this.vcpu = vcpu;
-        this.memoryGb = memoryGb;
-        this.diskGb = diskGb;
-        this.bandwidthGbps = bandwidthGbps;
+        this.vcpu = validate(vcpu, "vcpu");
+        this.memoryGb = validate(memoryGb, "memory");
+        this.diskGb = validate(diskGb, "disk");
+        this.bandwidthGbps = validate(bandwidthGbps, "bandwith");
         this.diskSpeed = diskSpeed;
         this.storageType = storageType;
     }
@@ -213,14 +213,18 @@ public class NodeResources {
         return Objects.hash(vcpu, memoryGb, diskGb, bandwidthGbps, diskSpeed, storageType);
     }
 
-    private static StringBuffer appendDouble(StringBuffer sb, double d) {
-        long x10 = Math.round(d*10);
-        sb.append(x10/10).append('.').append(x10%10);
+    private static StringBuilder appendDouble(StringBuilder sb, double d) {
+        long x10 = Math.round(d * 10);
+        sb.append(x10 / 10).append('.').append(x10 % 10);
         return sb;
     }
+
     @Override
     public String toString() {
-        StringBuffer sb = new StringBuffer("[vcpu: ");
+        if (isUnspecified())
+            return "unspecified resources";
+
+        StringBuilder sb = new StringBuilder("[vcpu: ");
         appendDouble(sb, vcpu);
         sb.append(", memory: ");
         appendDouble(sb, memoryGb);
@@ -304,6 +308,12 @@ public class NodeResources {
         if (cpu == 2 && mem == 8 ) cpu = 1.5;
         if (cpu == 2 && mem == 12 ) cpu = 2.3;
         return new NodeResources(cpu, mem, dsk, 0.3, DiskSpeed.getDefault(), StorageType.getDefault());
+    }
+
+    private double validate(double value, String  valueName) {
+        if (Double.isNaN(value)) throw new IllegalArgumentException(valueName + " cannot be NaN");
+        if (Double.isInfinite(value)) throw new IllegalArgumentException(valueName + " cannot be infinite");
+        return value;
     }
 
 }

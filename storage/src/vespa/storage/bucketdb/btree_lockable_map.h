@@ -37,7 +37,7 @@ public:
     using BucketId     = document::BucketId;
 
     BTreeLockableMap();
-    ~BTreeLockableMap();
+    ~BTreeLockableMap() override;
 
     bool operator==(const BTreeLockableMap& other) const;
     bool operator!=(const BTreeLockableMap& other) const {
@@ -73,6 +73,8 @@ public:
     void showLockClients(vespalib::asciistream & out) const override;
 
 private:
+    template <typename T1> friend class StripedBTreeLockableMap;
+
     struct hasher {
         size_t operator () (const LockId & lid) const { return lid.hash(); }
     };
@@ -121,9 +123,7 @@ private:
                                        const char* clientId) override;
 
     void do_for_each(std::function<Decision(uint64_t, const mapped_type&)> func,
-                     const char* clientId,
-                     const key_type& first,
-                     const key_type& last) override;
+                     const char* clientId) override;
 
     void do_for_each_chunked(std::function<Decision(uint64_t, const mapped_type&)> func,
                              const char* client_id,

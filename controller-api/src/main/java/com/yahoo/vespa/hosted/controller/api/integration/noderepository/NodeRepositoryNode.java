@@ -1,12 +1,14 @@
 // Copyright 2018 Yahoo Holdings. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.hosted.controller.api.integration.noderepository;
 
+import com.fasterxml.jackson.annotation.JsonGetter;
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.JsonNode;
 
-import java.util.Arrays;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
@@ -26,6 +28,8 @@ public class NodeRepositoryNode {
     private Set<String> ipAddresses;
     @JsonProperty("additionalIpAddresses")
     private Set<String> additionalIpAddresses;
+    @JsonProperty("additionalHostnames")
+    private List<String> additionalHostnames;
     @JsonProperty("openStackId")
     private String openStackId;
     @JsonProperty("flavor")
@@ -77,9 +81,9 @@ public class NodeRepositoryNode {
     @JsonProperty("cost")
     private Integer cost;
     @JsonProperty("history")
-    private NodeHistory[] history;
-    @JsonProperty("allowedToBeDown")
-    private Boolean allowedToBeDown;
+    private List<NodeHistory> history;
+    @JsonProperty("orchestratorStatus")
+    private String orchestratorStatus;
     @JsonProperty("suspendedSinceMillis")
     private Long suspendedSinceMillis;
     @JsonProperty("reports")
@@ -88,6 +92,10 @@ public class NodeRepositoryNode {
     private String modelName;
     @JsonProperty("reservedTo")
     private String reservedTo;
+    @JsonProperty("exclusiveTo")
+    private String exclusiveTo;
+    @JsonProperty("switchHostname")
+    private String switchHostname;
 
     public String getUrl() {
         return url;
@@ -135,6 +143,14 @@ public class NodeRepositoryNode {
 
     public void setAdditionalIpAddresses(Set<String> additionalIpAddresses) {
         this.additionalIpAddresses = additionalIpAddresses;
+    }
+
+    public List<String> getAdditionalHostnames() {
+        return additionalHostnames;
+    }
+
+    public void setAdditionalHostnames(List<String> additionalHostnames) {
+        this.additionalHostnames = additionalHostnames;
     }
 
     public String getOpenStackId() {
@@ -303,16 +319,27 @@ public class NodeRepositoryNode {
         this.cost = cost;
     }
 
-    public NodeHistory[] getHistory() {
+    public List<NodeHistory> getHistory() {
         return history;
     }
 
-    public void setHistory(NodeHistory[] history) {
+    public void setHistory(List<NodeHistory> history) {
         this.history = history;
     }
 
-    public Boolean getAllowedToBeDown() {
-        return allowedToBeDown;
+
+    @JsonGetter("orchestratorStatus")
+    public String getOrchestratorStatusOrNull() {
+        return orchestratorStatus;
+    }
+
+    @JsonIgnore
+    public OrchestratorStatus getOrchestratorStatus() {
+        if (orchestratorStatus == null) {
+            return OrchestratorStatus.NO_REMARKS;
+        }
+
+        return OrchestratorStatus.fromString(orchestratorStatus);
     }
 
     public Long suspendedSinceMillis() {
@@ -355,9 +382,13 @@ public class NodeRepositoryNode {
         this.wantedFirmwareCheck = wantedFirmwareCheck;
     }
 
+    @JsonIgnore
     public Map<String, JsonNode> getReports() {
-        return reports;
+        return reports == null ? Map.of() : reports;
     }
+
+    @JsonGetter("reports")
+    public Map<String, JsonNode> getReportsOrNull() { return reports; }
 
     public void setReports(Map<String, JsonNode> reports) {
         this.reports = reports;
@@ -375,6 +406,18 @@ public class NodeRepositoryNode {
 
     public void setReservedTo(String reservedTo) { this.reservedTo = reservedTo; }
 
+    public String getExclusiveTo() { return exclusiveTo; }
+
+    public void setExclusiveTo(String exclusiveTo) { this.exclusiveTo = exclusiveTo; }
+
+    public String getSwitchHostname() {
+        return switchHostname;
+    }
+
+    public void setSwitchHostname(String switchHostname) {
+        this.switchHostname = switchHostname;
+    }
+
     @Override
     public String toString() {
         return "NodeRepositoryNode{" +
@@ -384,6 +427,7 @@ public class NodeRepositoryNode {
                ", hostname='" + hostname + '\'' +
                ", ipAddresses=" + ipAddresses +
                ", additionalIpAddresses=" + additionalIpAddresses +
+               ", additionalHostnames=" + additionalHostnames +
                ", openStackId='" + openStackId + '\'' +
                ", flavor='" + flavor + '\'' +
                ", resources=" + resources +
@@ -407,11 +451,14 @@ public class NodeRepositoryNode {
                ", wantToRetire=" + wantToRetire +
                ", wantToDeprovision=" + wantToDeprovision +
                ", cost=" + cost +
-               ", history=" + Arrays.toString(history) +
-               ", allowedToBeDown=" + allowedToBeDown +
+               ", history=" + history +
+               ", orchestratorStatus=" + orchestratorStatus +
                ", reports=" + reports +
                ", modelName=" + modelName +
                ", reservedTo=" + reservedTo +
+               ", exclusiveTo=" + exclusiveTo +
+               ", switchHostname=" + switchHostname +
                '}';
     }
+
 }

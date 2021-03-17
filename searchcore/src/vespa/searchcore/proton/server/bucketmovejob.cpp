@@ -6,6 +6,8 @@
 #include "iclusterstatechangednotifier.h"
 #include "maintenancedocumentsubdb.h"
 #include "i_disk_mem_usage_notifier.h"
+#include "ibucketmodifiedhandler.h"
+#include "move_operation_limiter.h"
 #include <vespa/searchcore/proton/bucketdb/i_bucket_create_notifier.h>
 #include <vespa/searchcore/proton/documentmetastore/i_document_meta_store.h>
 
@@ -14,40 +16,22 @@ LOG_SETUP(".proton.server.bucketmovejob");
 
 using document::BucketId;
 using storage::spi::BucketInfo;
+using vespalib::Trinary;
 
 namespace proton {
 
 namespace {
 
-const uint32_t FIRST_SCAN_PASS = 1;
-const uint32_t SECOND_SCAN_PASS = 2;
-
-const char * bool2str(bool v) { return (v ? "T" : "F"); }
-
+const char *
+toStr(bool v) {
+    return (v ? "T" : "F");
 }
 
-BucketMoveJob::ScanIterator::
-ScanIterator(BucketDBOwner::Guard db, uint32_t pass, BucketId lastBucket, BucketId endBucket)
-    : _db(std::move(db)),
-      _itr(lastBucket.isSet() ? _db->upperBound(lastBucket) : _db->begin()),
-      _end(pass == SECOND_SCAN_PASS && endBucket.isSet() ?
-           _db->upperBound(endBucket) : _db->end())
-{
+const char *
+toStr(Trinary v) {
+    return (v == Trinary::True) ? "T" : ((v == Trinary::False) ? "F" : "U");
 }
 
-BucketMoveJob::ScanIterator::
-ScanIterator(BucketDBOwner::Guard db, BucketId bucket)
-    : _db(std::move(db)),
-      _itr(_db->lowerBound(bucket)),
-      _end(_db->end())
-{
-}
-
-BucketMoveJob::ScanIterator::ScanIterator(ScanIterator &&rhs)
-    : _db(std::move(rhs._db)),
-      _itr(rhs._itr),
-      _end(rhs._end)
-{
 }
 
 void
@@ -67,10 +51,13 @@ BucketMoveJob::checkBucket(const BucketId &bucket,
     if (_calc->nodeRetired() && !isActive) {
         return;
     }
-    const bool shouldBeReady = _calc->shouldBeReady(document::Bucket(_bucketSpace, bucket));
-    const bool wantReady = shouldBeReady || isActive;
+    Trinary shouldBeReady = _calc->shouldBeReady(document::Bucket(_bucketSpace, bucket));
+    if (shouldBeReady == vespalib::Trinary::Undefined) {
+        return;
+    }
+    const bool wantReady = (shouldBeReady == Trinary::True) || isActive;
     LOG(spam, "checkBucket(): bucket(%s), shouldBeReady(%s), active(%s)",
-              bucket.toString().c_str(), bool2str(shouldBeReady), bool2str(isActive));
+              bucket.toString().c_str(), toStr(shouldBeReady), toStr(isActive));
     if (wantReady) {
         if (!hasNotReadyDocs)
             return; // No notready bucket to make ready
@@ -89,8 +76,7 @@ BucketMoveJob::checkBucket(const BucketId &bucket,
     const MaintenanceDocumentSubDB &target(wantReady ? _ready : _notReady);
     LOG(debug, "checkBucket(): mover.setupForBucket(%s, source:%u, target:%u)",
         bucket.toString().c_str(), source.sub_db_id(), target.sub_db_id());
-    mover.setupForBucket(bucket, &source, target.sub_db_id(),
-                         _moveHandler, _ready.meta_store()->getBucketDB());
+    mover.setupForBucket(bucket, &source, target.sub_db_id(), _moveHandler);
 }
 
 BucketMoveJob::ScanResult
@@ -116,7 +102,7 @@ BucketMoveJob::scanBuckets(size_t maxBucketsToScan, IFrozenBucketHandler::Exclus
     return ScanResult(bucketsScanned, passDone);
 }
 
-void
+bool
 BucketMoveJob::moveDocuments(DocumentBucketMover &mover,
                              size_t maxDocsToMove,
                              IFrozenBucketHandler::ExclusiveBucketGuard::UP & bucketGuard)
@@ -125,20 +111,23 @@ BucketMoveJob::moveDocuments(DocumentBucketMover &mover,
         bucketGuard = _frozenBuckets.acquireExclusiveBucket(mover.getBucket());
         if (! bucketGuard) {
             maybeDelayMover(mover, mover.getBucket());
-            return;
+            return true;
         }
     }
     assert(mover.getBucket() == bucketGuard->getBucket());
-    mover.moveDocuments(maxDocsToMove);
+    if ( ! mover.moveDocuments(maxDocsToMove)) {
+        return false;
+    }
     if (mover.bucketDone()) {
         _modifiedHandler.notifyBucketModified(mover.getBucket());
     }
+    return true;
 }
 
 namespace {
 
 bool
-blockedDueToClusterState(const IBucketStateCalculator::SP &calc)
+blockedDueToClusterState(const std::shared_ptr<IBucketStateCalculator> &calc)
 {
     bool clusterUp = calc.get() != nullptr && calc->clusterUp();
     bool nodeUp = calc.get() != nullptr && calc->nodeUp();
@@ -149,7 +138,7 @@ blockedDueToClusterState(const IBucketStateCalculator::SP &calc)
 }
 
 BucketMoveJob::
-BucketMoveJob(const IBucketStateCalculator::SP &calc,
+BucketMoveJob(const std::shared_ptr<IBucketStateCalculator> &calc,
               IDocumentMoveHandler &moveHandler,
               IBucketModifiedHandler &modifiedHandler,
               const MaintenanceDocumentSubDB &ready,
@@ -173,17 +162,17 @@ BucketMoveJob(const IBucketStateCalculator::SP &calc,
       _modifiedHandler(modifiedHandler),
       _ready(ready),
       _notReady(notReady),
-      _mover(*_moveOpsLimiter),
+      _mover(getLimiter(), _ready.meta_store()->getBucketDB()),
       _doneScan(false),
       _scanPos(),
-      _scanPass(FIRST_SCAN_PASS),
+      _scanPass(ScanPass::FIRST),
       _endPos(),
       _bucketSpace(bucketSpace),
       _delayedBuckets(),
       _delayedBucketsFrozen(),
       _frozenBuckets(frozenBuckets),
       _bucketCreateNotifier(bucketCreateNotifier),
-      _delayedMover(*_moveOpsLimiter),
+      _delayedMover(getLimiter(), _ready.meta_store()->getBucketDB()),
       _clusterStateChangedNotifier(clusterStateChangedNotifier),
       _bucketStateChangedNotifier(bucketStateChangedNotifier),
       _diskMemUsageNotifier(diskMemUsageNotifier)
@@ -214,8 +203,11 @@ BucketMoveJob::maybeCancelMover(DocumentBucketMover &mover)
     // Cancel bucket if moving in wrong direction
     if (!mover.bucketDone()) {
         bool ready = mover.getSource() == &_ready;
+        Trinary shouldBeReady = _calc->shouldBeReady(document::Bucket(_bucketSpace, mover.getBucket()));
         if (isBlocked() ||
-            _calc->shouldBeReady(document::Bucket(_bucketSpace, mover.getBucket())) == ready) {
+            (shouldBeReady == Trinary::Undefined) ||
+            (ready == (shouldBeReady == Trinary::True)))
+        {
             mover.cancel();
         }
     }
@@ -250,7 +242,7 @@ BucketMoveJob::deactivateBucket(BucketId bucket)
 void
 BucketMoveJob::activateBucket(BucketId bucket)
 {
-    BucketDBOwner::Guard notReadyBdb(_notReady.meta_store()->getBucketDB().takeGuard());
+    bucketdb::Guard notReadyBdb(_notReady.meta_store()->getBucketDB().takeGuard());
     if (notReadyBdb->get(bucket).getDocumentCount() == 0) {
         return; // notready bucket already empty. This is the normal case.
     }
@@ -258,7 +250,7 @@ BucketMoveJob::activateBucket(BucketId bucket)
 }
 
 void
-BucketMoveJob::notifyCreateBucket(const BucketId &bucket)
+BucketMoveJob::notifyCreateBucket(const bucketdb::Guard &, const BucketId &bucket)
 {
     _delayedBuckets.insert(bucket);
     considerRun();
@@ -274,18 +266,14 @@ BucketMoveJob::changedCalculator()
         _endPos = _scanPos;
     }
     _doneScan = false;
-    _scanPass = FIRST_SCAN_PASS;
+    _scanPass = ScanPass::FIRST;
     maybeCancelMover(_mover);
     maybeCancelMover(_delayedMover);
 }
 
-void
-BucketMoveJob::scanAndMove(size_t maxBucketsToScan,
-                           size_t maxDocsToMove)
+bool
+BucketMoveJob::scanAndMove(size_t maxBucketsToScan, size_t maxDocsToMove)
 {
-    if (done()) {
-        return;
-    }
     IFrozenBucketHandler::ExclusiveBucketGuard::UP bucketGuard;
     // Look for delayed bucket to be processed now
     while (!_delayedBuckets.empty() && _delayedMover.bucketDone()) {
@@ -297,21 +285,19 @@ BucketMoveJob::scanAndMove(size_t maxBucketsToScan,
         }
     }
     if (!_delayedMover.bucketDone()) {
-        moveDocuments(_delayedMover, maxDocsToMove, bucketGuard);
-        return;
+        return moveDocuments(_delayedMover, maxDocsToMove, bucketGuard);
     }
     if (_mover.bucketDone()) {
         size_t bucketsScanned = 0;
         for (;;) {
             if (_mover.bucketDone()) {
-                ScanResult res = scanBuckets(maxBucketsToScan -
-                                             bucketsScanned, bucketGuard);
+                ScanResult res = scanBuckets(maxBucketsToScan - bucketsScanned, bucketGuard);
                 bucketsScanned += res.first;
                 if (res.second) {
-                    if (_scanPass == FIRST_SCAN_PASS &&
+                    if (_scanPass == ScanPass::FIRST &&
                         _endPos.validBucket()) {
                         _scanPos = ScanPosition();
-                        _scanPass = SECOND_SCAN_PASS;
+                        _scanPass = ScanPass::SECOND;
                     } else {
                         _doneScan = true;
                         break;
@@ -324,17 +310,23 @@ BucketMoveJob::scanAndMove(size_t maxBucketsToScan,
         }
     }
     if (!_mover.bucketDone()) {
-        moveDocuments(_mover, maxDocsToMove, bucketGuard);
+        return moveDocuments(_mover, maxDocsToMove, bucketGuard);
     }
+    return true;
 }
 
 bool
 BucketMoveJob::run()
 {
-    if (isBlocked()) {
+    if (isBlocked() || done()) {
         return true; // indicate work is done, since node state is bad
     }
-    scanAndMove(200, 1);
+    /// Returning false here will immediately post the job back on the executor. This will give a busy loop,
+    /// but this is considered fine as it is very rare and it will be intermingled with multiple feed operations.
+    if ( ! scanAndMove(200, 1) ) {
+        return false;
+    }
+
     if (isBlocked(BlockedReason::OUTSTANDING_OPS)) {
         return true;
     }
@@ -342,7 +334,7 @@ BucketMoveJob::run()
 }
 
 void
-BucketMoveJob::notifyClusterStateChanged(const IBucketStateCalculator::SP &newCalc)
+BucketMoveJob::notifyClusterStateChanged(const std::shared_ptr<IBucketStateCalculator> &newCalc)
 {
     // Called by master write thread
     _calc = newCalc;
@@ -355,8 +347,7 @@ BucketMoveJob::notifyClusterStateChanged(const IBucketStateCalculator::SP &newCa
 }
 
 void
-BucketMoveJob::notifyBucketStateChanged(const BucketId &bucketId,
-                                        BucketInfo::ActiveState newState)
+BucketMoveJob::notifyBucketStateChanged(const BucketId &bucketId, BucketInfo::ActiveState newState)
 {
     // Called by master write thread
     if (newState == BucketInfo::NOT_ACTIVE) {

@@ -23,16 +23,18 @@ import com.yahoo.config.provision.TenantName;
 import com.yahoo.config.provision.Zone;
 import com.yahoo.vespa.config.server.ApplicationRepository;
 import com.yahoo.vespa.config.server.MockProvisioner;
-import com.yahoo.vespa.config.server.TestComponentRegistry;
 import com.yahoo.vespa.config.server.TimeoutBudget;
 import com.yahoo.vespa.config.server.application.OrchestratorMock;
+import com.yahoo.vespa.config.server.filedistribution.MockFileDistributionFactory;
 import com.yahoo.vespa.config.server.http.v2.PrepareResult;
 import com.yahoo.vespa.config.server.modelfactory.ModelFactoryRegistry;
 import com.yahoo.vespa.config.server.monitoring.Metrics;
+import com.yahoo.vespa.config.server.provision.HostProvisionerProvider;
 import com.yahoo.vespa.config.server.session.PrepareParams;
 import com.yahoo.vespa.config.server.session.Session;
 import com.yahoo.vespa.config.server.tenant.Tenant;
 import com.yahoo.vespa.config.server.tenant.TenantRepository;
+import com.yahoo.vespa.config.server.tenant.TestTenantRepository;
 import com.yahoo.vespa.curator.Curator;
 import com.yahoo.vespa.curator.mock.MockCurator;
 import com.yahoo.vespa.model.VespaModel;
@@ -178,7 +180,7 @@ public class DeployTester {
     }
 
     private static HostProvisioner createProvisioner() {
-        return new InMemoryProvisioner(true, false, "host0", "host1", "host2", "host3", "host4", "host5");
+        return new InMemoryProvisioner(7, false);
     }
 
     private static class FailingModelFactory implements ModelFactory {
@@ -262,7 +264,7 @@ public class DeployTester {
         private Provisioner provisioner;
         private ConfigserverConfig configserverConfig;
         private Zone zone;
-        private Curator curator;
+        private Curator curator = new MockCurator();
         private Metrics metrics;
         private List<ModelFactory> modelFactories;
         private Orchestrator orchestrator;
@@ -280,16 +282,18 @@ public class DeployTester {
             List<ModelFactory> modelFactories = Optional.ofNullable(this.modelFactories)
                     .orElseGet(() -> List.of(createModelFactory(clock)));
 
-            TestComponentRegistry.Builder testComponentRegistryBuilder = new TestComponentRegistry.Builder()
-                    .clock(clock)
-                    .configServerConfig(configserverConfig)
-                    .curator(Optional.ofNullable(curator).orElseGet(MockCurator::new))
-                    .modelFactoryRegistry(new ModelFactoryRegistry(modelFactories))
-                    .metrics(Optional.ofNullable(metrics).orElseGet(Metrics::createTestMetrics))
-                    .zone(zone);
-            if (configserverConfig.hostedVespa()) testComponentRegistryBuilder.provisioner(provisioner);
+            TestTenantRepository.Builder builder = new TestTenantRepository.Builder()
+                    .withClock(clock)
+                    .withConfigserverConfig(configserverConfig)
+                    .withCurator(curator)
+                    .withFileDistributionFactory(new MockFileDistributionFactory(configserverConfig))
+                    .withMetrics(Optional.ofNullable(metrics).orElse(Metrics.createTestMetrics()))
+                    .withModelFactoryRegistry((new ModelFactoryRegistry(modelFactories)))
+                    .withZone(zone);
 
-            TenantRepository tenantRepository = new TenantRepository(testComponentRegistryBuilder.build());
+            if (configserverConfig.hostedVespa()) builder.withHostProvisionerProvider(HostProvisionerProvider.withProvisioner(provisioner, true));
+
+            TenantRepository tenantRepository = builder.build();
             tenantRepository.addTenant(tenantName);
 
             ApplicationRepository applicationRepository = new ApplicationRepository.Builder()

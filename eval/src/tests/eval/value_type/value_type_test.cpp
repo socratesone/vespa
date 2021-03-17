@@ -8,8 +8,6 @@
 
 using namespace vespalib::eval;
 
-using CellType = ValueType::CellType;
-
 const size_t npos = ValueType::Dimension::npos;
 
 ValueType type(const vespalib::string &type_str) {
@@ -26,21 +24,21 @@ std::vector<vespalib::string> str_list(const std::vector<vespalib::string> &list
 
 TEST("require that ERROR value type can be created") {
     ValueType t = ValueType::error_type();
+    EXPECT_TRUE(t.is_error());
     EXPECT_TRUE(t.cell_type() == CellType::DOUBLE);
-    EXPECT_TRUE(t.type() == ValueType::Type::ERROR);
     EXPECT_EQUAL(t.dimensions().size(), 0u);
 }
 
 TEST("require that DOUBLE value type can be created") {
     ValueType t = ValueType::double_type();
+    EXPECT_FALSE(t.is_error());
     EXPECT_TRUE(t.cell_type() == CellType::DOUBLE);
-    EXPECT_TRUE(t.type() == ValueType::Type::DOUBLE);
     EXPECT_EQUAL(t.dimensions().size(), 0u);
 }
 
 TEST("require that TENSOR value type can be created") {
-    ValueType t = ValueType::tensor_type({{"x", 10},{"y"}});
-    EXPECT_TRUE(t.type() == ValueType::Type::TENSOR);
+    ValueType t = ValueType::make_type(CellType::DOUBLE, {{"x", 10},{"y"}});
+    EXPECT_FALSE(t.is_error());
     EXPECT_TRUE(t.cell_type() == CellType::DOUBLE);
     ASSERT_EQUAL(t.dimensions().size(), 2u);
     EXPECT_EQUAL(t.dimensions()[0].name, "x");
@@ -50,8 +48,8 @@ TEST("require that TENSOR value type can be created") {
 }
 
 TEST("require that float TENSOR value type can be created") {
-    ValueType t = ValueType::tensor_type({{"x", 10},{"y"}}, CellType::FLOAT);
-    EXPECT_TRUE(t.type() == ValueType::Type::TENSOR);
+    ValueType t = ValueType::make_type(CellType::FLOAT, {{"x", 10},{"y"}});
+    EXPECT_FALSE(t.is_error());
     EXPECT_TRUE(t.cell_type() == CellType::FLOAT);
     ASSERT_EQUAL(t.dimensions().size(), 2u);
     EXPECT_EQUAL(t.dimensions()[0].name, "x");
@@ -61,8 +59,8 @@ TEST("require that float TENSOR value type can be created") {
 }
 
 TEST("require that TENSOR value type sorts dimensions") {
-    ValueType t = ValueType::tensor_type({{"x", 10}, {"z", 30}, {"y"}});
-    EXPECT_TRUE(t.type() == ValueType::Type::TENSOR);
+    ValueType t = ValueType::make_type(CellType::DOUBLE, {{"x", 10}, {"z", 30}, {"y"}});
+    EXPECT_FALSE(t.is_error());
     EXPECT_TRUE(t.cell_type() == CellType::DOUBLE);
     ASSERT_EQUAL(t.dimensions().size(), 3u);
     EXPECT_EQUAL(t.dimensions()[0].name, "x");
@@ -73,19 +71,16 @@ TEST("require that TENSOR value type sorts dimensions") {
     EXPECT_EQUAL(t.dimensions()[2].size, 30u);
 }
 
-TEST("require that 'tensor<float>()' is normalized to 'double'") {
-    ValueType t = ValueType::tensor_type({}, CellType::FLOAT);
-    EXPECT_TRUE(t.cell_type() == CellType::DOUBLE);
-    EXPECT_TRUE(t.type() == ValueType::Type::DOUBLE);
-    EXPECT_EQUAL(t.dimensions().size(), 0u);
+TEST("require that non-double scalar values are not allowed") {
+    EXPECT_TRUE(ValueType::make_type(CellType::FLOAT, {}).is_error());
 }
 
 TEST("require that use of zero-size dimensions result in error types") {
-    EXPECT_TRUE(ValueType::tensor_type({{"x", 0}}).is_error());
+    EXPECT_TRUE(ValueType::make_type(CellType::DOUBLE, {{"x", 0}}).is_error());
 }
 
 TEST("require that duplicate dimension names result in error types") {
-    EXPECT_TRUE(ValueType::tensor_type({{"x"}, {"x"}}).is_error());
+    EXPECT_TRUE(ValueType::make_type(CellType::DOUBLE, {{"x"}, {"x"}}).is_error());
 }
 
 //-----------------------------------------------------------------------------
@@ -111,17 +106,17 @@ void verify_not_equal(const ValueType &a, const ValueType &b) {
 TEST("require that value types can be compared") {
     TEST_DO(verify_equal(ValueType::error_type(), ValueType::error_type()));
     TEST_DO(verify_not_equal(ValueType::error_type(), ValueType::double_type()));
-    TEST_DO(verify_not_equal(ValueType::error_type(), ValueType::tensor_type({{"x"}})));
+    TEST_DO(verify_not_equal(ValueType::error_type(), ValueType::make_type(CellType::DOUBLE, {{"x"}})));
     TEST_DO(verify_equal(ValueType::double_type(), ValueType::double_type()));
-    TEST_DO(verify_equal(ValueType::double_type(), ValueType::tensor_type({})));
-    TEST_DO(verify_not_equal(ValueType::double_type(), ValueType::tensor_type({{"x"}})));
-    TEST_DO(verify_equal(ValueType::tensor_type({{"x"}, {"y"}}), ValueType::tensor_type({{"y"}, {"x"}})));
-    TEST_DO(verify_not_equal(ValueType::tensor_type({{"x"}, {"y"}}), ValueType::tensor_type({{"x"}, {"y"}, {"z"}})));
-    TEST_DO(verify_equal(ValueType::tensor_type({{"x", 10}, {"y", 20}}), ValueType::tensor_type({{"y", 20}, {"x", 10}})));
-    TEST_DO(verify_not_equal(ValueType::tensor_type({{"x", 10}, {"y", 20}}), ValueType::tensor_type({{"x", 10}, {"y", 10}})));
-    TEST_DO(verify_not_equal(ValueType::tensor_type({{"x", 10}}), ValueType::tensor_type({{"x"}})));
-    TEST_DO(verify_equal(ValueType::tensor_type({{"x", 10}}, CellType::FLOAT), ValueType::tensor_type({{"x", 10}}, CellType::FLOAT)));
-    TEST_DO(verify_not_equal(ValueType::tensor_type({{"x", 10}}, CellType::DOUBLE), ValueType::tensor_type({{"x", 10}}, CellType::FLOAT)));
+    TEST_DO(verify_equal(ValueType::double_type(), ValueType::make_type(CellType::DOUBLE, {})));
+    TEST_DO(verify_not_equal(ValueType::double_type(), ValueType::make_type(CellType::DOUBLE, {{"x"}})));
+    TEST_DO(verify_equal(ValueType::make_type(CellType::DOUBLE, {{"x"}, {"y"}}), ValueType::make_type(CellType::DOUBLE, {{"y"}, {"x"}})));
+    TEST_DO(verify_not_equal(ValueType::make_type(CellType::DOUBLE, {{"x"}, {"y"}}), ValueType::make_type(CellType::DOUBLE, {{"x"}, {"y"}, {"z"}})));
+    TEST_DO(verify_equal(ValueType::make_type(CellType::DOUBLE, {{"x", 10}, {"y", 20}}), ValueType::make_type(CellType::DOUBLE, {{"y", 20}, {"x", 10}})));
+    TEST_DO(verify_not_equal(ValueType::make_type(CellType::DOUBLE, {{"x", 10}, {"y", 20}}), ValueType::make_type(CellType::DOUBLE, {{"x", 10}, {"y", 10}})));
+    TEST_DO(verify_not_equal(ValueType::make_type(CellType::DOUBLE, {{"x", 10}}), ValueType::make_type(CellType::DOUBLE, {{"x"}})));
+    TEST_DO(verify_equal(ValueType::make_type(CellType::FLOAT, {{"x", 10}}), ValueType::make_type(CellType::FLOAT, {{"x", 10}})));
+    TEST_DO(verify_not_equal(ValueType::make_type(CellType::DOUBLE, {{"x", 10}}), ValueType::make_type(CellType::FLOAT, {{"x", 10}})));
 }
 
 //-----------------------------------------------------------------------------
@@ -129,43 +124,45 @@ TEST("require that value types can be compared") {
 TEST("require that value type can make spec") {
     EXPECT_EQUAL("error", ValueType::error_type().to_spec());
     EXPECT_EQUAL("double", ValueType::double_type().to_spec());
-    EXPECT_EQUAL("double", ValueType::tensor_type({}).to_spec());
-    EXPECT_EQUAL("double", ValueType::tensor_type({}, CellType::FLOAT).to_spec());
-    EXPECT_EQUAL("tensor(x{})", ValueType::tensor_type({{"x"}}).to_spec());
-    EXPECT_EQUAL("tensor(y[10])", ValueType::tensor_type({{"y", 10}}).to_spec());
-    EXPECT_EQUAL("tensor(x{},y[10],z[5])", ValueType::tensor_type({{"x"}, {"y", 10}, {"z", 5}}).to_spec());
-    EXPECT_EQUAL("tensor<float>(x{})", ValueType::tensor_type({{"x"}}, CellType::FLOAT).to_spec());
-    EXPECT_EQUAL("tensor<float>(y[10])", ValueType::tensor_type({{"y", 10}}, CellType::FLOAT).to_spec());
-    EXPECT_EQUAL("tensor<float>(x{},y[10],z[5])", ValueType::tensor_type({{"x"}, {"y", 10}, {"z", 5}}, CellType::FLOAT).to_spec());
+    EXPECT_EQUAL("error", ValueType::make_type(CellType::FLOAT, {}).to_spec());
+    EXPECT_EQUAL("double", ValueType::make_type(CellType::DOUBLE, {}).to_spec());
+    EXPECT_EQUAL("tensor(x{})", ValueType::make_type(CellType::DOUBLE, {{"x"}}).to_spec());
+    EXPECT_EQUAL("tensor(y[10])", ValueType::make_type(CellType::DOUBLE, {{"y", 10}}).to_spec());
+    EXPECT_EQUAL("tensor(x{},y[10],z[5])", ValueType::make_type(CellType::DOUBLE, {{"x"}, {"y", 10}, {"z", 5}}).to_spec());
+    EXPECT_EQUAL("tensor<float>(x{})", ValueType::make_type(CellType::FLOAT, {{"x"}}).to_spec());
+    EXPECT_EQUAL("tensor<float>(y[10])", ValueType::make_type(CellType::FLOAT, {{"y", 10}}).to_spec());
+    EXPECT_EQUAL("tensor<float>(x{},y[10],z[5])", ValueType::make_type(CellType::FLOAT, {{"x"}, {"y", 10}, {"z", 5}}).to_spec());
 }
 
 //-----------------------------------------------------------------------------
 
 TEST("require that value type spec can be parsed") {
-    EXPECT_EQUAL(ValueType::double_type(), ValueType::from_spec("double"));
-    EXPECT_EQUAL(ValueType::tensor_type({}), ValueType::from_spec("tensor()"));
-    EXPECT_EQUAL(ValueType::tensor_type({{"x"}}), ValueType::from_spec("tensor(x{})"));
-    EXPECT_EQUAL(ValueType::tensor_type({{"y", 10}}), ValueType::from_spec("tensor(y[10])"));
-    EXPECT_EQUAL(ValueType::tensor_type({{"x"}, {"y", 10}, {"z", 5}}), ValueType::from_spec("tensor(x{},y[10],z[5])"));
-    EXPECT_EQUAL(ValueType::tensor_type({{"y", 10}}), ValueType::from_spec("tensor<double>(y[10])"));
-    EXPECT_EQUAL(ValueType::tensor_type({{"y", 10}}, CellType::FLOAT), ValueType::from_spec("tensor<float>(y[10])"));
+    EXPECT_EQUAL(ValueType::double_type(), type("double"));
+    EXPECT_EQUAL(ValueType::make_type(CellType::DOUBLE, {}), type("tensor()"));
+    EXPECT_EQUAL(ValueType::make_type(CellType::DOUBLE, {}), type("tensor<double>()"));
+    EXPECT_EQUAL(ValueType::make_type(CellType::DOUBLE, {{"x"}}), type("tensor(x{})"));
+    EXPECT_EQUAL(ValueType::make_type(CellType::DOUBLE, {{"y", 10}}), type("tensor(y[10])"));
+    EXPECT_EQUAL(ValueType::make_type(CellType::DOUBLE, {{"x"}, {"y", 10}, {"z", 5}}), type("tensor(x{},y[10],z[5])"));
+    EXPECT_EQUAL(ValueType::make_type(CellType::DOUBLE, {{"y", 10}}), type("tensor<double>(y[10])"));
+    EXPECT_EQUAL(ValueType::make_type(CellType::FLOAT, {{"y", 10}}), type("tensor<float>(y[10])"));
 }
 
 TEST("require that value type spec can be parsed with extra whitespace") {
-    EXPECT_EQUAL(ValueType::double_type(), ValueType::from_spec(" double "));
-    EXPECT_EQUAL(ValueType::tensor_type({}), ValueType::from_spec(" tensor ( ) "));
-    EXPECT_EQUAL(ValueType::tensor_type({{"x"}}), ValueType::from_spec(" tensor ( x { } ) "));
-    EXPECT_EQUAL(ValueType::tensor_type({{"y", 10}}), ValueType::from_spec(" tensor ( y [ 10 ] ) "));
-    EXPECT_EQUAL(ValueType::tensor_type({{"x"}, {"y", 10}, {"z", 5}}),
-                 ValueType::from_spec(" tensor ( x { } , y [ 10 ] , z [ 5 ] ) "));
-    EXPECT_EQUAL(ValueType::tensor_type({{"y", 10}}), ValueType::from_spec(" tensor < double > ( y [ 10 ] ) "));
-    EXPECT_EQUAL(ValueType::tensor_type({{"y", 10}}, CellType::FLOAT), ValueType::from_spec(" tensor < float > ( y [ 10 ] ) "));
+    EXPECT_EQUAL(ValueType::double_type(), type(" double "));
+    EXPECT_EQUAL(ValueType::make_type(CellType::DOUBLE, {}), type(" tensor ( ) "));
+    EXPECT_EQUAL(ValueType::make_type(CellType::DOUBLE, {}), type(" tensor < double > ( ) "));
+    EXPECT_EQUAL(ValueType::make_type(CellType::DOUBLE, {{"x"}}), type(" tensor ( x { } ) "));
+    EXPECT_EQUAL(ValueType::make_type(CellType::DOUBLE, {{"y", 10}}), type(" tensor ( y [ 10 ] ) "));
+    EXPECT_EQUAL(ValueType::make_type(CellType::DOUBLE, {{"x"}, {"y", 10}, {"z", 5}}),
+                 type(" tensor ( x { } , y [ 10 ] , z [ 5 ] ) "));
+    EXPECT_EQUAL(ValueType::make_type(CellType::DOUBLE, {{"y", 10}}), type(" tensor < double > ( y [ 10 ] ) "));
+    EXPECT_EQUAL(ValueType::make_type(CellType::FLOAT, {{"y", 10}}), type(" tensor < float > ( y [ 10 ] ) "));
 }
 
 TEST("require that the unsorted dimension list can be obtained when parsing type spec") {
     std::vector<ValueType::Dimension> unsorted;
     auto type = ValueType::from_spec("tensor(y[10],z[5],x{})", unsorted);
-    EXPECT_EQUAL(ValueType::tensor_type({{"x"}, {"y", 10}, {"z", 5}}), type);
+    EXPECT_EQUAL(ValueType::make_type(CellType::DOUBLE, {{"x"}, {"y", 10}, {"z", 5}}), type);
     ASSERT_EQUAL(unsorted.size(), 3u);
     EXPECT_EQUAL(unsorted[0].name, "y");
     EXPECT_EQUAL(unsorted[0].size, 10u);
@@ -198,6 +195,7 @@ TEST("require that malformed value type spec is parsed as error") {
     EXPECT_TRUE(ValueType::from_spec("  ").is_error());
     EXPECT_TRUE(ValueType::from_spec("error").is_error());
     EXPECT_TRUE(ValueType::from_spec("any").is_error());
+    EXPECT_TRUE(ValueType::from_spec("float").is_error());
     EXPECT_TRUE(ValueType::from_spec("tensor").is_error());
     EXPECT_TRUE(ValueType::from_spec("tensor<double>").is_error());
     EXPECT_TRUE(ValueType::from_spec("tensor() tensor()").is_error());
@@ -215,7 +213,8 @@ TEST("require that malformed value type spec is parsed as error") {
     EXPECT_TRUE(ValueType::from_spec("tensor(x{},x[10])").is_error());
     EXPECT_TRUE(ValueType::from_spec("tensor(x{},x[])").is_error());
     EXPECT_TRUE(ValueType::from_spec("tensor(z[])").is_error());
-    EXPECT_TRUE(ValueType::from_spec("tensor<float16>(x[10])").is_error());
+    EXPECT_TRUE(ValueType::from_spec("tensor<float>()").is_error());
+    EXPECT_TRUE(ValueType::from_spec("tensor<int7>(x[10])").is_error());
 }
 
 struct ParseResult {
@@ -238,7 +237,7 @@ ParseResult::~ParseResult() = default;
 
 TEST("require that we can parse a partial string into a type with the low-level API") {
     ParseResult result("tensor(a[5]) , ");
-    EXPECT_EQUAL(result.type, ValueType::tensor_type({{"a", 5}}));
+    EXPECT_EQUAL(result.type, ValueType::make_type(CellType::DOUBLE, {{"a", 5}}));
     ASSERT_TRUE(result.after_inside());
     EXPECT_EQUAL(*result.after, ',');
 }
@@ -306,7 +305,7 @@ void verify_predicates(const ValueType &type,
 {
     EXPECT_EQUAL(type.is_error(), expect_error);
     EXPECT_EQUAL(type.is_double(), expect_double);
-    EXPECT_EQUAL(type.is_tensor(), expect_tensor);
+    EXPECT_EQUAL(type.has_dimensions(), expect_tensor);
     EXPECT_EQUAL(type.is_sparse(), expect_sparse);
     EXPECT_EQUAL(type.is_dense(), expect_dense);
 }
@@ -490,6 +489,95 @@ TEST("require that cell type is handled correctly for concat") {
     TEST_DO(verify_concat(type("tensor<float>(x[3])"), type("tensor(x[2])"), "x", type("tensor(x[5])")));
     TEST_DO(verify_concat(type("tensor<float>(x[3])"), type("tensor<float>(x[2])"), "x", type("tensor<float>(x[5])")));
     TEST_DO(verify_concat(type("tensor<float>(x[3])"), type("double"), "x", type("tensor<float>(x[4])")));
+}
+
+void verify_cell_cast(const ValueType &type) {
+    for (CellType cell_type: CellTypeUtils::list_types()) {
+        auto res_type = type.cell_cast(cell_type);
+        if (type.is_error()) {
+            EXPECT_TRUE(res_type.is_error());
+            EXPECT_EQUAL(res_type, type);
+        } else if (type.is_double()) {
+            if (cell_type == CellType::DOUBLE) {
+                EXPECT_TRUE(res_type.is_double());
+            } else {
+                EXPECT_TRUE(res_type.is_error());
+            }
+        } else {
+            EXPECT_FALSE(res_type.is_error());
+            EXPECT_EQUAL(int(res_type.cell_type()), int(cell_type));
+            EXPECT_TRUE(res_type.dimensions() == type.dimensions());
+        }
+    }
+}
+
+TEST("require that value type cell cast works correctly") {
+    TEST_DO(verify_cell_cast(type("error")));
+    TEST_DO(verify_cell_cast(type("double")));
+    TEST_DO(verify_cell_cast(type("tensor<float>(x[10])")));
+    TEST_DO(verify_cell_cast(type("tensor<double>(x[10])")));
+    TEST_DO(verify_cell_cast(type("tensor<float>(x{})")));
+    TEST_DO(verify_cell_cast(type("tensor<double>(x{})")));
+    TEST_DO(verify_cell_cast(type("tensor<float>(x{},y[5])")));
+    TEST_DO(verify_cell_cast(type("tensor<double>(x{},y[5])")));
+}
+
+TEST("require that actual cell type can be converted to cell type name") {
+    EXPECT_EQUAL(value_type::cell_type_to_name(CellType::FLOAT), "float");
+    EXPECT_EQUAL(value_type::cell_type_to_name(CellType::DOUBLE), "double");
+}
+
+TEST("require that cell type name can be converted to actual cell type") {
+    EXPECT_EQUAL(int(value_type::cell_type_from_name("float").value()), int(CellType::FLOAT));
+    EXPECT_EQUAL(int(value_type::cell_type_from_name("double").value()), int(CellType::DOUBLE));
+    EXPECT_FALSE(value_type::cell_type_from_name("int7").has_value());
+}
+
+TEST("require that cell type name recognition is strict") {
+    EXPECT_FALSE(value_type::cell_type_from_name("Float").has_value());
+    EXPECT_FALSE(value_type::cell_type_from_name(" float").has_value());
+    EXPECT_FALSE(value_type::cell_type_from_name("float ").has_value());
+    EXPECT_FALSE(value_type::cell_type_from_name("f").has_value());
+    EXPECT_FALSE(value_type::cell_type_from_name("").has_value());
+}
+
+TEST("require that map type inference works as expected") {
+    EXPECT_EQUAL(type("error").map(), type("error"));
+    EXPECT_EQUAL(type("double").map(), type("double"));
+    EXPECT_EQUAL(type("tensor(x[10])").map(), type("tensor(x[10])"));
+    EXPECT_EQUAL(type("tensor<float>(x{})").map(), type("tensor<float>(x{})"));
+}
+
+TEST("require that peek type inference works as expected") {
+    auto input1 = type("tensor(a[2],b{},c[3],d{},e[5])");
+    auto input2 = type("tensor<float>(a[2],b{},c[3],d{},e[5])");
+    EXPECT_EQUAL(type("error").peek({}), type("error"));
+    EXPECT_EQUAL(type("double").peek({}), type("error"));
+    EXPECT_EQUAL(input1.peek({}), type("error"));
+    EXPECT_EQUAL(input1.peek({"x"}), type("error"));
+    EXPECT_EQUAL(input1.peek({"a", "c", "e"}), type("tensor(b{},d{})"));
+    EXPECT_EQUAL(input2.peek({"b", "d"}), type("tensor<float>(a[2],c[3],e[5])"));
+    EXPECT_EQUAL(input1.peek({"a", "b", "c", "d", "e"}), type("double"));
+    EXPECT_EQUAL(input2.peek({"a", "b", "c", "d", "e"}), type("double"));
+}
+
+TEST("require that cell alignment can be obtained") {
+    EXPECT_EQUAL(CellTypeUtils::alignment(CellType::DOUBLE), alignof(double));
+    EXPECT_EQUAL(CellTypeUtils::alignment(CellType::FLOAT), alignof(float));
+}
+
+TEST("require that cell array size can be calculated") {
+    EXPECT_EQUAL(CellTypeUtils::mem_size(CellType::DOUBLE, 37), 37 * sizeof(double));
+    EXPECT_EQUAL(CellTypeUtils::mem_size(CellType::FLOAT, 37), 37 * sizeof(float));
+}
+
+TEST("require that all cell types can be listed") {
+    std::vector<CellType> expect = {CellType::FLOAT, CellType::DOUBLE};
+    auto list = CellTypeUtils::list_types();
+    ASSERT_EQUAL(list.size(), expect.size());
+    for (size_t i = 0; i < list.size(); ++i) {
+        EXPECT_TRUE(list[i] == expect[i]);
+    }
 }
 
 TEST_MAIN() { TEST_RUN_ALL(); }

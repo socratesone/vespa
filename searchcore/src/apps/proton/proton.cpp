@@ -6,9 +6,11 @@
 #include <vespa/vespalib/util/signalhandler.h>
 #include <vespa/vespalib/util/programoptions.h>
 #include <vespa/vespalib/io/fileutil.h>
+#include <vespa/vespalib/util/exceptions.h>
 #include <vespa/config/common/exceptions.h>
 #include <vespa/fastos/app.h>
 #include <iostream>
+#include <thread>
 
 #include <vespa/log/log.h>
 LOG_SETUP("proton");
@@ -134,6 +136,45 @@ ProtonServiceLayerProcess::getGeneration() const
     return std::min(slGen, protonGen);
 }
 
+namespace {
+
+class ExitOnSignal {
+    std::atomic<bool> _stop;
+    std::thread       _thread;
+    
+public:
+    ExitOnSignal();
+    ~ExitOnSignal();
+    void operator()();
+};
+
+ExitOnSignal::ExitOnSignal()
+    : _stop(false),
+      _thread()
+{
+    _thread = std::thread(std::ref(*this));
+}
+
+ExitOnSignal::~ExitOnSignal()
+{
+    _stop.store(true, std::memory_order_relaxed);
+    _thread.join();
+}
+
+void
+ExitOnSignal::operator()()
+{
+    while (!_stop.load(std::memory_order_relaxed)) {
+        if (SIG::INT.check() || SIG::TERM.check()) {
+            EV_STOPPING("proton", "unclean shutdown after interrupted init");
+            std::_Exit(0);
+        }
+        std::this_thread::sleep_for(100ms);
+    }
+}
+
+}
+
 int
 App::Main()
 {
@@ -158,7 +199,10 @@ App::Main()
             } else {
                 proton.getMetricManager().init(params.identity, proton.getThreadPool());
             }
-            proton.init(configSnapshot);
+            {
+                ExitOnSignal exit_on_signal;
+                proton.init(configSnapshot);
+            }
             configSnapshot.reset();
             std::unique_ptr<ProtonServiceLayerProcess> spiProton;
             if ( ! params.serviceidentity.empty()) {

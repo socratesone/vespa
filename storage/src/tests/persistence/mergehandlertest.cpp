@@ -2,11 +2,13 @@
 
 #include <vespa/document/base/testdocman.h>
 #include <vespa/storage/persistence/mergehandler.h>
+#include <vespa/storage/persistence/filestorage/mergestatus.h>
 #include <tests/persistence/persistencetestutils.h>
 #include <tests/persistence/common/persistenceproviderwrapper.h>
 #include <tests/common/message_sender_stub.h>
 #include <vespa/document/test/make_document_bucket.h>
 #include <vespa/vespalib/objects/nbostream.h>
+#include <vespa/vespalib/util/size_literals.h>
 #include <gmock/gmock.h>
 #include <cmath>
 
@@ -154,6 +156,15 @@ struct MergeHandlerTest : SingleDiskPersistenceTestUtils {
                        PersistenceProviderWrapper& providerWrapper,
                        HandlerInvoker& invoker,
                        const ExpectedExceptionSpec& spec);
+
+    MergeHandler createHandler(size_t maxChunkSize = 0x400000) {
+        return MergeHandler(getEnv(), getPersistenceProvider(),
+                            getEnv()._component.cluster_context(), getEnv()._component.getClock(), maxChunkSize);
+    }
+    MergeHandler createHandler(spi::PersistenceProvider & spi) {
+        return MergeHandler(getEnv(), spi,
+                            getEnv()._component.cluster_context(), getEnv()._component.getClock());
+    }
 };
 
 MergeHandlerTest::HandleGetBucketDiffReplyInvoker::HandleGetBucketDiffReplyInvoker() = default;
@@ -167,7 +178,7 @@ MergeHandlerTest::HandleApplyBucketDiffReplyInvoker::~HandleApplyBucketDiffReply
 
 void
 MergeHandlerTest::SetUp() {
-    _context.reset(new spi::Context(documentapi::LoadType::DEFAULT, 0, 0));
+    _context = std::make_unique<spi::Context>(0, 0);
     SingleDiskPersistenceTestUtils::SetUp();
 
     _location = 1234;
@@ -199,7 +210,7 @@ MergeHandlerTest::setUpChain(ChainPos pos) {
 // Test a regular merge bucket command fetching data, including
 // puts, removes, unrevertable removes & duplicates.
 TEST_F(MergeHandlerTest, merge_bucket_command) {
-    MergeHandler handler(getEnv(), getPersistenceProvider());
+    MergeHandler handler = createHandler();
 
     LOG(debug, "Handle a merge bucket command");
     auto cmd = std::make_shared<api::MergeBucketCommand>(_bucket, _nodes, _maxTimestamp);
@@ -224,7 +235,7 @@ void
 MergeHandlerTest::testGetBucketDiffChain(bool midChain)
 {
     setUpChain(midChain ? MIDDLE : BACK);
-    MergeHandler handler(getEnv(), getPersistenceProvider());
+    MergeHandler handler = createHandler();
 
     LOG(debug, "Verifying that get bucket diff is sent on");
     auto cmd = std::make_shared<api::GetBucketDiffCommand>(_bucket, _nodes, _maxTimestamp);
@@ -273,10 +284,10 @@ void
 MergeHandlerTest::testApplyBucketDiffChain(bool midChain)
 {
     setUpChain(midChain ? MIDDLE : BACK);
-    MergeHandler handler(getEnv(), getPersistenceProvider());
+    MergeHandler handler = createHandler();
 
     LOG(debug, "Verifying that apply bucket diff is sent on");
-    auto cmd = std::make_shared<api::ApplyBucketDiffCommand>(_bucket, _nodes, _maxTimestamp);
+    auto cmd = std::make_shared<api::ApplyBucketDiffCommand>(_bucket, _nodes);
     MessageTracker::UP tracker1 = handler.handleApplyBucketDiff(*cmd, createTracker(cmd, _bucket));
     api::StorageMessage::SP replySent = std::move(*tracker1).stealReplySP();
 
@@ -320,7 +331,7 @@ TEST_F(MergeHandlerTest, apply_bucket_diff_end_of_chain) {
 // Test that a simplistic merge with one thing to actually merge,
 // sends correct commands and finish.
 TEST_F(MergeHandlerTest, master_message_flow) {
-    MergeHandler handler(getEnv(), getPersistenceProvider());
+    MergeHandler handler = createHandler();
 
     LOG(debug, "Handle a merge bucket command");
     auto cmd = std::make_shared<api::MergeBucketCommand>(_bucket, _nodes, _maxTimestamp);
@@ -421,7 +432,7 @@ TEST_F(MergeHandlerTest, chunked_apply_bucket_diff) {
         doPut(1234, spi::Timestamp(4000 + i), docSize, docSize);
     }
 
-    MergeHandler handler(getEnv(), getPersistenceProvider(), maxChunkSize);
+    MergeHandler handler = createHandler(maxChunkSize);
 
     LOG(debug, "Handle a merge bucket command");
     auto cmd = std::make_shared<api::MergeBucketCommand>(_bucket, _nodes, _maxTimestamp);
@@ -501,10 +512,10 @@ TEST_F(MergeHandlerTest, chunk_limit_partially_filled_diff) {
     }
 
     setUpChain(MIDDLE);
-    auto applyBucketDiffCmd = std::make_shared<api::ApplyBucketDiffCommand>(_bucket, _nodes, maxChunkSize);
+    auto applyBucketDiffCmd = std::make_shared<api::ApplyBucketDiffCommand>(_bucket, _nodes);
     applyBucketDiffCmd->getDiff() = applyDiff;
 
-    MergeHandler handler(getEnv(), getPersistenceProvider(), maxChunkSize);
+    MergeHandler handler = createHandler(maxChunkSize);
     handler.handleApplyBucketDiff(*applyBucketDiffCmd, createTracker(applyBucketDiffCmd, _bucket));
 
     auto fwdDiffCmd = fetchSingleMessage<api::ApplyBucketDiffCommand>();
@@ -516,7 +527,7 @@ TEST_F(MergeHandlerTest, chunk_limit_partially_filled_diff) {
 TEST_F(MergeHandlerTest, max_timestamp) {
     doPut(1234, spi::Timestamp(_maxTimestamp + 10), 1024, 1024);
 
-    MergeHandler handler(getEnv(), getPersistenceProvider());
+    MergeHandler handler = createHandler();
 
     auto cmd = std::make_shared<api::MergeBucketCommand>(_bucket, _nodes, _maxTimestamp);
     handler.handleMergeBucket(*cmd, createTracker(cmd, _bucket));
@@ -582,15 +593,14 @@ MergeHandlerTest::createDummyApplyDiff(int timestampOffset,
         fillDummyApplyDiff(applyDiff);
     }
 
-    auto applyBucketDiffCmd = std::make_shared<api::ApplyBucketDiffCommand>(_bucket, _nodes, 1024*1024);
+    auto applyBucketDiffCmd = std::make_shared<api::ApplyBucketDiffCommand>(_bucket, _nodes);
     applyBucketDiffCmd->getDiff() = applyDiff;
     return applyBucketDiffCmd;
 }
 
 // Must match up with diff used in createDummyApplyDiff
 std::shared_ptr<api::GetBucketDiffCommand>
-MergeHandlerTest::createDummyGetBucketDiff(int timestampOffset,
-                                           uint16_t hasMask)
+MergeHandlerTest::createDummyGetBucketDiff(int timestampOffset, uint16_t hasMask)
 {
     std::vector<api::GetBucketDiffCommand::Entry> diff;
     {
@@ -617,14 +627,14 @@ MergeHandlerTest::createDummyGetBucketDiff(int timestampOffset,
         diff.push_back(e);
     }
 
-    auto getBucketDiffCmd = std::make_shared<api::GetBucketDiffCommand>(_bucket, _nodes, 1024*1024);
+    auto getBucketDiffCmd = std::make_shared<api::GetBucketDiffCommand>(_bucket, _nodes, 1_Mi);
     getBucketDiffCmd->getDiff() = diff;
     return getBucketDiffCmd;
 }
 
 TEST_F(MergeHandlerTest, spi_flush_guard) {
     PersistenceProviderWrapper providerWrapper(getPersistenceProvider());
-    MergeHandler handler(getEnv(), providerWrapper);
+    MergeHandler handler = createHandler(providerWrapper);
 
     providerWrapper.setResult(
             spi::Result(spi::Result::ErrorType::PERMANENT_ERROR, "who you gonna call?"));
@@ -644,7 +654,7 @@ TEST_F(MergeHandlerTest, spi_flush_guard) {
 }
 
 TEST_F(MergeHandlerTest, bucket_not_found_in_db) {
-    MergeHandler handler(getEnv(), getPersistenceProvider());
+    MergeHandler handler = createHandler();
     // Send merge for unknown bucket
     auto cmd = std::make_shared<api::MergeBucketCommand>(makeDocumentBucket(document::BucketId(16, 6789)), _nodes, _maxTimestamp);
     MessageTracker::UP tracker = handler.handleMergeBucket(*cmd, createTracker(cmd, _bucket));
@@ -652,7 +662,7 @@ TEST_F(MergeHandlerTest, bucket_not_found_in_db) {
 }
 
 TEST_F(MergeHandlerTest, merge_progress_safe_guard) {
-    MergeHandler handler(getEnv(), getPersistenceProvider());
+    MergeHandler handler = createHandler();
     auto cmd = std::make_shared<api::MergeBucketCommand>(_bucket, _nodes, _maxTimestamp);
     handler.handleMergeBucket(*cmd, createTracker(cmd, _bucket));
 
@@ -675,7 +685,7 @@ TEST_F(MergeHandlerTest, merge_progress_safe_guard) {
 }
 
 TEST_F(MergeHandlerTest, safe_guard_not_invoked_when_has_mask_changes) {
-    MergeHandler handler(getEnv(), getPersistenceProvider());
+    MergeHandler handler = createHandler();
     _nodes.clear();
     _nodes.emplace_back(0, false);
     _nodes.emplace_back(1, false);
@@ -707,7 +717,7 @@ TEST_F(MergeHandlerTest, safe_guard_not_invoked_when_has_mask_changes) {
 }
 
 TEST_F(MergeHandlerTest, entry_removed_after_get_bucket_diff) {
-    MergeHandler handler(getEnv(), getPersistenceProvider());
+    MergeHandler handler = createHandler();
     std::vector<api::ApplyBucketDiffCommand::Entry> applyDiff;
     {
         api::ApplyBucketDiffCommand::Entry e;
@@ -717,7 +727,7 @@ TEST_F(MergeHandlerTest, entry_removed_after_get_bucket_diff) {
         applyDiff.push_back(e);
     }
     setUpChain(BACK);
-    auto applyBucketDiffCmd = std::make_shared<api::ApplyBucketDiffCommand>(_bucket, _nodes, 1024*1024);
+    auto applyBucketDiffCmd = std::make_shared<api::ApplyBucketDiffCommand>(_bucket, _nodes);
     applyBucketDiffCmd->getDiff() = applyDiff;
 
     auto tracker = handler.handleApplyBucketDiff(*applyBucketDiffCmd, createTracker(applyBucketDiffCmd, _bucket));
@@ -815,7 +825,7 @@ MergeHandlerTest::HandleMergeBucketInvoker::invoke(
 
 TEST_F(MergeHandlerTest, merge_bucket_spi_failures) {
     PersistenceProviderWrapper providerWrapper(getPersistenceProvider());
-    MergeHandler handler(getEnv(), providerWrapper);
+    MergeHandler handler = createHandler(providerWrapper);
     providerWrapper.setResult(
             spi::Result(spi::Result::ErrorType::PERMANENT_ERROR, "who you gonna call?"));
     setUpChain(MIDDLE);
@@ -847,7 +857,7 @@ MergeHandlerTest::HandleGetBucketDiffInvoker::invoke(
 
 TEST_F(MergeHandlerTest, get_bucket_diff_spi_failures) {
     PersistenceProviderWrapper providerWrapper(getPersistenceProvider());
-    MergeHandler handler(getEnv(), providerWrapper);
+    MergeHandler handler = createHandler(providerWrapper);
     providerWrapper.setResult(spi::Result(spi::Result::ErrorType::PERMANENT_ERROR, "who you gonna call?"));
     setUpChain(MIDDLE);
 
@@ -880,7 +890,7 @@ MergeHandlerTest::HandleApplyBucketDiffInvoker::invoke(
 
 TEST_F(MergeHandlerTest, apply_bucket_diff_spi_failures) {
     PersistenceProviderWrapper providerWrapper(getPersistenceProvider());
-    MergeHandler handler(getEnv(), providerWrapper);
+    MergeHandler handler = createHandler(providerWrapper);
     providerWrapper.setResult(
             spi::Result(spi::Result::ErrorType::PERMANENT_ERROR, "who you gonna call?"));
     setUpChain(MIDDLE);
@@ -888,7 +898,7 @@ TEST_F(MergeHandlerTest, apply_bucket_diff_spi_failures) {
     ExpectedExceptionSpec exceptions[] = {
         { PersistenceProviderWrapper::FAIL_CREATE_ITERATOR, "create iterator" },
         { PersistenceProviderWrapper::FAIL_ITERATE, "iterate" },
-        { PersistenceProviderWrapper::FAIL_PUT, "Failed put" },
+        { PersistenceProviderWrapper::FAIL_PUT | PersistenceProviderWrapper::FAIL_REMOVE, "Failed put" },
         { PersistenceProviderWrapper::FAIL_REMOVE, "Failed remove" },
     };
 
@@ -945,7 +955,7 @@ MergeHandlerTest::HandleGetBucketDiffReplyInvoker::afterInvoke(
 
 TEST_F(MergeHandlerTest, get_bucket_diff_reply_spi_failures) {
     PersistenceProviderWrapper providerWrapper(getPersistenceProvider());
-    MergeHandler handler(getEnv(), providerWrapper);
+    MergeHandler handler = createHandler(providerWrapper);
     providerWrapper.setResult(
             spi::Result(spi::Result::ErrorType::PERMANENT_ERROR, "who you gonna call?"));
     HandleGetBucketDiffReplyInvoker invoker;
@@ -977,7 +987,7 @@ MergeHandlerTest::HandleApplyBucketDiffReplyInvoker::beforeInvoke(
         auto cmd = std::make_shared<api::MergeBucketCommand>(test._bucket, test._nodes, test._maxTimestamp);
         handler.handleMergeBucket(*cmd, test.createTracker(cmd, test._bucket));
         auto diffCmd = test.fetchSingleMessage<api::GetBucketDiffCommand>();
-        auto dummyDiff = test.createDummyGetBucketDiff(100000 * _counter, 0x4);
+        auto dummyDiff = test.createDummyGetBucketDiff(100000 * _counter, 0x2);
         diffCmd->getDiff() = dummyDiff->getDiff();
 
         api::GetBucketDiffReply diffReply(*diffCmd);
@@ -1036,7 +1046,7 @@ TEST_F(MergeHandlerTest, apply_bucket_diff_reply_spi_failures) {
         ChainPos pos(i == 0 ? FRONT : MIDDLE);
         setUpChain(pos);
         invoker.setChainPos(pos);
-        MergeHandler handler(getEnv(), providerWrapper);
+        MergeHandler handler = createHandler(providerWrapper);
         providerWrapper.setResult(
                 spi::Result(spi::Result::ErrorType::PERMANENT_ERROR, "who you gonna call?"));
 
@@ -1058,7 +1068,7 @@ TEST_F(MergeHandlerTest, apply_bucket_diff_reply_spi_failures) {
 
 TEST_F(MergeHandlerTest, remove_from_diff) {
     framework::defaultimplementation::FakeClock clock;
-    MergeStatus status(clock, documentapi::LoadType::DEFAULT, 0, 0);
+    MergeStatus status(clock, 0, 0);
 
     std::vector<api::GetBucketDiffCommand::Entry> diff(2);
     diff[0]._timestamp = 1234;
@@ -1070,6 +1080,8 @@ TEST_F(MergeHandlerTest, remove_from_diff) {
     diff[1]._hasMask = 0x6;
 
     status.diff.insert(status.diff.end(), diff.begin(), diff.end());
+    using NodeList = decltype(_nodes);
+    status.nodeList = NodeList{{0, true}, {1, true}, {2, true}};
 
     {
         std::vector<api::ApplyBucketDiffCommand::Entry> applyDiff(2);
@@ -1081,7 +1093,7 @@ TEST_F(MergeHandlerTest, remove_from_diff) {
         applyDiff[1]._entry._flags = 0x3;
         applyDiff[1]._entry._hasMask = 0x7;
 
-        EXPECT_TRUE(status.removeFromDiff(applyDiff, 0x7));
+        EXPECT_TRUE(status.removeFromDiff(applyDiff, 0x7, status.nodeList));
         EXPECT_TRUE(status.diff.empty());
     }
 
@@ -1097,7 +1109,7 @@ TEST_F(MergeHandlerTest, remove_from_diff) {
         applyDiff[1]._entry._flags = 0x3;
         applyDiff[1]._entry._hasMask = 0x6;
 
-        EXPECT_FALSE(status.removeFromDiff(applyDiff, 0x7));
+        EXPECT_FALSE(status.removeFromDiff(applyDiff, 0x7, status.nodeList));
         EXPECT_EQ(2, status.diff.size());
     }
 
@@ -1115,7 +1127,7 @@ TEST_F(MergeHandlerTest, remove_from_diff) {
         applyDiff[1]._entry._flags = 0x3;
         applyDiff[1]._entry._hasMask = 0x5;
 
-        EXPECT_TRUE(status.removeFromDiff(applyDiff, 0x7));
+        EXPECT_TRUE(status.removeFromDiff(applyDiff, 0x7, status.nodeList));
         EXPECT_EQ(2, status.diff.size());
     }
 }
@@ -1128,7 +1140,7 @@ TEST_F(MergeHandlerTest, remove_put_on_existing_timestamp) {
     spi::Timestamp ts(10111);
     doPut(doc, ts);
 
-    MergeHandler handler(getEnv(), getPersistenceProvider());
+    MergeHandler handler = createHandler();
     std::vector<api::ApplyBucketDiffCommand::Entry> applyDiff;
     {
         api::ApplyBucketDiffCommand::Entry e;
@@ -1139,7 +1151,7 @@ TEST_F(MergeHandlerTest, remove_put_on_existing_timestamp) {
         applyDiff.push_back(e);
     }
 
-    auto applyBucketDiffCmd = std::make_shared<api::ApplyBucketDiffCommand>(_bucket, _nodes, 1024*1024);
+    auto applyBucketDiffCmd = std::make_shared<api::ApplyBucketDiffCommand>(_bucket, _nodes);
     applyBucketDiffCmd->getDiff() = applyDiff;
 
     auto tracker = handler.handleApplyBucketDiff(*applyBucketDiffCmd, createTracker(applyBucketDiffCmd, _bucket));
@@ -1165,6 +1177,209 @@ TEST_F(MergeHandlerTest, remove_put_on_existing_timestamp) {
         }
     }
     EXPECT_TRUE(foundTimestamp);
+}
+
+namespace {
+
+storage::api::GetBucketDiffCommand::Entry
+make_entry(uint64_t timestamp, uint16_t mask) {
+    storage::api::GetBucketDiffCommand::Entry entry;
+    entry._timestamp = timestamp;
+    entry._gid = document::GlobalId();
+    entry._headerSize = 0;
+    entry._bodySize = 0;
+    entry._flags = MergeHandler::StateFlag::IN_USE;
+    entry._hasMask = mask;
+    return entry;
+}
+
+void
+fill_entry(storage::api::ApplyBucketDiffCommand::Entry &e, const document::Document& doc, const document::DocumentTypeRepo &repo)
+{
+    e._docName = doc.getId().toString();
+    vespalib::nbostream stream;
+    doc.serialize(stream);
+    e._headerBlob.resize(stream.size());
+    memcpy(&e._headerBlob[0], stream.peek(), stream.size());
+    e._repo = &repo;
+}
+
+/*
+ * Helper class to check both timestamp and mask at once.
+ */
+struct EntryCheck
+{
+    uint64_t _timestamp;
+    uint16_t _hasMask;
+
+    EntryCheck(uint64_t timestamp, uint16_t hasMask)
+        : _timestamp(timestamp),
+          _hasMask(hasMask)
+    {
+    }
+    bool operator==(const api::GetBucketDiffCommand::Entry &rhs) const {
+        return _timestamp == rhs._timestamp && _hasMask == rhs._hasMask;
+    }
+};
+
+std::ostream &operator<<(std::ostream &os, const EntryCheck &entry)
+{
+    os << "EntryCheck(timestamp=" << entry._timestamp << ", hasMask=" << entry._hasMask << ")";
+    return os;
+}
+
+}
+
+namespace api {
+
+std::ostream &operator<<(std::ostream &os, const MergeBucketCommand::Node &node)
+{
+    os << "Node(" << node.index << "," << (node.sourceOnly ? "true" : "false") << ")";
+    return os;
+}
+
+std::ostream &operator<<(std::ostream &os, const GetBucketDiffCommand::Entry &entry)
+{
+    os << "Entry(timestamp=" << entry._timestamp << ", hasMask=" << entry._hasMask << ")";
+    return os;
+}
+
+}
+
+TEST_F(MergeHandlerTest, partially_filled_apply_bucket_diff_reply)
+{
+    using NodeList = decltype(_nodes);
+    // Redundancy is 2 and source only nodes 3 and 4 have doc1 and doc2
+    _nodes.clear();
+    _nodes.emplace_back(0, false);
+    _nodes.emplace_back(1, false);
+    _nodes.emplace_back(2, true);
+    _nodes.emplace_back(3, true);
+    _nodes.emplace_back(4, true);
+    _maxTimestamp = 30000;  // Extend timestamp range to include doc1 and doc2
+
+    auto doc1 = _env->_testDocMan.createRandomDocumentAtLocation(_location, 1);
+    auto doc2 = _env->_testDocMan.createRandomDocumentAtLocation(_location, 2);
+    
+    MergeHandler handler = createHandler();
+    auto cmd = std::make_shared<api::MergeBucketCommand>(_bucket, _nodes, _maxTimestamp);
+    cmd->setSourceIndex(1234);
+    MessageTracker::UP tracker = handler.handleMergeBucket(*cmd, createTracker(cmd, _bucket));
+    ASSERT_EQ(1u, messageKeeper()._msgs.size());
+    ASSERT_EQ(api::MessageType::GETBUCKETDIFF, messageKeeper()._msgs[0]->getType());
+    size_t baseline_diff_size = 0;
+    {
+        LOG(debug, "checking GetBucketDiff command");
+        auto& cmd2 = dynamic_cast<api::GetBucketDiffCommand&>(*messageKeeper()._msgs[0]);
+        EXPECT_THAT(_nodes, ContainerEq(cmd2.getNodes()));
+        EXPECT_EQ(1, cmd2.getAddress()->getIndex());
+        EXPECT_EQ(1234, cmd2.getSourceIndex());
+        EXPECT_TRUE(getEnv()._fileStorHandler.isMerging(_bucket));
+        auto &s = getEnv()._fileStorHandler.editMergeStatus(_bucket);
+        EXPECT_EQ((NodeList{{0, false}, {1, false}, {2, true}, {3, true}, {4, true}}), s.nodeList);
+        baseline_diff_size = cmd2.getDiff().size();
+        auto reply = std::make_unique<api::GetBucketDiffReply>(cmd2);
+        auto &diff = reply->getDiff();
+        // doc1 and doc2 is present on nodes 3 and 4.
+        diff.push_back(make_entry(20000, ((1 << 3) | (1 << 4))));
+        diff.push_back(make_entry(20100, ((1 << 3) | (1 << 4))));
+        EXPECT_EQ(baseline_diff_size + 2u, reply->getDiff().size());
+        handler.handleGetBucketDiffReply(*reply, messageKeeper());
+        LOG(debug, "sent handleGetBucketDiffReply");
+    }
+    ASSERT_EQ(2u, messageKeeper()._msgs.size());
+    ASSERT_EQ(api::MessageType::APPLYBUCKETDIFF, messageKeeper()._msgs[1]->getType());
+    {
+        LOG(debug, "checking first ApplyBucketDiff command");
+        EXPECT_TRUE(getEnv()._fileStorHandler.isMerging(_bucket));
+        auto &s = getEnv()._fileStorHandler.editMergeStatus(_bucket);
+        // Node 4 has been eliminated before the first ApplyBucketDiff command
+        EXPECT_EQ((NodeList{{0, false}, {1, false}, {2, true}, {3, true}}), s.nodeList);
+        EXPECT_EQ(baseline_diff_size + 2u, s.diff.size());
+        EXPECT_EQ(EntryCheck(20000, 24u), s.diff[baseline_diff_size]);
+        EXPECT_EQ(EntryCheck(20100, 24u), s.diff[baseline_diff_size + 1]);
+        auto& cmd3 = dynamic_cast<api::ApplyBucketDiffCommand&>(*messageKeeper()._msgs[1]);
+        // ApplyBucketDiffCommand has a shorter node list, node 2 is not present
+        EXPECT_EQ((NodeList{{0, false}, {1, false}, {3, true}}), cmd3.getNodes());
+        auto reply = std::make_unique<api::ApplyBucketDiffReply>(cmd3);
+        auto& diff = reply->getDiff();
+        EXPECT_EQ(2u, diff.size());
+        EXPECT_EQ(EntryCheck(20000u, 4u), diff[0]._entry);
+        EXPECT_EQ(EntryCheck(20100u, 4u), diff[1]._entry);
+        /*
+         * Only fill first diff entry to simulate max chunk size being exceeded
+         * when filling diff entries on source node (node 3).
+         */
+        fill_entry(diff[0], *doc1, getEnv().getDocumentTypeRepo());
+        diff[0]._entry._hasMask |= 2u; // Simulate diff entry having been applied on node 1.
+        handler.handleApplyBucketDiffReply(*reply, messageKeeper());
+        LOG(debug, "handled first ApplyBucketDiffReply");
+    }
+    ASSERT_EQ(3u, messageKeeper()._msgs.size());
+    ASSERT_EQ(api::MessageType::APPLYBUCKETDIFF, messageKeeper()._msgs[2]->getType());
+    {
+        LOG(debug, "checking second ApplyBucketDiff command");
+        EXPECT_TRUE(getEnv()._fileStorHandler.isMerging(_bucket));
+        auto &s = getEnv()._fileStorHandler.editMergeStatus(_bucket);
+        EXPECT_EQ((NodeList{{0, false}, {1, false}, {2, true}, {3, true}}), s.nodeList);
+        EXPECT_EQ(baseline_diff_size + 1u, s.diff.size());
+        EXPECT_EQ(EntryCheck(20100, 24u), s.diff[baseline_diff_size]);
+        auto& cmd4 = dynamic_cast<api::ApplyBucketDiffCommand&>(*messageKeeper()._msgs[2]);
+        EXPECT_EQ((NodeList{{0, false}, {1, false}, {3, true}}), cmd4.getNodes());
+        auto reply = std::make_unique<api::ApplyBucketDiffReply>(cmd4);
+        auto& diff = reply->getDiff();
+        EXPECT_EQ(1u, diff.size());
+        EXPECT_EQ(EntryCheck(20100u, 4u), diff[0]._entry);
+        // Simulate that node 3 somehow lost doc2 when trying to fill diff entry.
+        diff[0]._entry._hasMask &= ~4u;
+        handler.handleApplyBucketDiffReply(*reply, messageKeeper());
+        LOG(debug, "handled second ApplyBucketDiffReply");
+    }
+    ASSERT_EQ(4u, messageKeeper()._msgs.size());
+    ASSERT_EQ(api::MessageType::APPLYBUCKETDIFF, messageKeeper()._msgs[3]->getType());
+    {
+        LOG(debug, "checking third ApplyBucketDiff command");
+        EXPECT_TRUE(getEnv()._fileStorHandler.isMerging(_bucket));
+        auto &s = getEnv()._fileStorHandler.editMergeStatus(_bucket);
+        // Nodes 3 and 2 have been eliminated before the third ApplyBucketDiff command
+        EXPECT_EQ((NodeList{{0, false}, {1, false}}), s.nodeList);
+        EXPECT_EQ(baseline_diff_size + 1u, s.diff.size());
+        EXPECT_EQ(EntryCheck(20100, 16u), s.diff[baseline_diff_size]);
+        auto& cmd5 = dynamic_cast<api::ApplyBucketDiffCommand&>(*messageKeeper()._msgs[3]);
+        EXPECT_EQ((NodeList{{0, false}, {1, false}}), cmd5.getNodes());
+        auto reply = std::make_unique<api::ApplyBucketDiffReply>(cmd5);
+        auto& diff = reply->getDiff();
+        EXPECT_EQ(baseline_diff_size, diff.size());
+        for (auto& e : diff) {
+            EXPECT_EQ(1u, e._entry._hasMask);
+            e._entry._hasMask |= 2u;
+        }
+        handler.handleApplyBucketDiffReply(*reply, messageKeeper());
+        LOG(debug, "handled third ApplyBucketDiffReply");
+    }
+    ASSERT_EQ(5u, messageKeeper()._msgs.size());
+    ASSERT_EQ(api::MessageType::APPLYBUCKETDIFF, messageKeeper()._msgs[4]->getType());
+    {
+        LOG(debug, "checking fourth ApplyBucketDiff command");
+        EXPECT_TRUE(getEnv()._fileStorHandler.isMerging(_bucket));
+        auto &s = getEnv()._fileStorHandler.editMergeStatus(_bucket);
+        // All nodes in use again due to failure to fill diff entry for doc2
+        EXPECT_EQ((NodeList{{0, false}, {1, false}, {2, true}, {3, true}, {4, true}}), s.nodeList);
+        EXPECT_EQ(1u, s.diff.size());
+        EXPECT_EQ(EntryCheck(20100, 16u), s.diff[0]);
+        auto& cmd6 = dynamic_cast<api::ApplyBucketDiffCommand&>(*messageKeeper()._msgs[4]);
+        EXPECT_EQ((NodeList{{0, false}, {1, false}, {4, true}}), cmd6.getNodes());
+        auto reply = std::make_unique<api::ApplyBucketDiffReply>(cmd6);
+        auto& diff = reply->getDiff();
+        EXPECT_EQ(1u, diff.size());
+        fill_entry(diff[0], *doc2, getEnv().getDocumentTypeRepo());
+        diff[0]._entry._hasMask |= 2u;
+        handler.handleApplyBucketDiffReply(*reply, messageKeeper());
+        LOG(debug, "handled fourth ApplyBucketDiffReply");
+    }
+    ASSERT_EQ(6u, messageKeeper()._msgs.size());
+    ASSERT_EQ(api::MessageType::MERGEBUCKET_REPLY, messageKeeper()._msgs[5]->getType());
+    LOG(debug, "got mergebucket reply");
 }
 
 } // storage

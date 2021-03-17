@@ -34,9 +34,9 @@ import java.util.logging.Level;
 import java.util.logging.Logger;
 
 import static com.yahoo.jdisc.http.HttpHeaders.Values.APPLICATION_X_WWW_FORM_URLENCODED;
-import static com.yahoo.jdisc.http.core.HttpServletRequestUtils.getConnection;
-import static com.yahoo.jdisc.http.server.jetty.Exceptions.throwUnchecked;
+import static com.yahoo.jdisc.http.server.jetty.HttpServletRequestUtils.getConnection;
 import static com.yahoo.jdisc.http.server.jetty.JDiscHttpServlet.getConnector;
+import static com.yahoo.yolean.Exceptions.throwUnchecked;
 
 /**
  * @author Simon Thoresen Hult
@@ -212,7 +212,7 @@ class HttpRequestDispatch {
                                                     AccessLogEntry accessLogEntry,
                                                     HttpServletRequest servletRequest) {
         RequestHandler requestHandler = wrapHandlerIfFormPost(
-                new FilteringRequestHandler(context.requestFilters, context.responseFilters),
+                new FilteringRequestHandler(context.filterResolver, servletRequest),
                 servletRequest, context.serverConfig.removeRawPostBodyForWwwUrlEncodedPost());
 
         return new AccessLoggingRequestHandler(requestHandler, accessLogEntry);

@@ -4,15 +4,13 @@
 
 #include <assert.h>
 #include <vespa/vespalib/util/arrayref.h>
-#include <vespa/eval/eval/value_type.h>
+#include <vespa/eval/eval/cell_type.h>
 
 namespace vespalib::eval {
 
 // Low-level typed cells reference
 
 struct TypedCells {
-    using CellType = vespalib::eval::ValueType::CellType;
-
     const void *data;
     CellType type;
     size_t size:56;

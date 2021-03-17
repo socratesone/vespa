@@ -53,7 +53,7 @@ public abstract class AbstractService extends AbstractConfigProducer<AbstractCon
 
     /** The optional PRELOAD libraries for this Service. */
     // Please keep non-null, as passed to command line in service startup
-    private String preload = Defaults.getDefaults().underVespaHome("lib64/vespa/malloc/libvespamalloc.so");
+    private String preload = null;
 
     // If larger or equal to 0 it mean that explicit mmaps shall not be included in coredump.
     private long mmapNoCoreLimit = -1L;
@@ -83,6 +83,10 @@ public abstract class AbstractService extends AbstractConfigProducer<AbstractCon
     private Optional<Affinity> affinity = Optional.empty();
 
     private boolean initialized = false;
+
+    protected String defaultPreload() {
+        return Defaults.getDefaults().underVespaHome("lib64/vespa/malloc/libvespamalloc.so");
+    }
 
     /**
      * Preferred constructor when building from XML. Use this if you are building
@@ -190,16 +194,14 @@ public abstract class AbstractService extends AbstractConfigProducer<AbstractCon
     }
 
     /**
-     * Gets the ports metainfo object. The service implementation
-     * must populate this object in the constructor.
+     * Gets the ports metainfo object. The service implementation must populate this object in the constructor.
      */
     public PortsMeta getPortsMeta() {
         return portsMeta;
     }
 
     /**
-     * Computes and returns the i'th port for this service, based on
-     * this Service's baseport.
+     * Computes and returns the i'th port for this service, based on this Service's baseport.
      *
      * @param i the offset from 'basePort' of the port to return
      * @return the i'th port relative to the base port.
@@ -365,7 +367,9 @@ public abstract class AbstractService extends AbstractConfigProducer<AbstractCon
             setJvmOptions(args + getSeparator(jvmOptions) + jvmOptions);
         }
     }
-    public String getPreLoad() { return preload; }
+    public String getPreLoad() {
+        return preload != null ? preload : defaultPreload();
+    }
     public void setPreLoad(String preload) {
         this.preload = preload;
     }

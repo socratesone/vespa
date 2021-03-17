@@ -1,15 +1,20 @@
 // Copyright 2017 Yahoo Holdings. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
 #include <tests/distributor/distributortestutil.h>
-#include <vespa/storage/distributor/externaloperationhandler.h>
-#include <vespa/storage/distributor/distributor.h>
-#include <vespa/storage/distributor/distributormetricsset.h>
-#include <vespa/storage/distributor/operations/external/getoperation.h>
-#include <vespa/storageapi/message/persistence.h>
-#include <vespa/document/repo/documenttyperepo.h>
-#include <vespa/document/update/documentupdate.h>
 #include <vespa/document/fieldset/fieldsets.h>
+#include <vespa/document/repo/documenttyperepo.h>
 #include <vespa/document/test/make_document_bucket.h>
+#include <vespa/document/update/assignvalueupdate.h>
+#include <vespa/document/update/documentupdate.h>
+#include <vespa/storage/common/reindexing_constants.h>
+#include <vespa/storage/distributor/distributor.h>
+#include <vespa/storage/distributor/distributor_bucket_space.h>
+#include <vespa/storage/distributor/distributormetricsset.h>
+#include <vespa/storage/distributor/externaloperationhandler.h>
+#include <vespa/storage/distributor/operations/external/getoperation.h>
+#include <vespa/storage/distributor/operations/external/read_for_write_visitor_operation.h>
+#include <vespa/storageapi/message/persistence.h>
+#include <vespa/storageapi/message/visitor.h>
 #include <vespa/vespalib/gtest/gtest.h>
 
 using document::test::makeDocumentBucket;
@@ -43,26 +48,26 @@ struct ExternalOperationHandlerTest : Test, DistributorTestUtil {
     void start_operation_verify_rejected(std::shared_ptr<api::StorageCommand> cmd);
 
     int64_t safe_time_not_reached_metric_count(
-            const metrics::LoadMetric<PersistenceOperationMetricSet>& metrics) const {
-        return metrics[documentapi::LoadType::DEFAULT].failures
-                .safe_time_not_reached.getLongValue("count");
+            const PersistenceOperationMetricSet & metrics) const {
+        return metrics.failures.safe_time_not_reached.getLongValue("count");
     }
 
-    int64_t safe_time_not_reached_metric_count(const metrics::LoadMetric<UpdateMetricSet>& metrics) const {
-        return metrics[documentapi::LoadType::DEFAULT].failures.safe_time_not_reached.getLongValue("count");
+    int64_t safe_time_not_reached_metric_count(const UpdateMetricSet & metrics) const {
+        return metrics.failures.safe_time_not_reached.getLongValue("count");
     }
 
     int64_t concurrent_mutatations_metric_count(
-            const metrics::LoadMetric<PersistenceOperationMetricSet>& metrics) const {
-        return metrics[documentapi::LoadType::DEFAULT].failures
-                .concurrent_mutations.getLongValue("count");
+            const PersistenceOperationMetricSet& metrics) const {
+        return metrics.failures.concurrent_mutations.getLongValue("count");
     }
 
-    int64_t concurrent_mutatations_metric_count(const metrics::LoadMetric<UpdateMetricSet>& metrics) const {
-        return metrics[documentapi::LoadType::DEFAULT].failures.concurrent_mutations.getLongValue("count");
+    int64_t concurrent_mutatations_metric_count(const UpdateMetricSet & metrics) const {
+        return metrics.failures.concurrent_mutations.getLongValue("count");
     }
 
     void set_up_distributor_for_sequencing_test();
+
+    void set_up_distributor_with_feed_blocked_state();
 
     const vespalib::string _dummy_id{"id:foo:testdoctype1::bar"};
 
@@ -93,19 +98,19 @@ TEST_F(ExternalOperationHandlerTest, bucket_split_mask) {
         getDirConfig().getConfig("stor-distributormanager").set("minsplitcount", "16");
 
         EXPECT_EQ(document::BucketId(16, 0xffff),
-                getExternalOperationHandler().getBucketId(document::DocumentId(
+                distributor_component().getBucketId(document::DocumentId(
                     vespalib::make_string("id:ns:test:n=%d::", 0xffff))
                 ).stripUnused());
         EXPECT_EQ(document::BucketId(16, 0),
-                getExternalOperationHandler().getBucketId(document::DocumentId(
+                distributor_component().getBucketId(document::DocumentId(
                     vespalib::make_string("id:ns:test:n=%d::", 0x10000))
                 ).stripUnused());
         EXPECT_EQ(document::BucketId(16, 0xffff),
-                getExternalOperationHandler().getBucketId(document::DocumentId(
+                distributor_component().getBucketId(document::DocumentId(
                     vespalib::make_string("id:ns:test:n=%d::", 0xffff))
                 ).stripUnused());
         EXPECT_EQ(document::BucketId(16, 0x100),
-                getExternalOperationHandler().getBucketId(document::DocumentId(
+                distributor_component().getBucketId(document::DocumentId(
                     vespalib::make_string("id:ns:test:n=%d::", 0x100))
                 ).stripUnused());
         close();
@@ -114,11 +119,11 @@ TEST_F(ExternalOperationHandlerTest, bucket_split_mask) {
         getDirConfig().getConfig("stor-distributormanager").set("minsplitcount", "20");
         createLinks();
         EXPECT_EQ(document::BucketId(20, 0x11111),
-                getExternalOperationHandler().getBucketId(document::DocumentId(
+                distributor_component().getBucketId(document::DocumentId(
                     vespalib::make_string("id:ns:test:n=%d::", 0x111111))
                 ).stripUnused());
         EXPECT_EQ(document::BucketId(20, 0x22222),
-                getExternalOperationHandler().getBucketId(document::DocumentId(
+                distributor_component().getBucketId(document::DocumentId(
                     vespalib::make_string("id:ns:test:n=%d::", 0x222222))
                 ).stripUnused());
     }
@@ -131,7 +136,7 @@ ExternalOperationHandlerTest::findNonOwnedUserBucketInState(
     lib::ClusterState state(statestr);
     for (uint64_t i = 1; i < 1000; ++i) {
         document::BucketId bucket(32, i);
-        if (!getExternalOperationHandler().ownsBucketInState(state, makeDocumentBucket(bucket))) {
+        if (!getDistributorBucketSpace().owns_bucket_in_state(state, bucket)) {
             return bucket;
         }
     }
@@ -147,8 +152,8 @@ ExternalOperationHandlerTest::findOwned1stNotOwned2ndInStates(
     lib::ClusterState state2(statestr2);
     for (uint64_t i = 1; i < 1000; ++i) {
         document::BucketId bucket(32, i);
-        if (getExternalOperationHandler().ownsBucketInState(state1, makeDocumentBucket(bucket))
-            && !getExternalOperationHandler().ownsBucketInState(state2, makeDocumentBucket(bucket)))
+        if (getDistributorBucketSpace().owns_bucket_in_state(state1, bucket)
+            && !getDistributorBucketSpace().owns_bucket_in_state(state2, bucket))
         {
             return bucket;
         }
@@ -351,6 +356,13 @@ TEST_F(ExternalOperationHandlerTest, mutation_not_rejected_when_safe_point_reach
 void ExternalOperationHandlerTest::set_up_distributor_for_sequencing_test() {
     createLinks();
     setupDistributor(1, 2, "version:1 distributor:1 storage:1");
+}
+
+void ExternalOperationHandlerTest::set_up_distributor_with_feed_blocked_state() {
+    createLinks();
+    setup_distributor(1, 2,
+                      lib::ClusterStateBundle(lib::ClusterState("version:1 distributor:1 storage:1"),
+                                              {}, {true, "full disk"}, false));
 }
 
 void ExternalOperationHandlerTest::start_operation_verify_not_rejected(
@@ -560,6 +572,120 @@ TEST_F(ExternalOperationHandlerTest, gets_are_sent_with_strong_consistency_by_de
 
 TEST_F(ExternalOperationHandlerTest, gets_are_sent_with_weak_consistency_if_config_enabled) {
     do_test_get_weak_consistency_is_propagated(true);
+}
+
+TEST_F(ExternalOperationHandlerTest, puts_are_rejected_if_feed_is_blocked) {
+    set_up_distributor_with_feed_blocked_state();
+
+    ASSERT_NO_FATAL_FAILURE(start_operation_verify_rejected(
+            makePutCommand("testdoctype1", "id:foo:testdoctype1::foo")));
+    EXPECT_EQ("ReturnCode(NO_SPACE, External feed is blocked due to resource exhaustion: full disk)",
+              _sender.reply(0)->getResult().toString());
+}
+
+TEST_F(ExternalOperationHandlerTest, non_trivial_updates_are_rejected_if_feed_is_blocked) {
+    set_up_distributor_with_feed_blocked_state();
+
+    auto cmd = makeUpdateCommand("testdoctype1", "id:foo:testdoctype1::foo");
+    const auto* doc_type = _testDocMan.getTypeRepo().getDocumentType("testdoctype1");
+    document::FieldUpdate upd(doc_type->getField("title"));
+    upd.addUpdate(document::AssignValueUpdate(document::StringFieldValue("new value")));
+    cmd->getUpdate()->addUpdate(upd);
+
+    ASSERT_NO_FATAL_FAILURE(start_operation_verify_rejected(std::move(cmd)));
+    EXPECT_EQ("ReturnCode(NO_SPACE, External feed is blocked due to resource exhaustion: full disk)",
+              _sender.reply(0)->getResult().toString());
+}
+
+TEST_F(ExternalOperationHandlerTest, trivial_updates_are_not_rejected_if_feed_is_blocked) {
+    set_up_distributor_with_feed_blocked_state();
+
+    Operation::SP generated;
+    ASSERT_NO_FATAL_FAILURE(start_operation_verify_not_rejected(
+            makeUpdateCommand("testdoctype1", "id:foo:testdoctype1::foo"), generated));
+}
+
+
+struct OperationHandlerSequencingTest : ExternalOperationHandlerTest {
+    void SetUp() override {
+        set_up_distributor_for_sequencing_test();
+    }
+
+    static documentapi::TestAndSetCondition bucket_lock_bypass_tas_condition(const vespalib::string& token) {
+        return documentapi::TestAndSetCondition(
+                vespalib::make_string("%s=%s", reindexing_bucket_lock_bypass_prefix(), token.c_str()));
+    }
+};
+
+TEST_F(OperationHandlerSequencingTest, put_not_allowed_through_locked_bucket_if_special_tas_token_not_present) {
+    auto put = makePutCommand("testdoctype1", "id:foo:testdoctype1:n=1:bar");
+    auto bucket = makeDocumentBucket(document::BucketId(16, 1));
+    auto bucket_handle = getExternalOperationHandler().operation_sequencer().try_acquire(bucket, "foo");
+    ASSERT_TRUE(bucket_handle.valid());
+    ASSERT_NO_FATAL_FAILURE(start_operation_verify_rejected(put));
+}
+
+TEST_F(OperationHandlerSequencingTest, put_allowed_through_locked_bucket_if_special_tas_token_present) {
+    set_up_distributor_for_sequencing_test();
+
+    auto put = makePutCommand("testdoctype1", "id:foo:testdoctype1:n=1:bar");
+    put->setCondition(bucket_lock_bypass_tas_condition("foo"));
+
+    auto bucket = makeDocumentBucket(document::BucketId(16, 1));
+    auto bucket_handle = getExternalOperationHandler().operation_sequencer().try_acquire(bucket, "foo");
+    ASSERT_TRUE(bucket_handle.valid());
+
+    Operation::SP op;
+    ASSERT_NO_FATAL_FAILURE(start_operation_verify_not_rejected(put, op));
+}
+
+TEST_F(OperationHandlerSequencingTest, put_not_allowed_through_locked_bucket_if_tas_token_mismatches_current_lock_tkoen) {
+    auto put = makePutCommand("testdoctype1", "id:foo:testdoctype1:n=1:bar");
+    put->setCondition(bucket_lock_bypass_tas_condition("bar"));
+    auto bucket = makeDocumentBucket(document::BucketId(16, 1));
+    auto bucket_handle = getExternalOperationHandler().operation_sequencer().try_acquire(bucket, "foo");
+    ASSERT_TRUE(bucket_handle.valid());
+    ASSERT_NO_FATAL_FAILURE(start_operation_verify_rejected(put));
+}
+
+TEST_F(OperationHandlerSequencingTest, put_with_bucket_lock_tas_token_is_rejected_if_no_bucket_lock_present) {
+    auto put = makePutCommand("testdoctype1", "id:foo:testdoctype1:n=1:bar");
+    put->setCondition(bucket_lock_bypass_tas_condition("foo"));
+    ASSERT_NO_FATAL_FAILURE(start_operation_verify_rejected(put));
+    EXPECT_EQ("ReturnCode(TEST_AND_SET_CONDITION_FAILED, Operation expects a read-for-write bucket "
+              "lock to be present, but none currently exists)",
+              _sender.reply(0)->getResult().toString());
+}
+
+// This test is a variation of the above, but whereas it tests the case where _no_ lock is
+// present, this tests the case where a lock is present but it's not a bucket-level lock.
+TEST_F(OperationHandlerSequencingTest, put_with_bucket_lock_tas_token_is_rejected_if_document_lock_present) {
+    auto put = makePutCommand("testdoctype1", _dummy_id);
+    put->setCondition(bucket_lock_bypass_tas_condition("foo"));
+    Operation::SP op;
+    ASSERT_NO_FATAL_FAILURE(start_operation_verify_not_rejected(makeUpdateCommand("testdoctype1", _dummy_id), op));
+    ASSERT_NO_FATAL_FAILURE(start_operation_verify_rejected(std::move(put)));
+    EXPECT_EQ("ReturnCode(TEST_AND_SET_CONDITION_FAILED, Operation expects a read-for-write bucket "
+              "lock to be present, but none currently exists)",
+              _sender.reply(0)->getResult().toString());
+}
+
+TEST_F(OperationHandlerSequencingTest, reindexing_visitor_creates_read_for_write_operation) {
+    auto cmd = std::make_shared<api::CreateVisitorCommand>(
+            document::FixedBucketSpaces::default_space(), "reindexingvisitor", "foo", "");
+    Operation::SP op;
+    getExternalOperationHandler().handleMessage(cmd, op);
+    ASSERT_TRUE(op.get() != nullptr);
+    ASSERT_TRUE(dynamic_cast<ReadForWriteVisitorOperationStarter*>(op.get()) != nullptr);
+}
+
+TEST_F(OperationHandlerSequencingTest, reindexing_visitor_library_check_is_case_insensitive) {
+    auto cmd = std::make_shared<api::CreateVisitorCommand>(
+            document::FixedBucketSpaces::default_space(), "ReIndexingVisitor", "foo", "");
+    Operation::SP op;
+    getExternalOperationHandler().handleMessage(cmd, op);
+    ASSERT_TRUE(op.get() != nullptr);
+    ASSERT_TRUE(dynamic_cast<ReadForWriteVisitorOperationStarter*>(op.get()) != nullptr);
 }
 
 // TODO support sequencing of RemoveLocation? It's a mutating operation, but supporting it with

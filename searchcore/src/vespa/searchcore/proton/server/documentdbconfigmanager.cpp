@@ -2,6 +2,8 @@
 
 #include "documentdbconfigmanager.h"
 #include "bootstrapconfig.h"
+#include "threading_service_config.h"
+#include <vespa/searchcore/proton/common/alloc_config.h>
 #include <vespa/searchcore/proton/common/hw_info.h>
 #include <vespa/searchcore/config/config-ranking-constants.h>
 #include <vespa/searchcore/config/config-onnx-models.h>
@@ -18,6 +20,8 @@
 #include <vespa/searchlib/index/schemautil.h>
 #include <vespa/searchsummary/config/config-juniperrc.h>
 #include <vespa/vespalib/time/time_box.h>
+#include <thread>
+#include <cassert>
 
 #include <vespa/log/log.h>
 LOG_SETUP(".proton.server.documentdbconfigmanager");
@@ -140,7 +144,8 @@ buildMaintenanceConfig(const BootstrapConfig::SP &bootstrapConfig,
                     proton.lidspacecompaction.allowedlidbloatfactor,
                     proton.lidspacecompaction.removebatchblockrate,
                     proton.lidspacecompaction.removeblockrate,
-                    isDocumentTypeGlobal),
+                    isDocumentTypeGlobal,
+                    proton.lidspacecompaction.usebucketexecutor),
             AttributeUsageFilterConfig(
                     proton.writefilter.attribute.enumstorelimit,
                     proton.writefilter.attribute.multivaluelimit),
@@ -148,9 +153,8 @@ buildMaintenanceConfig(const BootstrapConfig::SP &bootstrapConfig,
             BlockableMaintenanceJobConfig(
                     proton.maintenancejobs.resourcelimitfactor,
                     proton.maintenancejobs.maxoutstandingmoveops),
-            DocumentDBFlushConfig(
-                    proton.index.maxflushed,
-                    proton.index.maxflushedretired));
+            DocumentDBFlushConfig(proton.index.maxflushed,proton.index.maxflushedretired),
+            BucketMoveConfig(proton.bucketmove.maxdocstomoveperbucket, proton.bucketmove.usebucketexecutor));
 }
 
 template<typename T>
@@ -225,6 +229,43 @@ filterImportedAttributes(const AttributesConfigSP &attrCfg)
     return result;
 }
 
+const ProtonConfig::Documentdb default_document_db_config_entry;
+
+const ProtonConfig::Documentdb&
+find_document_db_config_entry(const ProtonConfig::DocumentdbVector& document_dbs, const vespalib::string& doc_type_name) {
+    for (const auto & db_cfg : document_dbs) {
+        if (db_cfg.inputdoctypename == doc_type_name) {
+            return db_cfg;
+        }
+    }
+    return default_document_db_config_entry;
+}
+
+std::shared_ptr<const ThreadingServiceConfig>
+build_threading_service_config(const ProtonConfig &proton_config,
+                               const HwInfo &hw_info,
+                               const vespalib::string& doc_type_name)
+{
+    auto& document_db_config_entry = find_document_db_config_entry(proton_config.documentdb, doc_type_name);
+    return std::make_shared<const ThreadingServiceConfig>
+        (ThreadingServiceConfig::make(proton_config,
+                                      document_db_config_entry.feeding.concurrency,
+                                      hw_info.cpu()));
+}
+
+std::shared_ptr<const AllocConfig>
+build_alloc_config(const ProtonConfig& proton_config, const vespalib::string& doc_type_name)
+{
+    auto& document_db_config_entry = find_document_db_config_entry(proton_config.documentdb, doc_type_name);
+    auto& alloc_config = document_db_config_entry.allocation;
+    auto& distribution_config = proton_config.distribution;
+    search::GrowStrategy grow_strategy(alloc_config.initialnumdocs, alloc_config.growfactor, alloc_config.growbias, alloc_config.multivaluegrowfactor);
+    search::CompactionStrategy compaction_strategy(alloc_config.maxDeadBytesRatio, alloc_config.maxDeadAddressSpaceRatio);
+    return std::make_shared<const AllocConfig>
+        (AllocStrategy(grow_strategy, compaction_strategy, alloc_config.amortizecount),
+         distribution_config.redundancy, distribution_config.searchablecopies);
+}
+
 }
 
 void
@@ -247,6 +288,8 @@ DocumentDBConfigManager::update(const ConfigSnapshot &snapshot)
     IndexschemaConfigSP newIndexschemaConfig;
     MaintenanceConfigSP oldMaintenanceConfig;
     MaintenanceConfigSP newMaintenanceConfig;
+    std::shared_ptr<const ThreadingServiceConfig> old_threading_service_config;
+    std::shared_ptr<const AllocConfig> old_alloc_config;
 
     if (!_ignoreForwardedConfig) {
         if (!(_bootstrapConfig->getDocumenttypesConfigSP() &&
@@ -270,6 +313,8 @@ DocumentDBConfigManager::update(const ConfigSnapshot &snapshot)
         newOnnxModels = current->getOnnxModelsSP();
         newIndexschemaConfig = current->getIndexschemaConfigSP();
         oldMaintenanceConfig = current->getMaintenanceConfigSP();
+        old_threading_service_config = current->get_threading_service_config_shared_ptr();
+        old_alloc_config = current->get_alloc_config_shared_ptr();
         currentGeneration = current->getGeneration();
     }
 
@@ -348,6 +393,15 @@ DocumentDBConfigManager::update(const ConfigSnapshot &snapshot)
     if (newMaintenanceConfig && oldMaintenanceConfig && (*newMaintenanceConfig == *oldMaintenanceConfig)) {
         newMaintenanceConfig = oldMaintenanceConfig;
     }
+    auto new_threading_service_config = build_threading_service_config(_bootstrapConfig->getProtonConfig(), _bootstrapConfig->getHwInfo(), _docTypeName);
+    if (new_threading_service_config && old_threading_service_config &&
+        (*new_threading_service_config == *old_threading_service_config)) {
+        new_threading_service_config = old_threading_service_config;
+    }
+    auto new_alloc_config = build_alloc_config(_bootstrapConfig->getProtonConfig(), _docTypeName);
+    if (new_alloc_config && old_alloc_config &&(*new_alloc_config == *old_alloc_config)) {
+        new_alloc_config = old_alloc_config;
+    }
     auto newSnapshot = std::make_shared<DocumentDBConfig>(generation,
                                  newRankProfilesConfig,
                                  newRankingConstants,
@@ -364,6 +418,8 @@ DocumentDBConfigManager::update(const ConfigSnapshot &snapshot)
                                  schema,
                                  newMaintenanceConfig,
                                  storeConfig,
+                                 new_threading_service_config,
+                                 new_alloc_config,
                                  _configId,
                                  _docTypeName);
     assert(newSnapshot->valid());

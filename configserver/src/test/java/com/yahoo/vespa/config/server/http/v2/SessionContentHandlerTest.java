@@ -12,13 +12,13 @@ import com.yahoo.jdisc.http.HttpRequest;
 import com.yahoo.text.Utf8;
 import com.yahoo.vespa.config.server.ApplicationRepository;
 import com.yahoo.vespa.config.server.MockProvisioner;
-import com.yahoo.vespa.config.server.TestComponentRegistry;
 import com.yahoo.vespa.config.server.application.OrchestratorMock;
 import com.yahoo.vespa.config.server.http.ContentHandlerTestBase;
 import com.yahoo.vespa.config.server.http.SessionHandlerTest;
 import com.yahoo.vespa.config.server.session.PrepareParams;
 import com.yahoo.vespa.config.server.tenant.Tenant;
 import com.yahoo.vespa.config.server.tenant.TenantRepository;
+import com.yahoo.vespa.config.server.tenant.TestTenantRepository;
 import org.junit.Before;
 import org.junit.Ignore;
 import org.junit.Rule;
@@ -29,6 +29,7 @@ import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
+import java.time.Clock;
 
 import static org.hamcrest.core.Is.is;
 import static org.junit.Assert.assertNotNull;
@@ -41,7 +42,6 @@ public class SessionContentHandlerTest extends ContentHandlerTestBase {
     private static final TenantName tenantName = TenantName.from("contenttest");
     private static final File testApp = new File("src/test/apps/content");
 
-    private TestComponentRegistry componentRegistry;
     private TenantRepository tenantRepository;
     private SessionContentHandler handler = null;
     private long sessionId;
@@ -56,11 +56,10 @@ public class SessionContentHandlerTest extends ContentHandlerTestBase {
                 .configDefinitionsDir(temporaryFolder.newFolder("configdefinitions").getAbsolutePath())
                 .fileReferencesDir(temporaryFolder.newFolder().getAbsolutePath())
                 .build();
-        componentRegistry = new TestComponentRegistry.Builder()
-                .configServerConfig(configserverConfig)
-                .build();
 
-        tenantRepository = new TenantRepository(componentRegistry);
+        tenantRepository = new TestTenantRepository.Builder()
+                .withConfigserverConfig(configserverConfig)
+                .build();
         tenantRepository.addTenant(tenantName);
 
         ApplicationRepository applicationRepository = new ApplicationRepository.Builder()
@@ -191,7 +190,7 @@ public class SessionContentHandlerTest extends ContentHandlerTestBase {
                         .withTenantRepository(tenantRepository)
                         .withProvisioner(new MockProvisioner())
                         .withOrchestrator(new OrchestratorMock())
-                        .withClock(componentRegistry.getClock())
+                        .withClock(Clock.systemUTC())
                         .build()
         );
     }

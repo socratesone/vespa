@@ -1,9 +1,10 @@
-// Copyright 2017 Yahoo Holdings. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Verizon Media. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.model.container;
 
 import com.yahoo.cloud.config.ClusterInfoConfig;
 import com.yahoo.cloud.config.ConfigserverConfig;
-import com.yahoo.cloud.config.RoutingProviderConfig;
+import com.yahoo.cloud.config.CuratorConfig;
+import com.yahoo.cloud.config.ZookeeperServerConfig;
 import com.yahoo.component.ComponentId;
 import com.yahoo.config.application.api.DeployLogger;
 import com.yahoo.config.model.deploy.DeployState;
@@ -18,6 +19,7 @@ import com.yahoo.config.provision.Zone;
 import com.yahoo.container.di.config.PlatformBundlesConfig;
 import com.yahoo.container.handler.ThreadPoolProvider;
 import com.yahoo.container.handler.ThreadpoolConfig;
+import com.yahoo.jdisc.http.ServerConfig;
 import com.yahoo.search.config.QrStartConfig;
 import com.yahoo.vespa.model.Host;
 import com.yahoo.vespa.model.HostResource;
@@ -41,6 +43,7 @@ import static org.hamcrest.collection.IsIterableContainingInAnyOrder.containsInA
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertThat;
+import static org.junit.Assert.assertTrue;
 
 /**
  * @author Simon Thoresen Hult
@@ -68,7 +71,7 @@ public class ContainerClusterTest {
     }
 
     @Test
-    public void requreThatWeCanGetTheZoneConfig() {
+    public void requireThatWeCanGetTheZoneConfig() {
         DeployState state = new DeployState.Builder().properties(new TestProperties().setHostedVespa(true))
                                                      .zone(new Zone(SystemName.cd, Environment.test, RegionName.from("some-region")))
                                                      .build();
@@ -104,7 +107,7 @@ public class ContainerClusterTest {
     private void verifyHeapSizeAsPercentageOfPhysicalMemory(boolean isHosted, boolean isCombinedCluster,
                                                             Integer explicitMemoryPercentage,
                                                             int expectedMemoryPercentage) {
-        ContainerCluster cluster = createContainerCluster(createRoot(isHosted), isCombinedCluster, explicitMemoryPercentage);
+        ContainerCluster<?> cluster = createContainerCluster(createRoot(isHosted), isCombinedCluster, explicitMemoryPercentage);
         QrStartConfig.Builder qsB = new QrStartConfig.Builder();
         cluster.getConfig(qsB);
         QrStartConfig qsC= new QrStartConfig(qsB);
@@ -162,13 +165,13 @@ public class ContainerClusterTest {
     public void testClusterControllerResourceUsage() {
         MockRoot root = createRoot(false);
         ClusterControllerContainerCluster cluster = createClusterControllerCluster(root);
-        addClusterController(root.deployLogger(), cluster, "host-c1");
+        addClusterController(root.deployLogger(), cluster, "host-c1", root.getDeployState());
         assertEquals(1, cluster.getContainers().size());
         QrStartConfig.Builder qrBuilder = new QrStartConfig.Builder();
         cluster.getConfig(qrBuilder);
         QrStartConfig qrStartConfig = new QrStartConfig(qrBuilder);
         assertEquals(32, qrStartConfig.jvm().minHeapsize());
-        assertEquals(512, qrStartConfig.jvm().heapsize());
+        assertEquals(256, qrStartConfig.jvm().heapsize());
         assertEquals(32, qrStartConfig.jvm().compressedClassSpaceSize());
         assertEquals(0, qrStartConfig.jvm().heapSizeAsPercentageOfPhysicalMemory());
         root.freezeModelTopology();
@@ -182,7 +185,7 @@ public class ContainerClusterTest {
     public void testThatLinguisticsIsExcludedForClusterControllerCluster() {
         MockRoot root = createRoot(false);
         ClusterControllerContainerCluster cluster = createClusterControllerCluster(root);
-        addClusterController(root.deployLogger(), cluster, "host-c1");
+        addClusterController(root.deployLogger(), cluster, "host-c1", root.getDeployState());
         assertFalse(contains("com.yahoo.language.provider.DefaultLinguisticsProvider", cluster.getAllComponents()));
     }
 
@@ -215,11 +218,7 @@ public class ContainerClusterTest {
 
     @Test
     public void requireThatPoolAndQueueCanNotBeControlledByPropertiesWhenNoFlavor() {
-        DeployState state = new DeployState.Builder().properties(new TestProperties()
-                    .setThreadPoolSizeFactor(8.5)
-                    .setQueueSizeFactor(13.3))
-                .build();
-        MockRoot root = new MockRoot("foo", state);
+        MockRoot root = new MockRoot("foo");
         ApplicationContainerCluster cluster = createContainerCluster(root, false);
         addContainer(root.deployLogger(), cluster, "c1", "host-c1");
         root.freezeModelTopology();
@@ -261,9 +260,6 @@ public class ContainerClusterTest {
         MockRoot root = new MockRoot(
                 "foo",
                 new DeployState.Builder()
-                        .properties(new TestProperties()
-                                .setThreadPoolSizeFactor(4)
-                                .setQueueSizeFactor(20))
                         .applicationPackage(new MockApplicationPackage.Builder().build())
                         .modelHostProvisioner(hostProvisioner)
                         .build());
@@ -275,19 +271,29 @@ public class ContainerClusterTest {
         root.freezeModelTopology();
 
         ThreadpoolConfig threadpoolConfig = root.getConfig(ThreadpoolConfig.class, "container0/component/default-threadpool");
-        assertEquals(16, threadpoolConfig.maxthreads());
+        assertEquals(8, threadpoolConfig.maxthreads());
         assertEquals(320, threadpoolConfig.queueSize());
     }
 
     @Test
-    public void requireThatRoutingProviderIsDisabledForNonHosted() {
-        DeployState state = new DeployState.Builder().properties(new TestProperties().setHostedVespa(false)).build();
-        MockRoot root = new MockRoot("foo", state);
-        ApplicationContainerCluster cluster = new ApplicationContainerCluster(root, "container0", "container1", state);
-        RoutingProviderConfig.Builder builder = new RoutingProviderConfig.Builder();
-        cluster.getConfig(builder);
-        RoutingProviderConfig config = new RoutingProviderConfig(builder);
-        assertFalse(config.enabled());
+    public void jetty_threadpool_scales_with_node_resources() {
+        HostProvisionerWithCustomRealResource hostProvisioner = new HostProvisionerWithCustomRealResource(12);
+        MockRoot root = new MockRoot(
+                "foo",
+                new DeployState.Builder()
+                        .applicationPackage(new MockApplicationPackage.Builder().build())
+                        .modelHostProvisioner(hostProvisioner)
+                        .build());
+        ApplicationContainerCluster cluster = createContainerCluster(root, false);
+        HostResource hostResource = new HostResource(
+                new Host(null, "host-c1"),
+                hostProvisioner.allocateHost("host-c1"));
+        addContainerWithHostResource(root.deployLogger(), cluster, "c1", hostResource);
+        root.freezeModelTopology();
+
+        ServerConfig cfg = root.getConfig(ServerConfig.class, "container0/c1/DefaultHttpServer");
+        assertEquals(28, cfg.maxWorkerThreads());
+        assertEquals(28, cfg.minWorkerThreads());
     }
 
     @Test
@@ -303,6 +309,43 @@ public class ContainerClusterTest {
         Zone publicZone = new Zone(SystemName.PublicCd, Environment.dev, RegionName.defaultName());
         verifyTesterApplicationInstalledBundles(publicZone, expectedPublicBundles);
         
+    }
+
+    @Test
+    public void requireCuratorConfig() {
+        DeployState state = new DeployState.Builder().build();
+        MockRoot root = new MockRoot("foo", state);
+        var cluster = new ApplicationContainerCluster(root, "container", "search-cluster", state);
+        addContainer(root.deployLogger(), cluster, "c1", "host-c1");
+        addContainer(root.deployLogger(), cluster, "c2", "host-c2");
+        CuratorConfig.Builder configBuilder = new CuratorConfig.Builder();
+        cluster.getConfig(configBuilder);
+        CuratorConfig config = configBuilder.build();
+        assertEquals(List.of("host-c1", "host-c2"),
+                     config.server().stream().map(CuratorConfig.Server::hostname).collect(Collectors.toList()));
+        assertTrue(config.zookeeperLocalhostAffinity());
+    }
+
+    @Test
+    public void requireZooKeeperServerConfig() {
+        DeployState state = new DeployState.Builder().build();
+        MockRoot root = new MockRoot("foo", state);
+        var cluster = new ApplicationContainerCluster(root, "container", "search-cluster", state);
+        addContainer(root.deployLogger(), cluster, "c1", "host-c1");
+        addContainer(root.deployLogger(), cluster, "c2", "host-c2");
+        addContainer(root.deployLogger(), cluster, "c3", "host-c3");
+
+        // Only myid is set for container
+        ZookeeperServerConfig.Builder configBuilder = new ZookeeperServerConfig.Builder();
+        cluster.getContainers().get(0).getConfig(configBuilder);
+        assertEquals(0, configBuilder.build().myid());
+
+        // the rest (e.g. servers) is set for cluster
+        cluster.getConfig(configBuilder);
+        assertEquals(0, configBuilder.build().myid());
+        assertEquals(List.of("host-c1", "host-c2", "host-c3"),
+                     configBuilder.build().server().stream().map(ZookeeperServerConfig.Server::hostname).collect(Collectors.toList()));
+
     }
 
     private void verifyTesterApplicationInstalledBundles(Zone zone, List<String> expectedBundleNames) {
@@ -336,8 +379,11 @@ public class ContainerClusterTest {
         cluster.addContainer(container);
     }
 
-    private static void addClusterController(DeployLogger deployLogger, ClusterControllerContainerCluster cluster, String hostName) {
-        ClusterControllerContainer container = new ClusterControllerContainer(cluster, 1, false, cluster.isHostedVespa());
+    private static void addClusterController(DeployLogger deployLogger,
+                                             ClusterControllerContainerCluster cluster,
+                                             String hostName,
+                                             DeployState deployState) {
+        ClusterControllerContainer container = new ClusterControllerContainer(cluster, 1, false, deployState, false);
         container.setHostResource(new HostResource(new Host(null, hostName)));
         container.initService(deployLogger);
         cluster.addContainer(container);
@@ -352,7 +398,7 @@ public class ContainerClusterTest {
         return cluster;
     }
 
-    private static ClusterInfoConfig getClusterInfoConfig(ContainerCluster cluster) {
+    private static ClusterInfoConfig getClusterInfoConfig(ContainerCluster<?> cluster) {
         ClusterInfoConfig.Builder builder = new ClusterInfoConfig.Builder();
         cluster.getConfig(builder);
         return new ClusterInfoConfig(builder);

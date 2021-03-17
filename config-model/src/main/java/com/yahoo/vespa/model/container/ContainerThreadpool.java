@@ -11,7 +11,6 @@ import com.yahoo.vespa.model.container.component.SimpleComponent;
 import org.w3c.dom.Element;
 
 import java.util.Optional;
-import java.util.OptionalDouble;
 
 /**
  * Component definition for a {@link java.util.concurrent.Executor} using {@link ContainerThreadPool}.
@@ -22,8 +21,6 @@ public class ContainerThreadpool extends SimpleComponent implements ContainerThr
 
     private final String name;
     private final UserOptions userOptions;
-
-    public ContainerThreadpool(String name) { this(name, null); }
 
     public ContainerThreadpool(String name, UserOptions userOptions) {
         super(new ComponentModel(
@@ -47,13 +44,6 @@ public class ContainerThreadpool extends SimpleComponent implements ContainerThr
 
     protected Optional<UserOptions> userOptions() { return Optional.ofNullable(userOptions); }
     protected boolean hasUserOptions() { return userOptions().isPresent(); }
-
-    protected static OptionalDouble vcpu(ContainerCluster<?> cluster) {
-        return cluster.getContainers().stream()
-                .filter(c -> c.getHostResource() != null && c.getHostResource().realResources() != null)
-                .mapToDouble(c -> c.getHostResource().realResources().vcpu())
-                .max(); // Use highest vcpu as scale factor
-    }
 
     public static class UserOptions {
         private final int maxThreads;

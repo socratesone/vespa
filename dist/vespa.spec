@@ -41,16 +41,25 @@ BuildRequires: rh-maven35
 %define _rhmaven35_enable /opt/rh/rh-maven35/enable
 %endif
 %if 0%{?el8}
+%if 0%{?centos}
+%global _centos_stream %(grep -qs '^NAME="CentOS Stream"' /etc/os-release && echo 1 || echo 0)
+%endif
+%if 0%{?_centos_stream}
+BuildRequires: gcc-toolset-10-gcc-c++
+BuildRequires: gcc-toolset-10-binutils
+%define _devtoolset_enable /opt/rh/gcc-toolset-10/enable
+BuildRequires: vespa-boost-devel >= 1.75.0-1
+%else
 BuildRequires: gcc-toolset-9-gcc-c++
 BuildRequires: gcc-toolset-9-binutils
-BuildRequires: maven
 %define _devtoolset_enable /opt/rh/gcc-toolset-9/enable
+%endif
+BuildRequires: maven
 %endif
 %if 0%{?fedora}
 BuildRequires: gcc-c++
 BuildRequires: libatomic
 %endif
-BuildRequires: Judy-devel
 %if 0%{?el7}
 BuildRequires: cmake3
 BuildRequires: llvm7.0-devel
@@ -59,13 +68,17 @@ BuildRequires: vespa-gtest >= 1.8.1-1
 BuildRequires: vespa-icu-devel >= 65.1.0-1
 BuildRequires: vespa-lz4-devel >= 1.9.2-2
 BuildRequires: vespa-onnxruntime-devel = 1.4.0
-BuildRequires: vespa-openssl-devel >= 1.1.1g-1
+BuildRequires: vespa-openssl-devel >= 1.1.1i-1
 BuildRequires: vespa-protobuf-devel >= 3.7.0-4
 BuildRequires: vespa-libzstd-devel >= 1.4.5-2
 %endif
 %if 0%{?el8}
 BuildRequires: cmake >= 3.11.4-3
-BuildRequires: llvm-devel >= 9.0.1
+%if 0%{?_centos_stream}
+BuildRequires: llvm-devel >= 11.0.0
+%else
+BuildRequires: llvm-devel >= 10.0.1
+%endif
 BuildRequires: boost-devel >= 1.66
 BuildRequires: openssl-devel
 BuildRequires: vespa-gtest >= 1.8.1-1
@@ -81,13 +94,6 @@ BuildRequires: openssl-devel
 BuildRequires: vespa-lz4-devel >= 1.9.2-2
 BuildRequires: vespa-onnxruntime-devel = 1.4.0
 BuildRequires: vespa-libzstd-devel >= 1.4.5-2
-%if 0%{?fc31}
-BuildRequires: vespa-protobuf-devel >= 3.7.0-4
-BuildRequires: llvm-devel >= 9.0.0
-BuildRequires: boost-devel >= 1.69
-BuildRequires: gtest-devel
-BuildRequires: gmock-devel
-%endif
 %if 0%{?fc32}
 BuildRequires: protobuf-devel
 BuildRequires: llvm-devel >= 10.0.0
@@ -104,8 +110,15 @@ BuildRequires: gmock-devel
 %endif
 %if 0%{?fc34}
 BuildRequires: protobuf-devel
-BuildRequires: llvm-devel >= 11.0.0
-BuildRequires: boost-devel >= 1.73
+BuildRequires: llvm-devel >= 12.0.0
+BuildRequires: boost-devel >= 1.75
+BuildRequires: gtest-devel
+BuildRequires: gmock-devel
+%endif
+%if 0%{?fc35}
+BuildRequires: protobuf-devel
+BuildRequires: llvm-devel >= 12.0.0
+BuildRequires: boost-devel >= 1.75
 BuildRequires: gtest-devel
 BuildRequires: gmock-devel
 %endif
@@ -149,7 +162,6 @@ Requires: perl-URI
 %if ! 0%{?el7}
 Requires: valgrind
 %endif
-Requires: Judy
 Requires: xxhash
 Requires: xxhash-libs >= 0.8.0
 %if 0%{?el8}
@@ -167,12 +179,13 @@ Requires: gdb
 Requires: nc
 Requires: net-tools
 Requires: unzip
+Requires: zstd
 %if 0%{?el7}
 Requires: llvm7.0
 Requires: vespa-icu >= 65.1.0-1
 Requires: vespa-lz4 >= 1.9.2-2
 Requires: vespa-onnxruntime = 1.4.0
-Requires: vespa-openssl >= 1.1.1g-1
+Requires: vespa-openssl >= 1.1.1i-1
 Requires: vespa-protobuf >= 3.7.0-4
 Requires: vespa-telegraf >= 1.1.1-1
 Requires: vespa-valgrind >= 3.16.0-1
@@ -182,8 +195,13 @@ Requires: vespa-zstd >= 1.4.5-2
 %define _extra_include_directory /usr/include/llvm7.0;%{_vespa_deps_prefix}/include;/usr/include/openblas
 %endif
 %if 0%{?el8}
-Requires: llvm-libs >= 9.0.1
-%define _vespa_llvm_version 9
+%if 0%{?_centos_stream}
+Requires: llvm-libs >= 11.0.0
+%define _vespa_llvm_version 11
+%else
+Requires: llvm-libs >= 10.0.1
+%define _vespa_llvm_version 10
+%endif
 Requires: openssl-libs
 Requires: vespa-lz4 >= 1.9.2-2
 Requires: vespa-onnxruntime = 1.4.0
@@ -197,11 +215,6 @@ Requires: openssl-libs
 Requires: vespa-lz4 >= 1.9.2-2
 Requires: vespa-onnxruntime = 1.4.0
 Requires: vespa-zstd >= 1.4.5-2
-%if 0%{?fc31}
-Requires: vespa-protobuf >= 3.7.0-4
-Requires: llvm-libs >= 9.0.0
-%define _vespa_llvm_version 9
-%endif
 %if 0%{?fc32}
 Requires: protobuf
 Requires: llvm-libs >= 10.0.0
@@ -214,8 +227,13 @@ Requires: llvm-libs >= 11.0.0
 %endif
 %if 0%{?fc34}
 Requires: protobuf
-Requires: llvm-libs >= 11.0.0
-%define _vespa_llvm_version 11
+Requires: llvm-libs >= 12.0.0
+%define _vespa_llvm_version 12
+%endif
+%if 0%{?fc35}
+Requires: protobuf
+Requires: llvm-libs >= 12.0.0
+%define _vespa_llvm_version 12
 %endif
 %define _extra_link_directory %{_vespa_deps_prefix}/lib64
 %define _extra_include_directory %{_vespa_deps_prefix}/include;/usr/include/openblas
@@ -230,7 +248,7 @@ Requires: %{name}-tools = %{version}-%{release}
 
 # Ugly workaround because vespamalloc/src/vespamalloc/malloc/mmap.cpp uses the private
 # _dl_sym function. Exclude automated reqires for libraries in /opt/vespa-deps/lib64.
-%global __requires_exclude ^lib(c\\.so\\.6\\(GLIBC_PRIVATE\\)|(crypto|icui18n|icuuc|lz4|protobuf|ssl|zstd|onnxruntime)\\.so\\.[0-9.]*\\([A-Z._0-9]*\\))\\(64bit\\)$
+%global __requires_exclude ^lib(c\\.so\\.6\\(GLIBC_PRIVATE\\)|pthread\\.so\\.0\\(GLIBC_PRIVATE\\)|(crypto|icui18n|icuuc|lz4|protobuf|ssl|zstd|onnxruntime)\\.so\\.[0-9.]*\\([A-Z._0-9]*\\))\\(64bit\\)$
 
 
 %description
@@ -256,7 +274,7 @@ Summary: Vespa - The open big data serving engine - base C++ libs
 
 Requires: xxhash-libs >= 0.8.0
 %if 0%{?el7}
-Requires: vespa-openssl >= 1.1.1g-1
+Requires: vespa-openssl >= 1.1.1i-1
 %else
 Requires: openssl-libs
 %endif
@@ -471,8 +489,8 @@ fi
 %{_prefix}/lib/jars/athenz-identity-provider-service-jar-with-dependencies.jar
 %{_prefix}/lib/jars/cloud-tenant-cd-jar-with-dependencies.jar
 %{_prefix}/lib/jars/clustercontroller-apps-jar-with-dependencies.jar
-%{_prefix}/lib/jars/clustercontroller-apputil-jar-with-dependencies.jar
 %{_prefix}/lib/jars/clustercontroller-core-jar-with-dependencies.jar
+%{_prefix}/lib/jars/clustercontroller-reindexer-jar-with-dependencies.jar
 %{_prefix}/lib/jars/clustercontroller-utils-jar-with-dependencies.jar
 %{_prefix}/lib/jars/config-models
 %{_prefix}/lib/jars/config-proxy-jar-with-dependencies.jar
@@ -610,6 +628,7 @@ fi
 %{_prefix}/lib/jars/component-jar-with-dependencies.jar
 %{_prefix}/lib/jars/config-bundle-jar-with-dependencies.jar
 %{_prefix}/lib/jars/configdefinitions-jar-with-dependencies.jar
+%{_prefix}/lib/jars/configgen.jar
 %{_prefix}/lib/jars/config-model-api-jar-with-dependencies.jar
 %{_prefix}/lib/jars/config-model-jar-with-dependencies.jar
 %{_prefix}/lib/jars/config-provisioning-jar-with-dependencies.jar
@@ -623,8 +642,11 @@ fi
 %{_prefix}/lib/jars/hk2-*.jar
 %{_prefix}/lib/jars/hosted-zone-api-jar-with-dependencies.jar
 %{_prefix}/lib/jars/jackson-*.jar
+%{_prefix}/lib/jars/jakarta.activation-api-*.jar
+%{_prefix}/lib/jars/jakarta.xml.bind-api-*.jar
 %{_prefix}/lib/jars/javassist-*.jar
 %{_prefix}/lib/jars/javax.*.jar
+%{_prefix}/lib/jars/jdisc-cloud-aws-jar-with-dependencies.jar
 %{_prefix}/lib/jars/jdisc_core-jar-with-dependencies.jar
 %{_prefix}/lib/jars/jdisc_http_service-jar-with-dependencies.jar
 %{_prefix}/lib/jars/jdisc-security-filters-jar-with-dependencies.jar

@@ -250,8 +250,7 @@ public interface ApplicationPackage {
      *
      * @return A new application package instance pointing to a new location
      */
-    default ApplicationPackage preprocess(Zone zone, DeployLogger logger)
-            throws IOException, TransformerException, ParserConfigurationException, SAXException {
+    default ApplicationPackage preprocess(Zone zone, DeployLogger logger) throws IOException {
         throw new UnsupportedOperationException("This application package does not support preprocessing");
     }
 

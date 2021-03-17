@@ -292,11 +292,19 @@ TEST("require that tensor concat resolves correct type") {
     TEST_DO(verify("concat(tensor<float>(x[2]),double,x)", "tensor<float>(x[3])"));
 }
 
+TEST("require that tensor cell_cast resolves correct type") {
+    TEST_DO(verify("cell_cast(double,double)", "double"));
+    TEST_DO(verify("cell_cast(double,float)", "error"));
+    TEST_DO(verify("cell_cast(tensor<double>(x{},y[5]),float)", "tensor<float>(x{},y[5])"));
+    TEST_DO(verify("cell_cast(tensor<float>(x{},y[5]),double)", "tensor<double>(x{},y[5])"));
+    TEST_DO(verify("cell_cast(tensor<float>(x{},y[5]),float)", "tensor<float>(x{},y[5])"));
+}
+
 TEST("require that double only expressions can be detected") {
     auto plain_fun = Function::parse("1+2");
     auto complex_fun = Function::parse("reduce(a,sum)");
     NodeTypes plain_types(*plain_fun, {});
-    NodeTypes complex_types(*complex_fun, {ValueType::tensor_type({{"x"}})});
+    NodeTypes complex_types(*complex_fun, {ValueType::make_type(CellType::DOUBLE, {{"x"}})});
     EXPECT_TRUE(plain_types.get_type(plain_fun->root()).is_double());
     EXPECT_TRUE(complex_types.get_type(complex_fun->root()).is_double());
     EXPECT_TRUE(plain_types.all_types_are_double());

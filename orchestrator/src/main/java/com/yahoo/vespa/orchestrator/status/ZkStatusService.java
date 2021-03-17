@@ -22,7 +22,6 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.HashSet;
 import java.util.Map;
-import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Function;
@@ -128,7 +127,7 @@ public class ZkStatusService implements StatusService {
         Runnable onRegistryClose;
 
         // A multi-application operation, aka batch suspension, will first issue a probe
-        // then a non-probe. With "large locks", the lock is not release in between -
+        // then a non-probe. With "large locks", the lock is not released in between -
         // no lock is taken on the non-probe. Instead, the release is done on the multi-application
         // context close.
         if (context.hasLock(reference)) {

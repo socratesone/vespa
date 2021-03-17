@@ -11,13 +11,17 @@ import com.yahoo.slime.Slime;
 import com.yahoo.slime.SlimeUtils;
 import com.yahoo.vespa.hosted.provision.applications.Application;
 import com.yahoo.vespa.hosted.provision.applications.Cluster;
+import com.yahoo.vespa.hosted.provision.applications.ScalingEvent;
+import com.yahoo.vespa.hosted.provision.applications.Status;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
+import java.util.stream.Collectors;
 
 /**
  * Application JSON serializer
@@ -34,15 +38,28 @@ public class ApplicationSerializer {
     //          - CHANGING THE FORMAT OF A FIELD: Don't do it bro.
 
     private static final String idKey = "id";
+
+    private static final String statusKey = "status";
+    private static final String currentReadShareKey = "currentReadShare";
+    private static final String maxReadShareKey = "maxReadShare";
+
     private static final String clustersKey = "clusters";
     private static final String exclusiveKey = "exclusive";
     private static final String minResourcesKey = "min";
     private static final String maxResourcesKey = "max";
-    private static final String suggestedResourcesKey = "suggested";
+    private static final String suggestedKey = "suggested";
+    private static final String resourcesKey = "resources";
     private static final String targetResourcesKey = "target";
     private static final String nodesKey = "nodes";
     private static final String groupsKey = "groups";
     private static final String nodeResourcesKey = "resources";
+    private static final String scalingEventsKey = "scalingEvents";
+    private static final String autoscalingStatusKey = "autoscalingStatus";
+    private static final String fromKey = "from";
+    private static final String toKey = "to";
+    private static final String generationKey = "generation";
+    private static final String atKey = "at";
+    private static final String completionKey = "completion";
 
     public static byte[] toJson(Application application) {
         Slime slime = new Slime();
@@ -62,12 +79,26 @@ public class ApplicationSerializer {
 
     private static void toSlime(Application application, Cursor object) {
         object.setString(idKey, application.id().serializedForm());
+        toSlime(application.status(), object.setObject(statusKey));
         clustersToSlime(application.clusters().values(), object.setObject(clustersKey));
     }
 
     private static Application applicationFromSlime(Inspector applicationObject) {
         ApplicationId id = ApplicationId.fromSerializedForm(applicationObject.field(idKey).asString());
-        return new Application(id, clustersFromSlime(applicationObject.field(clustersKey)));
+        return new Application(id,
+                               statusFromSlime(applicationObject.field(statusKey)),
+                               clustersFromSlime(applicationObject.field(clustersKey)));
+    }
+
+    private static void toSlime(Status status, Cursor statusObject) {
+        statusObject.setDouble(currentReadShareKey, status.currentReadShare());
+        statusObject.setDouble(maxReadShareKey, status.maxReadShare());
+    }
+
+    private static Status statusFromSlime(Inspector statusObject) {
+        if ( ! statusObject.valid()) return Status.initial(); // TODO: Remove this line after March 2021
+        return new Status(statusObject.field(currentReadShareKey).asDouble(),
+                          statusObject.field(maxReadShareKey).asDouble());
     }
 
     private static void clustersToSlime(Collection<Cluster> clusters, Cursor clustersObject) {
@@ -84,8 +115,10 @@ public class ApplicationSerializer {
         clusterObject.setBool(exclusiveKey, cluster.exclusive());
         toSlime(cluster.minResources(), clusterObject.setObject(minResourcesKey));
         toSlime(cluster.maxResources(), clusterObject.setObject(maxResourcesKey));
-        cluster.suggestedResources().ifPresent(suggested -> toSlime(suggested, clusterObject.setObject(suggestedResourcesKey)));
+        cluster.suggestedResources().ifPresent(suggested -> toSlime(suggested, clusterObject.setObject(suggestedKey)));
         cluster.targetResources().ifPresent(target -> toSlime(target, clusterObject.setObject(targetResourcesKey)));
+        scalingEventsToSlime(cluster.scalingEvents(), clusterObject.setArray(scalingEventsKey));
+        clusterObject.setString(autoscalingStatusKey, cluster.autoscalingStatus());
     }
 
     private static Cluster clusterFromSlime(String id, Inspector clusterObject) {
@@ -93,8 +126,15 @@ public class ApplicationSerializer {
                            clusterObject.field(exclusiveKey).asBool(),
                            clusterResourcesFromSlime(clusterObject.field(minResourcesKey)),
                            clusterResourcesFromSlime(clusterObject.field(maxResourcesKey)),
-                           optionalClusterResourcesFromSlime(clusterObject.field(suggestedResourcesKey)),
-                           optionalClusterResourcesFromSlime(clusterObject.field(targetResourcesKey)));
+                           optionalSuggestionFromSlime(clusterObject.field(suggestedKey)),
+                           optionalClusterResourcesFromSlime(clusterObject.field(targetResourcesKey)),
+                           scalingEventsFromSlime(clusterObject.field(scalingEventsKey)),
+                           clusterObject.field(autoscalingStatusKey).asString());
+    }
+
+    private static void toSlime(Cluster.Suggestion suggestion, Cursor suggestionObject) {
+        toSlime(suggestion.resources(), suggestionObject.setObject(resourcesKey));
+        suggestionObject.setLong(atKey, suggestion.at().toEpochMilli());
     }
 
     private static void toSlime(ClusterResources resources, Cursor clusterResourcesObject) {
@@ -109,9 +149,47 @@ public class ApplicationSerializer {
                                     NodeResourcesSerializer.resourcesFromSlime(clusterResourcesObject.field(nodeResourcesKey)));
     }
 
+    private static Optional<Cluster.Suggestion> optionalSuggestionFromSlime(Inspector suggestionObject) {
+        if ( ! suggestionObject.valid()) return Optional.empty();
+
+        if (suggestionObject.field(nodesKey).valid()) // TODO: Remove this line and the next after January 2021
+            return Optional.of(new Cluster.Suggestion(clusterResourcesFromSlime(suggestionObject),  Instant.EPOCH));
+
+        return Optional.of(new Cluster.Suggestion(clusterResourcesFromSlime(suggestionObject.field(resourcesKey)),
+                                                  Instant.ofEpochMilli(suggestionObject.field(atKey).asLong())));
+    }
+
     private static Optional<ClusterResources> optionalClusterResourcesFromSlime(Inspector clusterResourcesObject) {
         return clusterResourcesObject.valid() ? Optional.of(clusterResourcesFromSlime(clusterResourcesObject))
                                               : Optional.empty();
+    }
+
+    private static void scalingEventsToSlime(List<ScalingEvent> scalingEvents, Cursor eventArray) {
+        scalingEvents.forEach(event -> toSlime(event, eventArray.addObject()));
+    }
+
+    private static List<ScalingEvent> scalingEventsFromSlime(Inspector eventArray) {
+        return SlimeUtils.entriesStream(eventArray).map(item -> scalingEventFromSlime(item)).collect(Collectors.toList());
+    }
+
+    private static void toSlime(ScalingEvent event, Cursor object) {
+        toSlime(event.from(), object.setObject(fromKey));
+        toSlime(event.to(), object.setObject(toKey));
+        object.setLong(generationKey, event.generation());
+        object.setLong(atKey, event.at().toEpochMilli());
+        event.completion().ifPresent(completion -> object.setLong(completionKey, completion.toEpochMilli()));
+    }
+
+    private static ScalingEvent scalingEventFromSlime(Inspector inspector) {
+        return new ScalingEvent(clusterResourcesFromSlime(inspector.field(fromKey)),
+                                clusterResourcesFromSlime(inspector.field(toKey)),
+                                inspector.field(generationKey).asLong(),
+                                Instant.ofEpochMilli(inspector.field(atKey).asLong()),
+                                optionalInstant(inspector.field(completionKey)));
+    }
+
+    private static Optional<Instant> optionalInstant(Inspector inspector) {
+        return inspector.valid() ? Optional.of(Instant.ofEpochMilli(inspector.asLong())) : Optional.empty();
     }
 
 }

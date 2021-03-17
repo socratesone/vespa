@@ -14,6 +14,7 @@ public enum Agent {
 
     // Specific system agents:
     NodeFailer,
+    NodeHealthTracker,
     Rebalancer,
     DirtyExpirer,
     FailedExpirer,
@@ -22,6 +23,7 @@ public enum Agent {
     ReservationExpirer,
     DynamicProvisioningMaintainer,
     RetiringUpgrader,
-    SpareCapacityMaintainer
+    SpareCapacityMaintainer,
+    SwitchRebalancer,
 
 }

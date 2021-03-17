@@ -15,6 +15,7 @@ import com.yahoo.messagebus.routing.RoutingContext;
 import com.yahoo.messagebus.routing.RoutingNodeIterator;
 import com.yahoo.messagebus.routing.RoutingPolicy;
 import com.yahoo.text.Utf8String;
+import com.yahoo.vespa.config.content.DistributionConfig;
 
 import java.util.Collections;
 import java.util.HashSet;
@@ -23,6 +24,8 @@ import java.util.List;
 import java.util.Set;
 import java.util.logging.Level;
 import java.util.logging.Logger;
+
+import static java.util.Objects.requireNonNull;
 
 /**
  * Implements the message bus protocol that is used by all components of Vespa.
@@ -90,7 +93,7 @@ public class DocumentProtocol implements Protocol {
      * longer be guaranteed.
      */
 
-    /** Used by policies to  indicate an inappropriate message. */
+    /** Used by policies to indicate an inappropriate message. */
     public static final int ERROR_MESSAGE_IGNORED = ErrorCode.APP_FATAL_ERROR + 1;
 
     /** Used for error policy when policy creation failed. */
@@ -243,27 +246,36 @@ public class DocumentProtocol implements Protocol {
         this(docMan, configId, new LoadTypeSet());
     }
 
+    public DocumentProtocol(DocumentTypeManager documentTypeManager, LoadTypeSet loadTypes,
+                            DocumentProtocolPoliciesConfig policiesConfig, DistributionConfig distributionConfig) {
+        this(requireNonNull(documentTypeManager), null, requireNonNull(loadTypes),
+        requireNonNull(policiesConfig), requireNonNull(distributionConfig));
+    }
+
     public DocumentProtocol(DocumentTypeManager docMan, String configId, LoadTypeSet set) {
-        // Prepare config string for routing policy factories.
-        String cfg = (configId == null ? "client" : configId);
-        if (docMan != null) {
+        this(docMan, configId == null ? "client" : configId, set, null, null);
+    }
+
+    private DocumentProtocol(DocumentTypeManager docMan, String configId, LoadTypeSet set,
+                             DocumentProtocolPoliciesConfig policiesConfig, DistributionConfig distributionConfig) {
+        if (docMan != null)
             this.docMan = docMan;
-        } else {
+        else {
             this.docMan = new DocumentTypeManager();
-            DocumentTypeManagerConfigurer.configure(this.docMan, cfg);
+            DocumentTypeManagerConfigurer.configure(this.docMan, configId);
         }
-        routableRepository = new RoutableRepository(set);
+        this.routableRepository = new RoutableRepository(set);
 
         // When adding factories to this list, please KEEP THEM ORDERED alphabetically like they are now.
         putRoutingPolicyFactory("AND", new RoutingPolicyFactories.AndPolicyFactory());
-        putRoutingPolicyFactory("Content", new RoutingPolicyFactories.ContentPolicyFactory());
-        putRoutingPolicyFactory("DocumentRouteSelector", new RoutingPolicyFactories.DocumentRouteSelectorPolicyFactory(cfg));
+        putRoutingPolicyFactory("Content", new RoutingPolicyFactories.ContentPolicyFactory(distributionConfig));
+        putRoutingPolicyFactory("DocumentRouteSelector", new RoutingPolicyFactories.DocumentRouteSelectorPolicyFactory(configId, policiesConfig));
         putRoutingPolicyFactory("Extern", new RoutingPolicyFactories.ExternPolicyFactory());
         putRoutingPolicyFactory("LocalService", new RoutingPolicyFactories.LocalServicePolicyFactory());
-        putRoutingPolicyFactory("MessageType", new RoutingPolicyFactories.MessageTypePolicyFactory(cfg));
+        putRoutingPolicyFactory("MessageType", new RoutingPolicyFactories.MessageTypePolicyFactory(configId, policiesConfig));
         putRoutingPolicyFactory("RoundRobin", new RoutingPolicyFactories.RoundRobinPolicyFactory());
         putRoutingPolicyFactory("LoadBalancer", new RoutingPolicyFactories.LoadBalancerPolicyFactory());
-        putRoutingPolicyFactory("Storage", new RoutingPolicyFactories.StoragePolicyFactory());
+        putRoutingPolicyFactory("Storage", new RoutingPolicyFactories.ContentPolicyFactory(distributionConfig));
         putRoutingPolicyFactory("SubsetService", new RoutingPolicyFactories.SubsetServicePolicyFactory());
 
         // Prepare version specifications to use when adding routable factories.
@@ -429,7 +441,7 @@ public class DocumentProtocol implements Protocol {
      * @param ctx the context whose children to merge
      */
     public static void merge(RoutingContext ctx) {
-        merge(ctx, new HashSet<Integer>(0));
+        merge(ctx, new HashSet<>(0));
     }
 
     /**
@@ -475,7 +487,7 @@ public class DocumentProtocol implements Protocol {
      * @return the merged Reply
      */
     public static Reply merge(List<Reply> replies) {
-        return merge(replies, new HashSet<Integer>(0)).second;
+        return merge(replies, new HashSet<>(0)).second;
     }
 
     /**

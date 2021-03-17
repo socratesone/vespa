@@ -17,6 +17,7 @@
 #include <vespa/storageserver/app/dummyservicelayerprocess.h>
 #include <vespa/vespalib/util/programoptions.h>
 #include <vespa/vespalib/util/shutdownguard.h>
+#include <vespa/vespalib/util/exceptions.h>
 #include <vespa/config/helper/configgetter.hpp>
 #include <vespa/fastos/app.h>
 #include <iostream>
@@ -36,7 +37,7 @@ Process::UP createProcess(vespalib::stringref configId) {
     config::ConfigUri uri(configId);
     std::unique_ptr<vespa::config::content::core::StorServerConfig> serverConfig = config::ConfigGetter<vespa::config::content::core::StorServerConfig>::getConfig(uri.getConfigId(), uri.getContext());
     if (serverConfig->isDistributor) {
-        return Process::UP(new DistributorProcess(configId));
+        return std::make_unique<DistributorProcess>(configId);
     } else switch (serverConfig->persistenceProvider.type) {
         case vespa::config::content::core::StorServerConfig::PersistenceProvider::Type::STORAGE:
         case vespa::config::content::core::StorServerConfig::PersistenceProvider::Type::DUMMY:
@@ -187,7 +188,7 @@ int StorageApp::Main()
     // main loop - wait for termination signal
     while (!_process->getNode().attemptedStopped()) {
         if (_process->configUpdated()) {
-            LOG(debug, "Config updated. Progagating config updates");
+            LOG(debug, "Config updated. Propagating config updates");
             ResumeGuard guard(_process->getNode().pause());
             _process->updateConfig();
         }
@@ -197,7 +198,7 @@ int StorageApp::Main()
         handleSignals();
     }
     LOG(debug, "Server was attempted stopped, shutting down");
-    // Create guard that will forcifully kill storage if destruction takes longer
+    // Create guard that will forcefully kill storage if destruction takes longer
     // time than given timeout.
     vespalib::ShutdownGuard shutdownGuard(getMaxShutDownTime());
     LOG(debug, "Attempting proper shutdown");

@@ -11,11 +11,17 @@ namespace vespalib::eval {
 namespace {
 
 struct CreateFastValueBuilderBase {
-    template <typename T> static std::unique_ptr<ValueBuilderBase> invoke(const ValueType &type,
+    template <typename T, typename R2> static std::unique_ptr<ValueBuilderBase> invoke(const ValueType &type,
             size_t num_mapped_dims, size_t subspace_size, size_t expected_subspaces)
     {
         assert(check_cell_type<T>(type.cell_type()));
-        return std::make_unique<FastValue<T>>(type, num_mapped_dims, subspace_size, expected_subspaces);
+        if (type.is_double()) {
+            return std::make_unique<FastDoubleValueBuilder>();
+        } else if (num_mapped_dims == 0) {
+            return std::make_unique<FastDenseValue<T>>(type, subspace_size);
+        } else {
+            return std::make_unique<FastValue<T,R2::value>>(type, num_mapped_dims, subspace_size, expected_subspaces);
+        }
     }
 };
 
@@ -24,16 +30,16 @@ struct CreateFastValueBuilderBase {
 //-----------------------------------------------------------------------------
 
 std::unique_ptr<Value::Index::View>
-FastValueIndex::create_view(const std::vector<size_t> &dims) const
+FastValueIndex::create_view(ConstArrayRef<size_t> dims) const
 {
-    if (map.num_dims() == 0) {
+    if (map.addr_size() == 0) {
         return TrivialIndex::get().create_view(dims);
     } else if (dims.empty()) {
-        return std::make_unique<IterateView>(map);
-    } else if (dims.size() == map.num_dims()) {
-        return std::make_unique<LookupView>(map);
+        return std::make_unique<FastIterateView>(map);
+    } else if (dims.size() == map.addr_size()) {
+        return std::make_unique<FastLookupView>(map);
     } else {
-        return std::make_unique<FilterView>(map, dims);
+        return std::make_unique<FastFilterView>(map, dims);
     }
 }
 
@@ -43,10 +49,11 @@ FastValueBuilderFactory::FastValueBuilderFactory() = default;
 FastValueBuilderFactory FastValueBuilderFactory::_factory;
 
 std::unique_ptr<ValueBuilderBase>
-FastValueBuilderFactory::create_value_builder_base(const ValueType &type, size_t num_mapped_dims, size_t subspace_size,
-                                                     size_t expected_subspaces) const
+FastValueBuilderFactory::create_value_builder_base(const ValueType &type, bool transient, size_t num_mapped_dims, size_t subspace_size,
+                                                   size_t expected_subspaces) const
 {
-    return typify_invoke<1,TypifyCellType,CreateFastValueBuilderBase>(type.cell_type(), type, num_mapped_dims, subspace_size, expected_subspaces);
+    using MyTypify = TypifyValue<TypifyCellType,TypifyBool>;
+    return typify_invoke<2,MyTypify,CreateFastValueBuilderBase>(type.cell_type(), transient, type, num_mapped_dims, subspace_size, expected_subspaces);
 }
 
 //-----------------------------------------------------------------------------

@@ -6,6 +6,8 @@
 #include <vespa/document/fieldvalue/document.h>
 #include <vespa/document/select/parser.h>
 #include <vespa/storage/distributor/distributor_bucket_space.h>
+#include <vespa/vdslib/state/clusterstate.h>
+
 
 #include <vespa/log/log.h>
 LOG_SETUP(".distributor.callback.doc.removelocation");
@@ -16,18 +18,22 @@ using namespace storage;
 using document::BucketSpace;
 
 RemoveLocationOperation::RemoveLocationOperation(
-        DistributorComponent& manager,
+        DistributorNodeContext& node_ctx,
+        DistributorOperationContext& op_ctx,
+        DocumentSelectionParser& parser,
         DistributorBucketSpace &bucketSpace,
         std::shared_ptr<api::RemoveLocationCommand> msg,
         PersistenceOperationMetricSet& metric)
     : Operation(),
       _trackerInstance(metric,
                std::make_shared<api::RemoveLocationReply>(*msg),
-               manager,
+               node_ctx,
+               op_ctx,
                0),
       _tracker(_trackerInstance),
       _msg(std::move(msg)),
-      _manager(manager),
+      _node_ctx(node_ctx),
+      _parser(parser),
       _bucketSpace(bucketSpace)
 {}
 
@@ -35,14 +41,13 @@ RemoveLocationOperation::~RemoveLocationOperation() = default;
 
 int
 RemoveLocationOperation::getBucketId(
-        DistributorComponent& manager,
+        DistributorNodeContext& node_ctx,
+        DocumentSelectionParser& parser,
         const api::RemoveLocationCommand& cmd, document::BucketId& bid)
 {
-    document::select::Parser parser(*manager.getTypeRepo()->documentTypeRepo, manager.getBucketIdFactory());
-
-    document::BucketSelector bucketSel(manager.getBucketIdFactory());
+    document::BucketSelector bucketSel(node_ctx.bucket_id_factory());
     std::unique_ptr<document::BucketSelector::BucketVector> exprResult
-        = bucketSel.select(*parser.parse(cmd.getDocumentSelection()));
+        = bucketSel.select(*parser.parse_selection(cmd.getDocumentSelection()));
 
     if (!exprResult.get()) {
         return 0;
@@ -58,7 +63,7 @@ void
 RemoveLocationOperation::onStart(DistributorMessageSender& sender)
 {
     document::BucketId bid;
-    int count = getBucketId(_manager, *_msg, bid);
+    int count = getBucketId(_node_ctx, _parser, *_msg, bid);
 
     if (count != 1) {
         _tracker.fail(sender,

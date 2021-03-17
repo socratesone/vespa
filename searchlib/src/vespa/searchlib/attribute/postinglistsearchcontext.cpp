@@ -11,17 +11,17 @@ namespace search::attribute {
 using vespalib::btree::BTreeNode;
 
 PostingListSearchContext::
-PostingListSearchContext(const Dictionary &dictionary,
+PostingListSearchContext(const IEnumStoreDictionary& dictionary,
                          uint32_t docIdLimit,
                          uint64_t numValues,
                          bool hasWeight,
-                         const IEnumStore &esb,
                          uint32_t minBvDocFreq,
                          bool useBitVector,
                          const ISearchContext &baseSearchCtx)
-    : _frozenDictionary(dictionary.getFrozenView()),
-      _lowerDictItr(BTreeNode::Ref(), dictionary.getAllocator()),
-      _upperDictItr(BTreeNode::Ref(), dictionary.getAllocator()),
+    : _dictionary(dictionary),
+      _frozenDictionary(_dictionary.get_posting_dictionary().getFrozenView()),
+      _lowerDictItr(BTreeNode::Ref(), _frozenDictionary.getAllocator()),
+      _upperDictItr(BTreeNode::Ref(), _frozenDictionary.getAllocator()),
       _uniqueValues(0u),
       _docIdLimit(docIdLimit),
       _dictSize(_frozenDictionary.size()),
@@ -32,7 +32,6 @@ PostingListSearchContext(const Dictionary &dictionary,
       _frozenRoot(),
       _FSTC(0.0),
       _PLSTC(0.0),
-      _esb(esb),
       _minBvDocFreq(minBvDocFreq),
       _gbv(nullptr),
       _baseSearchCtx(baseSearchCtx)
@@ -48,7 +47,7 @@ PostingListSearchContext::lookupTerm(const vespalib::datastore::EntryComparator 
 {
     _lowerDictItr.lower_bound(_frozenDictionary.getRoot(), EnumIndex(), comp);
     _upperDictItr = _lowerDictItr;
-    if (_upperDictItr.valid() && !comp(EnumIndex(), _upperDictItr.getKey())) {
+    if (_upperDictItr.valid() && !comp.less(EnumIndex(), _upperDictItr.getKey())) {
         ++_upperDictItr;
         _uniqueValues = 1u;
     }
@@ -61,7 +60,7 @@ PostingListSearchContext::lookupRange(const vespalib::datastore::EntryComparator
 {
     _lowerDictItr.lower_bound(_frozenDictionary.getRoot(), EnumIndex(), low);
     _upperDictItr = _lowerDictItr;
-    if (_upperDictItr.valid() && !high(EnumIndex(), _upperDictItr.getKey())) {
+    if (_upperDictItr.valid() && !high.less(EnumIndex(), _upperDictItr.getKey())) {
         _upperDictItr.seekPast(EnumIndex(), high);
     }
     _uniqueValues = _upperDictItr - _lowerDictItr;

@@ -69,15 +69,15 @@ generic_rename(const Value &a,
                const ValueType &res_type, const ValueBuilderFactory &factory)
 {
     auto cells = a.cells().typify<CT>();
-    std::vector<vespalib::stringref> output_address(sparse_plan.mapped_dims);
-    std::vector<vespalib::stringref*> input_address;
+    SmallVector<string_id> output_address(sparse_plan.mapped_dims);
+    SmallVector<string_id*> input_address;
     for (size_t maps_to : sparse_plan.output_dimensions) {
-        input_address.push_back(&output_address[maps_to]);
+        input_address.emplace_back(&output_address[maps_to]);
     }
-    auto builder = factory.create_value_builder<CT>(res_type,
-                                                    sparse_plan.mapped_dims,
-                                                    dense_plan.subspace_size,
-                                                    a.index().size());
+    auto builder = factory.create_transient_value_builder<CT>(res_type,
+                                                              sparse_plan.mapped_dims,
+                                                              dense_plan.subspace_size,
+                                                              a.index().size());
     auto view = a.index().create_view({});
     view->lookup({});
     size_t subspace;
@@ -101,8 +101,33 @@ void my_generic_rename_op(State &state, uint64_t param_in) {
     state.pop_push(result_ref);
 }
 
+template <typename CT>
+void my_mixed_rename_dense_only_op(State &state, uint64_t param_in) {
+    const auto &param = unwrap_param<RenameParam>(param_in);
+    const DenseRenamePlan &dense_plan = param.dense_plan;
+    const auto &index = state.peek(0).index();
+    auto lhs_cells = state.peek(0).cells().typify<CT>();
+    size_t num_subspaces = index.size();
+    size_t num_out_cells = dense_plan.subspace_size * num_subspaces;
+    ArrayRef<CT> out_cells = state.stash.create_uninitialized_array<CT>(num_out_cells);
+    CT *dst = out_cells.begin();
+    const CT *lhs = lhs_cells.begin();
+    auto copy_cells = [&](size_t input_idx) { *dst++ = lhs[input_idx]; };
+    for (size_t i = 0; i < num_subspaces; ++i) {
+        dense_plan.execute(0, copy_cells);
+        lhs += dense_plan.subspace_size;
+    }
+    assert(lhs == lhs_cells.end());
+    assert(dst == out_cells.end());
+    state.pop_push(state.stash.create<ValueView>(param.res_type, index, TypedCells(out_cells)));
+}
+
 struct SelectGenericRenameOp {
-    template <typename CT> static auto invoke() {
+    template <typename CM> static auto invoke(const RenameParam &param) {
+        using CT = CellValueType<CM::value.cell_type>;
+        if (param.sparse_plan.can_forward_index) {
+            return my_mixed_rename_dense_only_op<CT>;
+        }
         return my_generic_rename_op<CT>;
     }
 };
@@ -115,7 +140,7 @@ SparseRenamePlan::SparseRenamePlan(const ValueType &input_type,
                                    const ValueType &output_type,
                                    const std::vector<vespalib::string> &from,
                                    const std::vector<vespalib::string> &to)
-    : output_dimensions()
+  : output_dimensions(), can_forward_index(true)
 {
     const auto in_dims = input_type.mapped_dimensions();
     const auto out_dims = output_type.mapped_dimensions();
@@ -125,7 +150,10 @@ SparseRenamePlan::SparseRenamePlan(const ValueType &input_type,
         const auto & renamed_to = find_rename(dim.name, from, to);
         size_t index = find_index_of(renamed_to, out_dims);
         assert(index < mapped_dims);
-        output_dimensions.push_back(index);
+        if (index != output_dimensions.size()) {
+            can_forward_index = false;
+        }
+        output_dimensions.emplace_back(index);
     }
     assert(output_dimensions.size() == mapped_dims);
 }
@@ -145,8 +173,8 @@ DenseRenamePlan::DenseRenamePlan(const ValueType &lhs_type,
     const auto out_dims = output_type.nontrivial_indexed_dimensions();
     size_t num_dense_dims = lhs_dims.size();
     assert(num_dense_dims == out_dims.size());
-    std::vector<size_t> lhs_loopcnt(num_dense_dims);
-    std::vector<size_t> lhs_stride(num_dense_dims, 1);
+    SmallVector<size_t> lhs_loopcnt(num_dense_dims);
+    SmallVector<size_t> lhs_stride(num_dense_dims, 1);
     size_t lhs_size = 1;
     for (size_t i = num_dense_dims; i-- > 0; ) {
         lhs_stride[i] = lhs_size;
@@ -164,8 +192,8 @@ DenseRenamePlan::DenseRenamePlan(const ValueType &lhs_type,
             loop_cnt.back() *= lhs_loopcnt[index];
             stride.back() = lhs_stride[index];
         } else {
-            loop_cnt.push_back(lhs_loopcnt[index]);
-            stride.push_back(lhs_stride[index]);
+            loop_cnt.emplace_back(lhs_loopcnt[index]);
+            stride.emplace_back(lhs_stride[index]);
         }
         prev_index = index;
     }
@@ -174,17 +202,19 @@ DenseRenamePlan::DenseRenamePlan(const ValueType &lhs_type,
 DenseRenamePlan::~DenseRenamePlan() = default;
 
 InterpretedFunction::Instruction
-GenericRename::make_instruction(const ValueType &lhs_type,
+GenericRename::make_instruction(const ValueType &result_type,
+                                const ValueType &input_type,
                                 const std::vector<vespalib::string> &rename_dimension_from,
                                 const std::vector<vespalib::string> &rename_dimension_to,
                                 const ValueBuilderFactory &factory, Stash &stash)
 {
-    auto &param = stash.create<RenameParam>(lhs_type,
+    auto &param = stash.create<RenameParam>(input_type,
                                             rename_dimension_from, rename_dimension_to,
                                             factory);
-    auto fun = typify_invoke<1,TypifyCellType,SelectGenericRenameOp>(param.res_type.cell_type());
+    assert(result_type == param.res_type);
+    assert(result_type.cell_meta().eq(input_type.cell_meta()));
+    auto fun = typify_invoke<1,TypifyCellMeta,SelectGenericRenameOp>(param.res_type.cell_meta().not_scalar(), param);
     return Instruction(fun, wrap_param<RenameParam>(param));
 }
 
 } // namespace
-

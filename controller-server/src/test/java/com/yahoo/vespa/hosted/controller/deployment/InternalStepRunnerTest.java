@@ -15,7 +15,6 @@ import com.yahoo.slime.Inspector;
 import com.yahoo.slime.SlimeUtils;
 import com.yahoo.vespa.hosted.controller.RoutingController;
 import com.yahoo.vespa.hosted.controller.api.application.v4.model.configserverbindings.ConfigChangeActions;
-import com.yahoo.vespa.hosted.controller.api.application.v4.model.configserverbindings.RefeedAction;
 import com.yahoo.vespa.hosted.controller.api.application.v4.model.configserverbindings.RestartAction;
 import com.yahoo.vespa.hosted.controller.api.application.v4.model.configserverbindings.ServiceInfo;
 import com.yahoo.vespa.hosted.controller.api.integration.LogEntry;
@@ -43,7 +42,6 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.Executors;
@@ -53,14 +51,12 @@ import static com.yahoo.vespa.hosted.controller.api.integration.LogEntry.Type.er
 import static com.yahoo.vespa.hosted.controller.api.integration.LogEntry.Type.info;
 import static com.yahoo.vespa.hosted.controller.api.integration.LogEntry.Type.warning;
 import static com.yahoo.vespa.hosted.controller.deployment.DeploymentContext.applicationPackage;
-import static com.yahoo.vespa.hosted.controller.deployment.DeploymentContext.publicCdApplicationPackage;
 import static com.yahoo.vespa.hosted.controller.deployment.DeploymentTester.instanceId;
 import static com.yahoo.vespa.hosted.controller.deployment.RunStatus.deploymentFailed;
 import static com.yahoo.vespa.hosted.controller.deployment.RunStatus.installationFailed;
 import static com.yahoo.vespa.hosted.controller.deployment.Step.Status.failed;
 import static com.yahoo.vespa.hosted.controller.deployment.Step.Status.succeeded;
 import static com.yahoo.vespa.hosted.controller.deployment.Step.Status.unfinished;
-import static java.util.Collections.singletonList;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
@@ -109,7 +105,7 @@ public class InternalStepRunnerTest {
                                                                ConfigServerException.ErrorCode.APPLICATION_LOCK_FAILURE,
                                                                new RuntimeException("Retry me"));
         tester.configServer().throwOnNextPrepare(exception);
-        tester.jobs().deploy(app.instanceId(), JobType.devUsEast1, Optional.empty(), applicationPackage);
+        tester.jobs().deploy(app.instanceId(), JobType.devUsEast1, Optional.empty(), applicationPackage());
         assertEquals(unfinished, tester.jobs().last(app.instanceId(), JobType.devUsEast1).get().stepStatuses().get(Step.deployReal));
 
         tester.configServer().throwOnNextPrepare(exception);
@@ -124,33 +120,22 @@ public class InternalStepRunnerTest {
     }
 
     @Test
-    public void refeedRequirementBlocksDeployment() {
-        tester.configServer().setConfigChangeActions(new ConfigChangeActions(Collections.emptyList(),
-                                                                             singletonList(new RefeedAction("Refeed",
-                                                                                                            false,
-                                                                                                            "doctype",
-                                                                                                            "cluster",
-                                                                                                            Collections.emptyList(),
-                                                                                                            singletonList("Refeed it!")))));
-        tester.jobs().deploy(app.instanceId(), JobType.devUsEast1, Optional.empty(), applicationPackage);
-        assertEquals(failed, tester.jobs().last(app.instanceId(), JobType.devUsEast1).get().stepStatuses().get(Step.deployReal));
-    }
-
-    @Test
+    // TODO jonmv: Change to only wait for restarts, and remove triggering of restarts from runner.
     public void restartsServicesAndWaitsForRestartAndReboot() {
         RunId id = app.newRun(JobType.productionUsCentral1);
         ZoneId zone = id.type().zone(system());
         HostName host = tester.configServer().hostFor(instanceId, zone);
 
-        tester.configServer().setConfigChangeActions(new ConfigChangeActions(singletonList(new RestartAction("cluster",
-                                                                                                             "container",
-                                                                                                             "search",
-                                                                                                             singletonList(new ServiceInfo("queries",
-                                                                                                                                                                   "search",
-                                                                                                                                                                   "config",
-                                                                                                                                                                   host.value())),
-                                                                                                             singletonList("Restart it!"))),
-                                                                             Collections.emptyList()));
+        tester.configServer().setConfigChangeActions(new ConfigChangeActions(List.of(new RestartAction("cluster",
+                                                                                                       "container",
+                                                                                                       "search",
+                                                                                                       List.of(new ServiceInfo("queries",
+                                                                                                                               "search",
+                                                                                                                               "config",
+                                                                                                                               host.value())),
+                                                                                                       List.of("Restart it!"))),
+                                                                             List.of(),
+                                                                             List.of()));
         tester.runner().run();
         assertEquals(succeeded, tester.jobs().run(id).get().stepStatuses().get(Step.deployReal));
 
@@ -202,9 +187,9 @@ public class InternalStepRunnerTest {
 
         // Node is down too long in system test, and no nodes go down in staging.
         tester.runner().run();
-        tester.configServer().setVersion(tester.controller().systemVersion(), app.testerId().id(), JobType.systemTest.zone(system()));
+        tester.configServer().setVersion(tester.controller().readSystemVersion(), app.testerId().id(), JobType.systemTest.zone(system()));
         tester.configServer().convergeServices(app.testerId().id(), JobType.systemTest.zone(system()));
-        tester.configServer().setVersion(tester.controller().systemVersion(), app.testerId().id(), JobType.stagingTest.zone(system()));
+        tester.configServer().setVersion(tester.controller().readSystemVersion(), app.testerId().id(), JobType.stagingTest.zone(system()));
         tester.configServer().convergeServices(app.testerId().id(), JobType.stagingTest.zone(system()));
         tester.runner().run();
         assertEquals(succeeded, tester.jobs().last(app.instanceId(), JobType.systemTest).get().stepStatuses().get(Step.installTester));
@@ -356,14 +341,14 @@ public class InternalStepRunnerTest {
     @Test
     public void deployToDev() {
         ZoneId zone = JobType.devUsEast1.zone(system());
-        tester.jobs().deploy(app.instanceId(), JobType.devUsEast1, Optional.empty(), applicationPackage);
+        tester.jobs().deploy(app.instanceId(), JobType.devUsEast1, Optional.empty(), applicationPackage());
         tester.runner().run();
         RunId id = tester.jobs().last(app.instanceId(), JobType.devUsEast1).get().id();
         assertEquals(unfinished, tester.jobs().run(id).get().stepStatuses().get(Step.installReal));
 
         Version version = new Version("7.8.9");
         Future<?> concurrentDeployment = Executors.newSingleThreadExecutor().submit(() -> {
-            tester.jobs().deploy(app.instanceId(), JobType.devUsEast1, Optional.of(version), applicationPackage);
+            tester.jobs().deploy(app.instanceId(), JobType.devUsEast1, Optional.of(version), applicationPackage());
         });
         while ( ! concurrentDeployment.isDone())
             tester.runner().run();
@@ -375,7 +360,7 @@ public class InternalStepRunnerTest {
         tester.runner().run(); // Job run order determined by JobType enum order per application.
         tester.configServer().convergeServices(app.instanceId(), zone);
         assertEquals(unfinished, tester.jobs().run(id).get().stepStatuses().get(Step.installReal));
-        assertEquals(applicationPackage.hash(), tester.configServer().application(app.instanceId(), zone).get().applicationPackage().hash());
+        assertEquals(applicationPackage().hash(), tester.configServer().application(app.instanceId(), zone).get().applicationPackage().hash());
         assertEquals(otherPackage.hash(), tester.configServer().application(app.instanceId(), JobType.perfUsEast3.zone(system())).get().applicationPackage().hash());
 
         tester.configServer().setVersion(version, app.instanceId(), zone);
@@ -433,7 +418,7 @@ public class InternalStepRunnerTest {
         tester.configServer().bootstrap(tester.controllerTester().zoneRegistry().zones().all().ids(), SystemApplication.values());
         RunId id = app.startSystemTestTests();
 
-        List<X509Certificate> trusted = new ArrayList<>(publicCdApplicationPackage.trustedCertificates());
+        List<X509Certificate> trusted = new ArrayList<>(DeploymentContext.publicApplicationPackage().trustedCertificates());
         trusted.add(tester.jobs().run(id).get().testerCertificate().get());
         assertEquals(trusted, tester.configServer().application(app.instanceId(), id.type().zone(system())).get().applicationPackage().trustedCertificates());
 

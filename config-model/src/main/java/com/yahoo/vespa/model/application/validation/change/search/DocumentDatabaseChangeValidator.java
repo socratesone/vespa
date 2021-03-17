@@ -36,43 +36,43 @@ public class DocumentDatabaseChangeValidator {
         this.nextDocType = nextDocType;
     }
 
-    public List<VespaConfigChangeAction> validate(ValidationOverrides overrides, Instant now) {
+    public List<VespaConfigChangeAction> validate() {
         List<VespaConfigChangeAction> result = new ArrayList<>();
-        result.addAll(validateAttributeChanges(overrides, now));
-        result.addAll(validateStructFieldAttributeChanges(overrides, now));
-        result.addAll(validateIndexingScriptChanges(overrides, now));
-        result.addAll(validateDocumentTypeChanges(overrides, now));
+        result.addAll(validateAttributeChanges());
+        result.addAll(validateStructFieldAttributeChanges());
+        result.addAll(validateIndexingScriptChanges());
+        result.addAll(validateDocumentTypeChanges());
         return result;
     }
 
-    private List<VespaConfigChangeAction> validateAttributeChanges(ValidationOverrides overrides, Instant now) {
+    private List<VespaConfigChangeAction> validateAttributeChanges() {
         return new AttributeChangeValidator(id,
                                             currentDatabase.getDerivedConfiguration().getAttributeFields(),
                                             currentDatabase.getDerivedConfiguration().getIndexSchema(), currentDocType,
                                             nextDatabase.getDerivedConfiguration().getAttributeFields(),
                                             nextDatabase.getDerivedConfiguration().getIndexSchema(), nextDocType)
-                       .validate(overrides, now);
+                       .validate();
     }
 
-    private List<VespaConfigChangeAction> validateStructFieldAttributeChanges(ValidationOverrides overrides, Instant now) {
+    private List<VespaConfigChangeAction> validateStructFieldAttributeChanges() {
         return new StructFieldAttributeChangeValidator(id,
                                                        currentDocType,
                                                        currentDatabase.getDerivedConfiguration().getAttributeFields(),
                                                        nextDocType,
                                                        nextDatabase.getDerivedConfiguration().getAttributeFields())
-                       .validate(overrides, now);
+                       .validate();
     }
 
-    private List<VespaConfigChangeAction> validateIndexingScriptChanges(ValidationOverrides overrides, Instant now) {
+    private List<VespaConfigChangeAction> validateIndexingScriptChanges() {
         return new IndexingScriptChangeValidator(id,
                                                  currentDatabase.getDerivedConfiguration().getSearch(),
                                                  nextDatabase.getDerivedConfiguration().getSearch())
-                       .validate(overrides, now);
+                       .validate();
     }
 
-    private List<VespaConfigChangeAction> validateDocumentTypeChanges(ValidationOverrides overrides, Instant now) {
+    private List<VespaConfigChangeAction> validateDocumentTypeChanges() {
         return new DocumentTypeChangeValidator(id, currentDocType, nextDocType)
-                       .validate(overrides, now);
+                       .validate();
     }
 
 }

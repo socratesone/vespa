@@ -5,6 +5,7 @@ import com.google.common.net.InetAddresses;
 import com.yahoo.config.provision.DockerImage;
 import com.yahoo.vespa.hosted.dockerapi.Container;
 import com.yahoo.vespa.hosted.dockerapi.ContainerEngine;
+import com.yahoo.vespa.hosted.dockerapi.ContainerId;
 import com.yahoo.vespa.hosted.dockerapi.ContainerName;
 import com.yahoo.vespa.hosted.dockerapi.ProcessResult;
 import com.yahoo.vespa.hosted.node.admin.nodeagent.ContainerData;
@@ -19,8 +20,10 @@ import org.mockito.InOrder;
 
 import java.net.InetAddress;
 import java.nio.file.FileSystem;
+import java.util.List;
 import java.util.Optional;
 import java.util.OptionalLong;
+import java.util.Set;
 
 import static org.hamcrest.core.Is.is;
 import static org.junit.Assert.assertThat;
@@ -37,7 +40,7 @@ public class ContainerOperationsImplTest {
     private final TestTerminal terminal = new TestTerminal();
     private final IPAddresses ipAddresses = new IPAddressesMock();
     private final FileSystem fileSystem = TestFileSystem.create();
-    private final ContainerOperationsImpl dockerOperations = new ContainerOperationsImpl(
+    private final ContainerOperationsImpl containerOperations = new ContainerOperationsImpl(
             containerEngine, terminal, ipAddresses, fileSystem);
 
     @Test
@@ -48,7 +51,7 @@ public class ContainerOperationsImplTest {
         when(containerEngine.executeInContainerAsUser(any(), any(), any(), any()))
                 .thenReturn(actualResult); // output from node program
 
-        ProcessResult result = dockerOperations.executeNodeCtlInContainer(context, "start");
+        ProcessResult result = containerOperations.executeNodeCtlInContainer(context, "start");
 
         final InOrder inOrder = inOrder(containerEngine);
         inOrder.verify(containerEngine, times(1)).executeInContainerAsUser(
@@ -69,7 +72,7 @@ public class ContainerOperationsImplTest {
         when(containerEngine.executeInContainerAsUser(any(), any(), any(), any()))
                 .thenReturn(actualResult); // output from node program
 
-        dockerOperations.executeNodeCtlInContainer(context, "start");
+        containerOperations.executeNodeCtlInContainer(context, "start");
     }
 
     @Test
@@ -79,12 +82,12 @@ public class ContainerOperationsImplTest {
 
         terminal.expectCommand("nsenter --net=/proc/42/ns/net -- iptables -nvL 2>&1");
 
-        dockerOperations.executeCommandInNetworkNamespace(context, "iptables", "-nvL");
+        containerOperations.executeCommandInNetworkNamespace(context, "iptables", "-nvL");
     }
 
     private Container makeContainer(String name, Container.State state, int pid) {
-        final Container container = new Container(name + ".fqdn", DockerImage.fromString("mock"), null,
-                new ContainerName(name), state, pid);
+        final Container container = new Container(new ContainerId(name + "-id"), name + ".fqdn",
+                DockerImage.fromString("registry.example.com/mock"), null, new ContainerName(name), state, pid);
         when(containerEngine.getContainer(eq(container.name))).thenReturn(Optional.of(container));
         return container;
     }
@@ -96,7 +99,7 @@ public class ContainerOperationsImplTest {
         InetAddress ipV6Local = InetAddresses.forString("::1");
         InetAddress ipV4Local = InetAddresses.forString("127.0.0.1");
 
-        dockerOperations.addEtcHosts(containerData, hostname, Optional.empty(), Optional.of(ipV6Local));
+        containerOperations.addEtcHosts(containerData, hostname, Optional.empty(), Optional.of(ipV6Local));
 
         verify(containerData, times(1)).addFile(
                 fileSystem.getPath("/etc/hosts"),
@@ -109,7 +112,7 @@ public class ContainerOperationsImplTest {
                         "ff02::2	ip6-allrouters\n" +
                         "0:0:0:0:0:0:0:1	hostname\n");
 
-        dockerOperations.addEtcHosts(containerData, hostname, Optional.of(ipV4Local), Optional.of(ipV6Local));
+        containerOperations.addEtcHosts(containerData, hostname, Optional.of(ipV4Local), Optional.of(ipV6Local));
 
         verify(containerData, times(1)).addFile(
                 fileSystem.getPath("/etc/hosts"),
@@ -122,5 +125,17 @@ public class ContainerOperationsImplTest {
                         "ff02::2	ip6-allrouters\n" +
                         "0:0:0:0:0:0:0:1	hostname\n" +
                         "127.0.0.1	hostname\n");
+    }
+
+    @Test
+    public void retainContainersTest() {
+        when(containerEngine.listManagedContainers(ContainerOperationsImpl.MANAGER_NAME))
+                .thenReturn(List.of(new ContainerName("cnt1"), new ContainerName("cnt2"), new ContainerName("cnt3")));
+        containerOperations.retainManagedContainers(any(), Set.of(new ContainerName("cnt2"), new ContainerName("cnt4")));
+
+        verify(containerEngine).stopContainer(eq(new ContainerName("cnt1")));
+        verify(containerEngine).deleteContainer(eq(new ContainerName("cnt1")));
+        verify(containerEngine).stopContainer(eq(new ContainerName("cnt3")));
+        verify(containerEngine).deleteContainer(eq(new ContainerName("cnt3")));
     }
 }

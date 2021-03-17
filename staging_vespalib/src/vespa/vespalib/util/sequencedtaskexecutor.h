@@ -3,6 +3,7 @@
 
 #include "isequencedtaskexecutor.h"
 #include <vespa/vespalib/util/time.h>
+#include <vespa/vespalib/util/runnable.h>
 
 namespace vespalib {
 
@@ -33,12 +34,15 @@ public:
      *
      */
     static std::unique_ptr<ISequencedTaskExecutor>
-    create(uint32_t threads, uint32_t taskLimit = 1000, OptimizeFor optimize = OptimizeFor::LATENCY, uint32_t kindOfWatermark = 0, duration reactionTime = 10ms);
+    create(vespalib::Runnable::init_fun_t, uint32_t threads, uint32_t taskLimit = 1000,
+           OptimizeFor optimize = OptimizeFor::LATENCY, uint32_t kindOfWatermark = 0, duration reactionTime = 10ms);
     /**
      * For testing only
      */
     uint32_t getComponentHashSize() const { return _component2Id.size(); }
     uint32_t getComponentEffectiveHashSize() const { return _nextId; }
+    const vespalib::SyncableThreadExecutor* first_executor() const;
+
 private:
     explicit SequencedTaskExecutor(std::unique_ptr<std::vector<std::unique_ptr<vespalib::SyncableThreadExecutor>>> executor);
 

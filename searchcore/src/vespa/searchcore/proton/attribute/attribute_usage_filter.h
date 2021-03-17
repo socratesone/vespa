@@ -2,15 +2,18 @@
 
 #pragma once
 
-#include <vespa/searchcore/proton/persistenceengine/i_resource_write_filter.h>
 #include "attribute_usage_stats.h"
 #include "attribute_usage_filter_config.h"
+#include <vespa/searchcore/proton/persistenceengine/i_resource_write_filter.h>
 #include <mutex>
 #include <atomic>
+#include <memory>
 
 namespace proton {
 
-/*
+class IAttributeUsageListener;
+
+/**
  * Class to filter write operations based on sampled information about
  * attribute resource usage (e.g. enum store and multivalue mapping).
  * If resource limit is reached then further writes are denied in
@@ -29,6 +32,7 @@ private:
     Config              _config;
     State               _state;
     std::atomic<bool>   _acceptWrite;
+    std::unique_ptr<IAttributeUsageListener> _listener;
 
     void recalcState(const Guard &guard); // called with _lock held
 public:
@@ -37,6 +41,7 @@ public:
     void setAttributeStats(AttributeUsageStats attributeStats_in);
     AttributeUsageStats getAttributeUsageStats() const;
     void setConfig(Config config);
+    void set_listener(std::unique_ptr<IAttributeUsageListener> listener);
     double getEnumStoreUsedRatio() const;
     double getMultiValueUsedRatio() const;
     bool acceptWriteOperation() const override;

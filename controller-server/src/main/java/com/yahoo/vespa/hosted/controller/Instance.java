@@ -166,6 +166,21 @@ public class Instance {
         return change;
     }
 
+    /** Returns the total quota usage for this instance, excluding temporary deployments **/
+    public QuotaUsage quotaUsage() {
+        return deployments.values().stream()
+                .filter(d -> !d.zone().environment().isTest()) // Exclude temporary deployments
+                .map(Deployment::quota).reduce(QuotaUsage::add).orElse(QuotaUsage.none);
+    }
+
+    /** Returns the total quota usage for this instance, excluding one specific deployment (and temporary deployments) */
+    public QuotaUsage quotaUsageExcluding(ApplicationId application, ZoneId zone) {
+        return deployments.values().stream()
+                .filter(d -> !d.zone().environment().isTest()) // Exclude temporary deployments
+                .filter(d -> !(application.equals(id) && d.zone().equals(zone)))
+                .map(Deployment::quota).reduce(QuotaUsage::add).orElse(QuotaUsage.none);
+    }
+
     @Override
     public boolean equals(Object o) {
         if (this == o) return true;
@@ -185,5 +200,4 @@ public class Instance {
     public String toString() {
         return "application '" + id + "'";
     }
-
 }

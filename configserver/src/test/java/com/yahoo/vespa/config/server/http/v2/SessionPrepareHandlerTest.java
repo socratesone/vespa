@@ -16,13 +16,13 @@ import com.yahoo.slime.Slime;
 import com.yahoo.slime.SlimeUtils;
 import com.yahoo.vespa.config.server.ApplicationRepository;
 import com.yahoo.vespa.config.server.MockProvisioner;
-import com.yahoo.vespa.config.server.TestComponentRegistry;
 import com.yahoo.vespa.config.server.TimeoutBudget;
 import com.yahoo.vespa.config.server.application.OrchestratorMock;
 import com.yahoo.vespa.config.server.http.HttpErrorResponse;
 import com.yahoo.vespa.config.server.http.SessionHandler;
 import com.yahoo.vespa.config.server.http.SessionHandlerTest;
 import com.yahoo.vespa.config.server.tenant.TenantRepository;
+import com.yahoo.vespa.config.server.tenant.TestTenantRepository;
 import com.yahoo.vespa.curator.Curator;
 import com.yahoo.vespa.curator.mock.MockCurator;
 import org.junit.Before;
@@ -60,7 +60,7 @@ public class SessionPrepareHandlerTest extends SessionHandlerTest {
     private TimeoutBudget timeoutBudget;
     private ApplicationRepository applicationRepository;
 
-    private TestComponentRegistry componentRegistry;
+    private ConfigserverConfig configserverConfig;
     private String preparedMessage = " prepared.\"}";
     private String tenantMessage = "";
     private TenantRepository tenantRepository;
@@ -70,18 +70,17 @@ public class SessionPrepareHandlerTest extends SessionHandlerTest {
 
     @Before
     public void setupRepo() throws IOException {
-        ConfigserverConfig configserverConfig = new ConfigserverConfig.Builder()
+        configserverConfig = new ConfigserverConfig.Builder()
                 .configServerDBDir(temporaryFolder.newFolder().getAbsolutePath())
                 .configDefinitionsDir(temporaryFolder.newFolder().getAbsolutePath())
                 .fileReferencesDir(temporaryFolder.newFolder().getAbsolutePath())
                 .build();
-        componentRegistry = new TestComponentRegistry.Builder()
-                .curator(curator)
-                .configServerConfig(configserverConfig)
-                .build();
-        Clock clock = componentRegistry.getClock();
+        Clock clock = Clock.systemUTC();
         timeoutBudget = new TimeoutBudget(clock, Duration.ofSeconds(10));
-        tenantRepository = new TenantRepository(componentRegistry);
+        tenantRepository = new TestTenantRepository.Builder()
+                .withConfigserverConfig(configserverConfig)
+                .withCurator(curator)
+                .build();
         tenantRepository.addTenant(tenant);
         applicationRepository = new ApplicationRepository.Builder()
                 .withTenantRepository(tenantRepository)
@@ -234,15 +233,16 @@ public class SessionPrepareHandlerTest extends SessionHandlerTest {
     public void require_that_config_change_actions_are_in_response() throws Exception {
         long sessionId = applicationRepository.createSession(applicationId(), timeoutBudget, app);
         HttpResponse response = request(HttpRequest.Method.PUT, sessionId);
-        assertResponseContains(response, "\"configChangeActions\":{\"restart\":[],\"refeed\":[]}");
+        assertResponseContains(response, "\"configChangeActions\":{\"restart\":[],\"refeed\":[],\"reindex\":[]}");
     }
 
     @Test
     public void require_that_config_change_actions_are_not_logged_if_not_existing() throws Exception {
         long sessionId = applicationRepository.createSession(applicationId(), timeoutBudget, app);
         HttpResponse response = request(HttpRequest.Method.PUT, sessionId);
-        assertResponseNotContains(response, "Change(s) between active and new application that require restart");
-        assertResponseNotContains(response, "Change(s) between active and new application that require re-feed");
+        assertResponseNotContains(response, "Change(s) between active and new application that may require restart");
+        assertResponseNotContains(response, "Change(s) between active and new application that may require re-feed");
+        assertResponseNotContains(response, "Change(s) between active and new application that may require re-index");
     }
 
     @Test
@@ -251,7 +251,7 @@ public class SessionPrepareHandlerTest extends SessionHandlerTest {
         String exceptionMessage = "Out of capacity";
         FailingSessionPrepareHandler handler = new FailingSessionPrepareHandler(SessionPrepareHandler.testOnlyContext(),
                                                                                 applicationRepository,
-                                                                                componentRegistry.getConfigserverConfig(),
+                                                                                configserverConfig,
                                                                                 new OutOfCapacityException(exceptionMessage));
         HttpResponse response = handler.handle(createTestRequest(pathPrefix, HttpRequest.Method.PUT, Cmd.PREPARED, sessionId));
         assertEquals(400, response.getStatus());
@@ -266,7 +266,7 @@ public class SessionPrepareHandlerTest extends SessionHandlerTest {
         String exceptionMessage = "nullpointer thrown in test handler";
         FailingSessionPrepareHandler handler = new FailingSessionPrepareHandler(SessionPrepareHandler.testOnlyContext(),
                                                                                 applicationRepository,
-                                                                                componentRegistry.getConfigserverConfig(),
+                                                                                configserverConfig,
                                                                                 new NullPointerException(exceptionMessage));
         HttpResponse response = handler.handle(createTestRequest(pathPrefix, HttpRequest.Method.PUT, Cmd.PREPARED, sessionId));
         assertEquals(500, response.getStatus());
@@ -281,7 +281,7 @@ public class SessionPrepareHandlerTest extends SessionHandlerTest {
         long sessionId = applicationRepository.createSession(applicationId(), timeoutBudget, app);
         FailingSessionPrepareHandler handler = new FailingSessionPrepareHandler(SessionPrepareHandler.testOnlyContext(),
                                                                                 applicationRepository,
-                                                                                componentRegistry.getConfigserverConfig(),
+                                                                                configserverConfig,
                                                                                 new ApplicationLockException(new UncheckedTimeoutException(exceptionMessage)));
         HttpResponse response = handler.handle(createTestRequest(pathPrefix, HttpRequest.Method.PUT, Cmd.PREPARED, sessionId));
         assertEquals(500, response.getStatus());
@@ -293,7 +293,7 @@ public class SessionPrepareHandlerTest extends SessionHandlerTest {
     @Test
     public void test_docker_image_repository() {
         long sessionId = applicationRepository.createSession(applicationId(), timeoutBudget, app);
-        String dockerImageRepository = "https://foo.bar.com:4443/baz";
+        String dockerImageRepository = "foo.bar.com:4443/baz";
         request(HttpRequest.Method.PUT, sessionId, Map.of("dockerImageRepository", dockerImageRepository,
                                                           "applicationName", applicationId().application().value()));
         applicationRepository.activate(tenantRepository.getTenant(tenant), sessionId, timeoutBudget, false);
@@ -316,10 +316,7 @@ public class SessionPrepareHandlerTest extends SessionHandlerTest {
     }
 
     private SessionHandler createHandler() {
-        return new SessionPrepareHandler(
-                SessionPrepareHandler.testOnlyContext(),
-                applicationRepository,
-                componentRegistry.getConfigserverConfig());
+        return new SessionPrepareHandler(SessionPrepareHandler.testOnlyContext(), applicationRepository, configserverConfig);
     }
 
     private HttpResponse request(HttpRequest.Method put, long l) {

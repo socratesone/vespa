@@ -1,6 +1,8 @@
 // Copyright 2017 Yahoo Holdings. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.model.content;
 
+import com.yahoo.config.model.deploy.DeployState;
+import com.yahoo.config.model.deploy.TestProperties;
 import com.yahoo.vespa.config.content.FleetcontrollerConfig;
 import com.yahoo.vespa.config.content.AllClustersBucketSpacesConfig;
 import com.yahoo.vespa.config.content.core.BucketspacesConfig;
@@ -69,15 +71,36 @@ public class ContentSearchClusterTest {
     }
 
     private static ProtonConfig getProtonConfig(ContentCluster cluster) {
-        ProtonConfig.Builder protonCfgBuilder = new ProtonConfig.Builder();
-        cluster.getSearch().getConfig(protonCfgBuilder);
-        return new ProtonConfig(protonCfgBuilder);
+        var builder = new ProtonConfig.Builder();
+        cluster.getSearch().getConfig(builder);
+        return new ProtonConfig(builder);
     }
 
-    private static void assertProtonResourceLimits(double expDiskLimit, double expMemoryLimits, String clusterXml) throws Exception {
-        ProtonConfig cfg = getProtonConfig(createCluster(clusterXml));
+    private static ContentCluster createClusterWithFeatureFlag(String clusterXml, boolean enableFeedBlockInDistributor) throws Exception {
+        var deployStateBuilder = new DeployState.Builder().properties(
+                new TestProperties().enableFeedBlockInDistributor(enableFeedBlockInDistributor));
+        return createCluster(clusterXml, deployStateBuilder);
+    }
+
+    private static void assertProtonResourceLimits(double expDiskLimit, double expMemoryLimit, String clusterXml) throws Exception {
+        assertProtonResourceLimits(expDiskLimit, expMemoryLimit, createCluster(clusterXml));
+    }
+
+    private static void assertProtonResourceLimits(double expDiskLimit, double expMemoryLimit, ContentCluster cluster) {
+        var cfg = getProtonConfig(cluster);
         assertEquals(expDiskLimit, cfg.writefilter().disklimit(), EPSILON);
-        assertEquals(expMemoryLimits, cfg.writefilter().memorylimit(), EPSILON);
+        assertEquals(expMemoryLimit, cfg.writefilter().memorylimit(), EPSILON);
+    }
+
+    private static void assertClusterControllerResourceLimits(double expDiskLimit, double expMemoryLimit, String clusterXml) throws Exception {
+        assertClusterControllerResourceLimits(expDiskLimit, expMemoryLimit, createCluster(clusterXml));
+    }
+
+    private static void assertClusterControllerResourceLimits(double expDiskLimit, double expMemoryLimit, ContentCluster cluster) {
+        var limits = getFleetcontrollerConfig(cluster).cluster_feed_block_limit();
+        assertEquals(4, limits.size());
+        assertEquals(expDiskLimit, limits.get("disk"), EPSILON);
+        assertEquals(expMemoryLimit, limits.get("memory"), EPSILON);
     }
 
     @Test
@@ -94,14 +117,41 @@ public class ContentSearchClusterTest {
 
     @Test
     public void requireThatOnlyDiskLimitCanBeSet() throws Exception {
-        assertProtonResourceLimits(0.88, 0.8,
+        assertProtonResourceLimits(0.88, 0.9,
                 new ContentClusterBuilder().protonDiskLimit(0.88).getXml());
     }
 
     @Test
     public void requireThatOnlyMemoryLimitCanBeSet() throws Exception {
-        assertProtonResourceLimits(0.8, 0.77,
+        assertProtonResourceLimits(0.9, 0.77,
                 new ContentClusterBuilder().protonMemoryLimit(0.77).getXml());
+    }
+
+    @Test
+    public void cluster_controller_resource_limits_can_be_set() throws Exception {
+        assertClusterControllerResourceLimits(0.92, 0.93,
+                new ContentClusterBuilder().clusterControllerDiskLimit(0.92).clusterControllerMemoryLimit(0.93).getXml());
+    }
+
+    @Test
+    public void resource_limits_are_derived_from_the_other_if_not_specified() throws Exception {
+        var cluster = createCluster(new ContentClusterBuilder().clusterControllerDiskLimit(0.5).protonMemoryLimit(0.95).getXml());
+        assertProtonResourceLimits(0.75, 0.95, cluster);
+        assertClusterControllerResourceLimits(0.5, 0.94, cluster);
+    }
+
+    @Test
+    public void default_resource_limits_when_feed_block_is_disabled_in_distributor() throws Exception {
+        var cluster = createClusterWithFeatureFlag(new ContentClusterBuilder().getXml(), false);
+        assertProtonResourceLimits(0.8, 0.8, cluster);
+        assertClusterControllerResourceLimits(0.8, 0.8, cluster);
+    }
+
+    @Test
+    public void default_resource_limits_when_feed_block_is_enabled_in_distributor() throws Exception {
+        var cluster = createClusterWithFeatureFlag(new ContentClusterBuilder().getXml(), true);
+        assertProtonResourceLimits(0.9, 0.9, cluster);
+        assertClusterControllerResourceLimits(0.8, 0.8, cluster);
     }
 
     @Test
@@ -149,8 +199,9 @@ public class ContentSearchClusterTest {
     }
 
     private static FleetcontrollerConfig getFleetcontrollerConfig(ContentCluster cluster) {
-        FleetcontrollerConfig.Builder builder = new FleetcontrollerConfig.Builder();
+        var builder = new FleetcontrollerConfig.Builder();
         cluster.getConfig(builder);
+        cluster.getClusterControllerConfig().getConfig(builder);
         builder.cluster_name("unknown");
         builder.index(0);
         builder.zookeeper_server("unknown");

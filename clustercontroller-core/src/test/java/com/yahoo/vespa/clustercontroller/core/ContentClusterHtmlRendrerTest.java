@@ -1,4 +1,4 @@
-// Copyright 2017 Yahoo Holdings. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Verizon Media. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.clustercontroller.core;
 
 import com.google.common.collect.Sets;
@@ -12,6 +12,7 @@ import org.junit.Test;
 
 import java.io.StringWriter;
 import java.io.Writer;
+import java.util.Collections;
 import java.util.TreeMap;
 
 import static org.hamcrest.core.Is.is;
@@ -19,7 +20,7 @@ import static org.junit.Assert.assertThat;
 import static org.mockito.Mockito.mock;
 
 public class ContentClusterHtmlRendrerTest {
-    private VdsClusterHtmlRenderer renderer = new VdsClusterHtmlRenderer();
+    private final VdsClusterHtmlRenderer renderer = new VdsClusterHtmlRenderer();
     private final static int slobrokGeneration = 34;
     private final static String clusterName = "clustername";
     private final TreeMap<Integer, NodeInfo> storageNodeInfoByIndex = new TreeMap<>();
@@ -60,6 +61,7 @@ public class ContentClusterHtmlRendrerTest {
                 statsAggregator,
                 1.0,
                 10,
+                Collections.emptyMap(),
                 eventLog,
                 "pathPrefix",
                 "name");

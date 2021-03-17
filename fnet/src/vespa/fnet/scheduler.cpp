@@ -9,8 +9,8 @@
 LOG_SETUP(".fnet.scheduler");
 
 
-FNET_Scheduler::FNET_Scheduler(time_point *sampler,
-                               time_point *now)
+FNET_Scheduler::FNET_Scheduler(vespalib::steady_time *sampler,
+                               vespalib::steady_time *now)
     : _cond(),
       _next(),
       _now(),
@@ -29,7 +29,7 @@ FNET_Scheduler::FNET_Scheduler(time_point *sampler,
     if (now != nullptr) {
         _next = *now;
     } else {
-        _next = clock::now();
+        _next = vespalib::steady_clock::now();
     }
     _next += tick_ms;
 }
@@ -69,6 +69,8 @@ FNET_Scheduler::~FNET_Scheduler()
 void
 FNET_Scheduler::Schedule(FNET_Task *task, double seconds)
 {
+    constexpr double ONE_MONTH_S = 3600 * 24 * 30;
+    seconds = std::min(seconds, ONE_MONTH_S);
     uint32_t ticks = 2 + (uint32_t) std::ceil(seconds * (1000.0 / tick_ms.count()));
 
     std::lock_guard<std::mutex> guard(_lock);
@@ -144,7 +146,7 @@ FNET_Scheduler::CheckTasks()
     if (_sampler != nullptr) {
         _now = *_sampler;
     } else {
-        _now = clock::now();
+        _now = vespalib::steady_clock::now();
     }
 
     // assume timely value propagation

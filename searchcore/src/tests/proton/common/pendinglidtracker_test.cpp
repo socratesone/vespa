@@ -34,23 +34,19 @@ operator << (std::ostream & os, ILidCommitState::State state) {
 
 void
 verifyPhase1ProduceAndNeedCommit(PendingLidTrackerBase & tracker, ILidCommitState::State expected) {
-    EXPECT_EQUAL(ILidCommitState::State::COMPLETED, tracker.getState());
     EXPECT_EQUAL(ILidCommitState::State::COMPLETED, tracker.getState(LID_1));
     EXPECT_EQUAL(ILidCommitState::State::COMPLETED, tracker.getState(LIDV_2_1_3));
 
     auto token = tracker.produce(LID_1);
-    EXPECT_EQUAL(expected, tracker.getState());
     EXPECT_EQUAL(expected, tracker.getState(LID_1));
     EXPECT_EQUAL(expected, tracker.getState(LIDV_2_1_3));
     EXPECT_EQUAL(ILidCommitState::State::COMPLETED, tracker.getState(LIDV_2_3));
     {
         auto token2 = tracker.produce(LID_1);
-        EXPECT_EQUAL(expected, tracker.getState());
         EXPECT_EQUAL(expected, tracker.getState(LID_1));
         EXPECT_EQUAL(expected, tracker.getState(LIDV_2_1_3));
         EXPECT_EQUAL(ILidCommitState::State::COMPLETED, tracker.getState(LIDV_2_3));
     }
-    EXPECT_EQUAL(expected, tracker.getState());
     EXPECT_EQUAL(expected, tracker.getState(LID_1));
     EXPECT_EQUAL(expected, tracker.getState(LIDV_2_1_3));
     EXPECT_EQUAL(ILidCommitState::State::COMPLETED, tracker.getState(LIDV_2_3));
@@ -59,49 +55,24 @@ verifyPhase1ProduceAndNeedCommit(PendingLidTrackerBase & tracker, ILidCommitStat
 TEST("test pendinglidtracker for needcommit") {
     PendingLidTracker tracker;
     verifyPhase1ProduceAndNeedCommit(tracker, ILidCommitState::State::WAITING);
-    EXPECT_EQUAL(ILidCommitState::State::COMPLETED, tracker.getState());
     EXPECT_EQUAL(ILidCommitState::State::COMPLETED, tracker.getState(LID_1));
     EXPECT_EQUAL(ILidCommitState::State::COMPLETED, tracker.getState(LIDV_2_1_3));
     {
         ILidCommitState::State incomplete = ILidCommitState::State::WAITING;
         auto token = tracker.produce(LID_1);
-        EXPECT_EQUAL(incomplete, tracker.getState());
         EXPECT_EQUAL(incomplete, tracker.getState(LID_1));
         EXPECT_EQUAL(incomplete, tracker.getState(LIDV_2_1_3));
         EXPECT_EQUAL(ILidCommitState::State::COMPLETED, tracker.getState(LIDV_2_3));
         {
             auto snapshot = tracker.produceSnapshot();
-            EXPECT_EQUAL(incomplete, tracker.getState());
             EXPECT_EQUAL(incomplete, tracker.getState(LID_1));
             EXPECT_EQUAL(incomplete, tracker.getState(LIDV_2_1_3));
             EXPECT_EQUAL(ILidCommitState::State::COMPLETED, tracker.getState(LIDV_2_3));
         }
-        EXPECT_EQUAL(incomplete, tracker.getState());
         EXPECT_EQUAL(incomplete, tracker.getState(LID_1));
         EXPECT_EQUAL(incomplete, tracker.getState(LIDV_2_1_3));
         EXPECT_EQUAL(ILidCommitState::State::COMPLETED, tracker.getState(LIDV_2_3));
     }
-    EXPECT_EQUAL(ILidCommitState::State::COMPLETED, tracker.getState());
-    EXPECT_EQUAL(ILidCommitState::State::COMPLETED, tracker.getState(LID_1));
-    EXPECT_EQUAL(ILidCommitState::State::COMPLETED, tracker.getState(LIDV_2_1_3));
-}
-
-TEST("test two phase pendinglidtracker for needcommit") {
-    TwoPhasePendingLidTracker tracker;
-    ILidCommitState::State incomplete = ILidCommitState::State::NEED_COMMIT;
-    verifyPhase1ProduceAndNeedCommit(tracker, incomplete);
-    EXPECT_EQUAL(incomplete, tracker.getState());
-    EXPECT_EQUAL(incomplete, tracker.getState(LID_1));
-    EXPECT_EQUAL(incomplete, tracker.getState(LIDV_2_1_3));
-    EXPECT_EQUAL(ILidCommitState::State::COMPLETED, tracker.getState(LIDV_2_3));
-    {
-        ILidCommitState::State waiting = ILidCommitState::State::WAITING;
-        auto snapshot = tracker.produceSnapshot();
-        EXPECT_EQUAL(waiting, tracker.getState());
-        EXPECT_EQUAL(waiting, tracker.getState(LID_1));
-        EXPECT_EQUAL(waiting, tracker.getState(LIDV_2_1_3));
-    }
-    EXPECT_EQUAL(ILidCommitState::State::COMPLETED, tracker.getState());
     EXPECT_EQUAL(ILidCommitState::State::COMPLETED, tracker.getState(LID_1));
     EXPECT_EQUAL(ILidCommitState::State::COMPLETED, tracker.getState(LIDV_2_1_3));
 }

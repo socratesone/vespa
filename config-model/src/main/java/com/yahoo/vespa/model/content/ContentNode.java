@@ -14,8 +14,6 @@ import com.yahoo.vespa.model.application.validation.RestartConfigs;
 
 /**
  * Common class for config producers for storage and distributor nodes.
- *
- * TODO: Author
  */
 @RestartConfigs({StorCommunicationmanagerConfig.class, StorStatusConfig.class,
                  StorServerConfig.class, LoadTypeConfig.class, MetricsmanagerConfig.class})
@@ -27,16 +25,14 @@ public abstract class ContentNode extends AbstractService
     private final boolean skipCommunicationManagerThread;
     private final boolean skipMbusRequestThread;
     private final boolean skipMbusReplyThread;
-    private final boolean useDirectStorageApiRpc;
 
-    public ContentNode(ModelContext.Properties properties, AbstractConfigProducer parent, String clusterName, String rootDirectory, int distributionKey) {
+    public ContentNode(ModelContext.FeatureFlags featureFlags, AbstractConfigProducer<?> parent, String clusterName, String rootDirectory, int distributionKey) {
         super(parent, "" + distributionKey);
         this.distributionKey = distributionKey;
-        this.skipCommunicationManagerThread = properties.skipCommunicationManagerThread();
-        this.skipMbusRequestThread = properties.skipMbusRequestThread();
-        this.skipMbusReplyThread = properties.skipMbusReplyThread();
+        this.skipCommunicationManagerThread = featureFlags.skipCommunicationManagerThread();
+        this.skipMbusRequestThread = featureFlags.skipMbusRequestThread();
+        this.skipMbusReplyThread = featureFlags.skipMbusReplyThread();
         this.rootDirectory = rootDirectory;
-        this.useDirectStorageApiRpc = properties.useDirectStorageApiRpc();
 
         initialize();
         setProp("clustertype", "content");
@@ -83,7 +79,6 @@ public abstract class ContentNode extends AbstractService
         builder.skip_thread(skipCommunicationManagerThread);
         builder.mbus.skip_request_thread(skipMbusRequestThread);
         builder.mbus.skip_reply_thread(skipMbusReplyThread);
-        builder.use_direct_storageapi_rpc(useDirectStorageApiRpc);
     }
 
     @Override

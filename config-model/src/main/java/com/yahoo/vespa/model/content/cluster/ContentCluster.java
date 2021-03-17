@@ -1,4 +1,4 @@
-// Copyright 2017 Yahoo Holdings. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Verizon Media. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.model.content.cluster;
 
 import com.google.common.base.Preconditions;
@@ -6,36 +6,38 @@ import com.google.common.collect.Sets;
 import com.yahoo.config.application.api.DeployLogger;
 import com.yahoo.config.model.ConfigModelContext;
 import com.yahoo.config.model.deploy.DeployState;
+import com.yahoo.config.model.producer.AbstractConfigProducer;
 import com.yahoo.config.model.producer.AbstractConfigProducerRoot;
+import com.yahoo.config.provision.ClusterMembership;
 import com.yahoo.config.provision.ClusterSpec;
 import com.yahoo.config.provision.Environment;
+import com.yahoo.config.provision.NodeResources;
 import com.yahoo.config.provision.Zone;
-import com.yahoo.vespa.config.content.MessagetyperouteselectorpolicyConfig;
-import com.yahoo.vespa.config.content.FleetcontrollerConfig;
-import com.yahoo.vespa.config.content.StorDistributionConfig;
+import com.yahoo.documentapi.messagebus.protocol.DocumentProtocol;
+import com.yahoo.documentmodel.NewDocumentType;
+import com.yahoo.metrics.MetricsmanagerConfig;
 import com.yahoo.vespa.config.content.AllClustersBucketSpacesConfig;
+import com.yahoo.vespa.config.content.DistributionConfig;
+import com.yahoo.vespa.config.content.FleetcontrollerConfig;
+import com.yahoo.vespa.config.content.MessagetyperouteselectorpolicyConfig;
+import com.yahoo.vespa.config.content.StorDistributionConfig;
 import com.yahoo.vespa.config.content.core.BucketspacesConfig;
 import com.yahoo.vespa.config.content.core.StorDistributormanagerConfig;
-import com.yahoo.documentmodel.NewDocumentType;
-import com.yahoo.documentapi.messagebus.protocol.DocumentProtocol;
-import com.yahoo.metrics.MetricsmanagerConfig;
-import com.yahoo.config.model.producer.AbstractConfigProducer;
 import com.yahoo.vespa.model.HostResource;
-import com.yahoo.vespa.model.Service;
 import com.yahoo.vespa.model.admin.Admin;
-import com.yahoo.vespa.model.admin.clustercontroller.ClusterControllerContainerCluster;
-import com.yahoo.vespa.model.admin.monitoring.Monitoring;
 import com.yahoo.vespa.model.admin.clustercontroller.ClusterControllerCluster;
 import com.yahoo.vespa.model.admin.clustercontroller.ClusterControllerComponent;
 import com.yahoo.vespa.model.admin.clustercontroller.ClusterControllerConfigurer;
 import com.yahoo.vespa.model.admin.clustercontroller.ClusterControllerContainer;
+import com.yahoo.vespa.model.admin.clustercontroller.ClusterControllerContainerCluster;
+import com.yahoo.vespa.model.admin.clustercontroller.ReindexingContext;
+import com.yahoo.vespa.model.admin.monitoring.Monitoring;
 import com.yahoo.vespa.model.builder.xml.dom.ModelElement;
 import com.yahoo.vespa.model.builder.xml.dom.NodesSpecification;
 import com.yahoo.vespa.model.container.Container;
-import com.yahoo.vespa.model.container.ContainerCluster;
-import com.yahoo.vespa.model.container.ApplicationContainerCluster;
 import com.yahoo.vespa.model.container.ContainerModel;
 import com.yahoo.vespa.model.content.ClusterControllerConfig;
+import com.yahoo.vespa.model.content.ClusterResourceLimits;
 import com.yahoo.vespa.model.content.ContentSearch;
 import com.yahoo.vespa.model.content.ContentSearchCluster;
 import com.yahoo.vespa.model.content.DistributionBitCalculator;
@@ -55,8 +57,6 @@ import org.w3c.dom.Element;
 
 import java.util.ArrayList;
 import java.util.Collection;
-import java.util.Collections;
-import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -66,6 +66,8 @@ import java.util.TreeMap;
 import java.util.logging.Level;
 import java.util.stream.Collectors;
 
+import static java.util.stream.Collectors.toList;
+
 /**
  * A content cluster.
  *
@@ -73,6 +75,7 @@ import java.util.stream.Collectors;
  * @author bratseth
  */
 public class ContentCluster extends AbstractConfigProducer implements
+                                                           DistributionConfig.Producer,
                                                            StorDistributionConfig.Producer,
                                                            StorDistributormanagerConfig.Producer,
                                                            FleetcontrollerConfig.Producer,
@@ -129,11 +132,15 @@ public class ContentCluster extends AbstractConfigProducer implements
             ContentCluster c = new ContentCluster(context.getParentProducer(), getClusterId(contentElement), documentDefinitions,
                                                   globallyDistributedDocuments, routingSelection,
                                                   deployState.zone(), deployState.isHosted());
-            c.clusterControllerConfig = new ClusterControllerConfig.Builder(getClusterId(contentElement), contentElement).build(deployState, c, contentElement.getXml());
+            boolean enableFeedBlockInDistributor = deployState.getProperties().featureFlags().enableFeedBlockInDistributor();
+            var resourceLimits = new ClusterResourceLimits.Builder(enableFeedBlockInDistributor).build(contentElement);
+            c.clusterControllerConfig = new ClusterControllerConfig.Builder(getClusterId(contentElement),
+                    contentElement,
+                    resourceLimits.getClusterControllerLimits()).build(deployState, c, contentElement.getXml());
             c.search = new ContentSearchCluster.Builder(documentDefinitions,
-                                                        globallyDistributedDocuments,
-                                                        isCombined(getClusterId(contentElement), containers))
-                               .build(deployState, c, contentElement.getXml());
+                    globallyDistributedDocuments,
+                    isCombined(getClusterId(contentElement), containers),
+                    resourceLimits.getContentNodeLimits()).build(deployState, c, contentElement.getXml());
             c.persistenceFactory = new EngineFactoryBuilder().build(contentElement, c);
             c.storageNodes = new StorageCluster.Builder().build(deployState, c, w3cContentElement);
             c.distributorNodes = new DistributorCluster.Builder(c).build(deployState, c, w3cContentElement);
@@ -163,7 +170,7 @@ public class ContentCluster extends AbstractConfigProducer implements
 
             if (context.getParentProducer().getRoot() == null) return c;
 
-            addClusterControllers(containers, context, c.rootGroup, contentElement, c.clusterId, c);
+            addClusterControllers(context, c.rootGroup, contentElement, c.clusterId, c, deployState);
             return c;
         }
 
@@ -276,35 +283,36 @@ public class ContentCluster extends AbstractConfigProducer implements
             }
         }
 
-        private void addClusterControllers(Collection<ContainerModel> containers, ConfigModelContext context, 
-                                           StorageGroup rootGroup, ModelElement contentElement, 
-                                           String contentClusterName, ContentCluster contentCluster) {
+        private void addClusterControllers(ConfigModelContext context,
+                                           StorageGroup rootGroup,
+                                           ModelElement contentElement,
+                                           String contentClusterName,
+                                           ContentCluster contentCluster,
+                                           DeployState deployState) {
             if (admin == null) return; // only in tests
             if (contentCluster.getPersistence() == null) return;
 
             ClusterControllerContainerCluster clusterControllers;
 
             ContentCluster overlappingCluster = findOverlappingCluster(context.getParentProducer().getRoot(), contentCluster);
+
             if (overlappingCluster != null && overlappingCluster.getClusterControllers() != null) {
                 // Borrow the cluster controllers of the other cluster in this case.
-                // This condition only obtains on non-hosted systems with a shared config server,
-                // a combination which only exists in system tests
+                // This condition only occurs on non-hosted systems with a shared config server,
+                // a combination which only exists in system tests.
                 clusterControllers = overlappingCluster.getClusterControllers();
             }
             else if (admin.multitenant()) {
-                String clusterName = contentClusterName + "-controllers";
-                NodesSpecification nodesSpecification =
-                    NodesSpecification.optionalDedicatedFromParent(contentElement.child("controllers"), context)
-                                      .orElse(NodesSpecification.nonDedicated(3, context));
-                Collection<HostResource> hosts = nodesSpecification.isDedicated() ?
-                                                 getControllerHosts(nodesSpecification, admin, clusterName, context) :
-                                                 drawControllerHosts(nodesSpecification.minResources().nodes(), rootGroup, containers);
-                clusterControllers = createClusterControllers(new ClusterControllerCluster(contentCluster, "standalone"),
-                                                              hosts,
-                                                              clusterName,
-                                                              true,
-                                                              context.getDeployState());
-                contentCluster.clusterControllers = clusterControllers;
+                if (context.properties().dedicatedClusterControllerCluster())
+                    clusterControllers = getDedicatedSharedControllers(contentElement, admin, context, deployState);
+                else {
+                    clusterControllers = createClusterControllers(new ClusterControllerCluster(contentCluster, "standalone", deployState),
+                                                                  drawControllerHosts(3, rootGroup),
+                                                                  contentClusterName + "-controllers",
+                                                                  true,
+                                                                  context.getDeployState());
+                    contentCluster.clusterControllers = clusterControllers;
+                }
             }
             else {
                 clusterControllers = admin.getClusterControllers();
@@ -320,6 +328,10 @@ public class ContentCluster extends AbstractConfigProducer implements
             }
 
             addClusterControllerComponentsForThisCluster(clusterControllers, contentCluster);
+            ReindexingContext reindexingContext = clusterControllers.reindexingContext();
+            for (NewDocumentType type : contentCluster.documentDefinitions.values()) {
+                reindexingContext.addDocumentType(contentCluster.clusterId, type);
+            }
         }
 
         /** Returns any other content cluster which shares nodes with this, or null if none are built */
@@ -337,13 +349,35 @@ public class ContentCluster extends AbstractConfigProducer implements
             return ! Sets.intersection(c1Hosts, c2Hosts).isEmpty();
         }
 
-        private Collection<HostResource> getControllerHosts(NodesSpecification nodesSpecification, Admin admin, String clusterName, ConfigModelContext context) {
-            return nodesSpecification.provision(admin.hostSystem(), ClusterSpec.Type.admin, ClusterSpec.Id.from(clusterName), context.getDeployLogger()).keySet();
+        public static final NodeResources clusterControllerResources = new NodeResources(0.5, 2, 10, 0.3, NodeResources.DiskSpeed.any, NodeResources.StorageType.any);
+
+        private ClusterControllerContainerCluster getDedicatedSharedControllers(ModelElement contentElement, Admin admin,
+                                                                                ConfigModelContext context, DeployState deployState) {
+            if (admin.getClusterControllers() == null) {
+                NodesSpecification spec = NodesSpecification.requiredFromSharedParents(deployState.zone().environment().isProduction() ? 3 : 1,
+                                                                                       deployState.featureFlags().dedicatedClusterControllerFlavor().orElse(clusterControllerResources),
+                                                                                       contentElement,
+                                                                                       context);
+
+                Collection<HostResource> hosts = spec.provision(admin.hostSystem(),
+                                                                ClusterSpec.Type.admin,
+                                                                ClusterSpec.Id.from("cluster-controllers"),
+                                                                context.getDeployLogger(),
+                                                                true)
+                                                     .keySet();
+
+                admin.setClusterControllers(createClusterControllers(new ClusterControllerCluster(admin, "standalone", deployState),
+                                                                     hosts,
+                                                                     "cluster-controllers",
+                                                                     true,
+                                                                     context.getDeployState()));
+            }
+            return admin.getClusterControllers();
         }
 
-        private List<HostResource> drawControllerHosts(int count, StorageGroup rootGroup, Collection<ContainerModel> containers) {
-            List<HostResource> hosts = drawControllerHosts(count, false, rootGroup, containers);
-            List<HostResource> retiredHosts = drawControllerHosts(count, true, rootGroup, containers);
+        private List<HostResource> drawControllerHosts(int count, StorageGroup rootGroup) {
+            List<HostResource> hosts = drawControllerHosts(count, false, rootGroup);
+            List<HostResource> retiredHosts = drawControllerHosts(count, true, rootGroup);
 
             // preserve the cluster state in case all pre-existing controllers are on retired nodes
             List<HostResource> all = new ArrayList<>(hosts);
@@ -351,75 +385,11 @@ public class ContentCluster extends AbstractConfigProducer implements
             return all;
         }
 
-        private List<HostResource> drawControllerHosts(int count, boolean retired, StorageGroup rootGroup, Collection<ContainerModel> containers) {
+        private List<HostResource> drawControllerHosts(int count, boolean retired, StorageGroup rootGroup) {
             List<HostResource> hosts = drawContentHostsRecursively(count, retired, rootGroup);
-            // if (hosts.size() < count) // supply with containers TODO: Currently disabled due to leading to topology change problems
-            //     hosts.addAll(drawContainerHosts(count - hosts.size(), containers, new HashSet<>(hosts)));
             if (hosts.size() % 2 == 0 && ! hosts.isEmpty()) // ZK clusters of even sizes are less available (even in the size=2 case)
                 hosts = hosts.subList(0, hosts.size()-1);
             return hosts;
-        }
-
-        /**
-         * Draws <code>count</code> container nodes to use as cluster controllers, or as many as possible
-         * if less than <code>count</code> are available.
-         * 
-         * This will draw the same nodes each time it is 
-         * invoked if cluster names and node indexes are unchanged.
-         */
-        // DO NOT DELETE - see above
-        private List<HostResource> drawContainerHosts(int count, Collection<ContainerModel> containerClusters, 
-                                                      Set<HostResource> usedHosts) {
-            if (containerClusters.isEmpty()) return Collections.emptyList();
-
-            List<HostResource> allHosts = new ArrayList<>();
-            for (ApplicationContainerCluster cluster : clustersSortedByName(containerClusters))
-                allHosts.addAll(hostResourcesSortedByIndex(cluster));
-            
-            // Don't use hosts already selected to be assigned a cluster controllers as part of building this,
-            // and don't use hosts which already have one. One physical host may have many roles but can only
-            // have one cluster controller
-            List<HostResource> uniqueHostsWithoutClusterController = allHosts.stream()
-                    .filter(h -> ! usedHosts.contains(h))
-                    .filter(h -> ! hostHasClusterController(h.getHostname(), allHosts))
-                    .distinct()
-                    .collect(Collectors.toList());
-
-            return uniqueHostsWithoutClusterController.subList(0, Math.min(uniqueHostsWithoutClusterController.size(), count));
-        }
-        
-        private List<ApplicationContainerCluster> clustersSortedByName(Collection<ContainerModel> containerModels) {
-            return containerModels.stream()
-                    .map(ContainerModel::getCluster)
-                    .filter(cluster -> cluster instanceof ApplicationContainerCluster)
-                    .map(cluster -> (ApplicationContainerCluster) cluster)
-                    .sorted(Comparator.comparing(ContainerCluster::getName))
-                    .collect(Collectors.toList());
-        }
-
-        private List<HostResource> hostResourcesSortedByIndex(ApplicationContainerCluster cluster) {
-            return cluster.getContainers().stream()
-                    .sorted(Comparator.comparing(Container::index))
-                    .map(Container::getHostResource)
-                    .collect(Collectors.toList());
-        }
-
-        /** Returns whether any host having the given hostname has a cluster controller */
-        private boolean hostHasClusterController(String hostname, List<HostResource> hosts) {
-            for (HostResource host : hosts) {
-                if ( ! host.getHostname().equals(hostname)) continue;
-
-                if (hasClusterController(host))
-                    return true;
-            }
-            return false;
-        }
-
-        private boolean hasClusterController(HostResource host) {
-            for (Service service : host.getServices())
-                if (service instanceof ClusterControllerContainer)
-                    return true;
-            return false;
         }
 
         /**
@@ -439,16 +409,16 @@ public class ContentCluster extends AbstractConfigProducer implements
             else {
                 hosts.addAll(group.getNodes().stream()
                      .filter(node -> node.isRetired() == retired)
-                     .map(StorageNode::getHostResource).collect(Collectors.toList()));
+                     .map(StorageNode::getHostResource).collect(toList()));
             }
 
             List<HostResource> sortedHosts = new ArrayList<>(hosts);
-            sortedHosts.sort((a, b) -> (a.comparePrimarilyByIndexTo(b)));
+            sortedHosts.sort(HostResource::comparePrimarilyByIndexTo);
             sortedHosts = sortedHosts.subList(0, Math.min(count, hosts.size()));
             return sortedHosts;
         }
 
-        private ClusterControllerContainerCluster createClusterControllers(AbstractConfigProducer parent,
+        private ClusterControllerContainerCluster createClusterControllers(AbstractConfigProducer<?> parent,
                                                                            Collection<HostResource> hosts,
                                                                            String name,
                                                                            boolean multitenant,
@@ -459,12 +429,14 @@ public class ContentCluster extends AbstractConfigProducer implements
             if (clusterControllers.getContainers().isEmpty()) {
                 int index = 0;
                 for (HostResource host : hosts) {
-                    var clusterControllerContainer = new ClusterControllerContainer(clusterControllers, index, multitenant, deployState.isHosted());
+                    int ccIndex = deployState.getProperties().dedicatedClusterControllerCluster()
+                                  ? host.spec().membership().map(ClusterMembership::index).orElse(index)
+                                  : index;
+                    boolean retired = host.spec().membership().map(ClusterMembership::retired).orElse(false);
+                    var clusterControllerContainer = new ClusterControllerContainer(clusterControllers, ccIndex, multitenant, deployState, retired);
                     clusterControllerContainer.setHostResource(host);
                     clusterControllerContainer.initService(deployState.getDeployLogger());
-                    clusterControllerContainer.setProp("clustertype", "admin")
-                            .setProp("clustername", clusterControllers.getName())
-                            .setProp("index", String.valueOf(index));
+                    clusterControllerContainer.setProp("clustertype", "admin");
                     containers.add(clusterControllerContainer);
                     ++index;
                 }
@@ -492,10 +464,10 @@ public class ContentCluster extends AbstractConfigProducer implements
 
     }
 
-    private ContentCluster(AbstractConfigProducer parent, String clusterId,
+    private ContentCluster(AbstractConfigProducer<?> parent, String clusterId,
                            Map<String, NewDocumentType> documentDefinitions,
                            Set<NewDocumentType> globallyDistributedDocuments,
-                           String routingSelection,  Zone zone, boolean isHosted) {
+                           String routingSelection, Zone zone, boolean isHosted) {
         super(parent, clusterId);
         this.isHosted = isHosted;
         this.clusterId = clusterId;
@@ -541,6 +513,7 @@ public class ContentCluster extends AbstractConfigProducer implements
 
     /**
      * The list of documentdefinitions declared at the cluster level.
+     *
      * @return the set of documenttype names
      */
     public Map<String, NewDocumentType> getDocumentDefinitions() { return documentDefinitions; }
@@ -559,20 +532,19 @@ public class ContentCluster extends AbstractConfigProducer implements
 
     @Override
     public void getConfig(MessagetyperouteselectorpolicyConfig.Builder builder) {
-    	if (!getSearch().hasIndexedCluster()) return;
-    	builder.
-    	defaultroute(com.yahoo.vespa.model.routing.DocumentProtocol.getDirectRouteName(getConfigId())).
-    	route(new MessagetyperouteselectorpolicyConfig.Route.Builder().
-    	        messagetype(DocumentProtocol.MESSAGE_PUTDOCUMENT).
-    	        name(com.yahoo.vespa.model.routing.DocumentProtocol.getIndexedRouteName(getConfigId()))).
-    	route(new MessagetyperouteselectorpolicyConfig.Route.Builder().
-    	        messagetype(DocumentProtocol.MESSAGE_REMOVEDOCUMENT).
-    	        name(com.yahoo.vespa.model.routing.DocumentProtocol.getIndexedRouteName(getConfigId()))).
-    	route(new MessagetyperouteselectorpolicyConfig.Route.Builder().
-    	        messagetype(DocumentProtocol.MESSAGE_UPDATEDOCUMENT).
-    	        name(com.yahoo.vespa.model.routing.DocumentProtocol.getIndexedRouteName(getConfigId())));
+        if ( ! getSearch().hasIndexedCluster()) return;
+        builder.defaultroute(com.yahoo.vespa.model.routing.DocumentProtocol.getDirectRouteName(getConfigId()))
+               .route(new MessagetyperouteselectorpolicyConfig.Route.Builder()
+                              .messagetype(DocumentProtocol.MESSAGE_PUTDOCUMENT)
+                              .name(com.yahoo.vespa.model.routing.DocumentProtocol.getIndexedRouteName(getConfigId())))
+               .route(new MessagetyperouteselectorpolicyConfig.Route.Builder()
+                              .messagetype(DocumentProtocol.MESSAGE_REMOVEDOCUMENT)
+                              .name(com.yahoo.vespa.model.routing.DocumentProtocol.getIndexedRouteName(getConfigId())))
+               .route(new MessagetyperouteselectorpolicyConfig.Route.Builder()
+                              .messagetype(DocumentProtocol.MESSAGE_UPDATEDOCUMENT)
+                              .name(com.yahoo.vespa.model.routing.DocumentProtocol.getIndexedRouteName(getConfigId())));
     }
-    
+
     public com.yahoo.vespa.model.content.StorageGroup getRootGroup() {
         return rootGroup;
     }
@@ -741,6 +713,39 @@ public class ContentCluster extends AbstractConfigProducer implements
             docTypeBuilder.bucketspace(bucketSpaceOfDocumentType(docType));
             builder.documenttype(docTypeBuilder);
         }
+    }
+
+    @Override
+    public void getConfig(DistributionConfig.Builder builder) {
+        DistributionConfig.Cluster.Builder clusterBuilder = new DistributionConfig.Cluster.Builder();
+        StorDistributionConfig.Builder storDistributionBuilder = new StorDistributionConfig.Builder();
+        getConfig(storDistributionBuilder);
+        StorDistributionConfig config = storDistributionBuilder.build();
+
+        clusterBuilder.active_per_leaf_group(config.active_per_leaf_group());
+        clusterBuilder.ready_copies(config.ready_copies());
+        clusterBuilder.redundancy(config.redundancy());
+        clusterBuilder.initial_redundancy(config.initial_redundancy());
+
+        for (StorDistributionConfig.Group group : config.group()) {
+            DistributionConfig.Cluster.Group.Builder groupBuilder = new DistributionConfig.Cluster.Group.Builder();
+            groupBuilder.index(group.index())
+                        .name(group.name())
+                        .capacity(group.capacity())
+                        .partitions(group.partitions());
+
+            for (var node : group.nodes()) {
+                DistributionConfig.Cluster.Group.Nodes.Builder nodesBuilder = new DistributionConfig.Cluster.Group.Nodes.Builder();
+                nodesBuilder.index(node.index())
+                            .retired(node.retired());
+
+                groupBuilder.nodes(nodesBuilder);
+            }
+
+            clusterBuilder.group(groupBuilder);
+        }
+
+        builder.cluster(getConfigId(), clusterBuilder);
     }
 
     /**

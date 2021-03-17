@@ -30,9 +30,9 @@ SearchableFeedView::Context::Context(const IIndexWriter::SP &indexWriter)
 
 SearchableFeedView::Context::~Context() = default;
 
-SearchableFeedView::SearchableFeedView(const StoreOnlyFeedView::Context &storeOnlyCtx, const PersistentParams &params,
+SearchableFeedView::SearchableFeedView(StoreOnlyFeedView::Context storeOnlyCtx, const PersistentParams &params,
                                        const FastAccessFeedView::Context &fastUpdateCtx, Context ctx)
-    : Parent(storeOnlyCtx, params, fastUpdateCtx),
+    : Parent(std::move(storeOnlyCtx), params, fastUpdateCtx),
       _indexWriter(ctx._indexWriter),
       _hasIndexedFields(_schema->getNumIndexFields() > 0)
 { }
@@ -59,53 +59,48 @@ SearchableFeedView::sync()
 
 void
 SearchableFeedView::putIndexedFields(SerialNum serialNum, search::DocumentIdT lid, const DocumentSP &newDoc,
-                                     bool immediateCommit, OnOperationDoneType onWriteDone)
+                                     OnOperationDoneType onWriteDone)
 {
     if (!hasIndexedFields()) {
         return;
     }
     _writeService.index().execute(
-            makeLambdaTask([=] {
-                performIndexPut(serialNum, lid, newDoc, immediateCommit, onWriteDone);
+            makeLambdaTask([this, serialNum, lid, newDoc, onWriteDone] {
+                performIndexPut(serialNum, lid, newDoc, onWriteDone);
             }));
 }
 
 void
-SearchableFeedView::performIndexPut(SerialNum serialNum, search::DocumentIdT lid, const Document &doc,
-                                    bool immediateCommit, OnOperationDoneType onWriteDone)
+SearchableFeedView::performIndexPut(SerialNum serialNum, search::DocumentIdT lid, const Document &doc, OnOperationDoneType onWriteDone)
 {
+    (void) onWriteDone;
     assert(_writeService.index().isCurrentThread());
     VLOG(getDebugLevel(lid, doc.getId()),
          "database(%s): performIndexPut: serialNum(%" PRIu64 "), docId(%s), lid(%d)",
          _params._docTypeName.toString().c_str(), serialNum, doc.getId().toString().c_str(), lid);
 
     _indexWriter->put(serialNum, doc, lid);
-    if (immediateCommit) {
-        _indexWriter->commit(serialNum, onWriteDone);
-    }
 }
 
 void
-SearchableFeedView::performIndexPut(SerialNum serialNum, search::DocumentIdT lid, const DocumentSP &doc,
-                                    bool immediateCommit, OnOperationDoneType onWriteDone)
+SearchableFeedView::performIndexPut(SerialNum serialNum, search::DocumentIdT lid, const DocumentSP &doc, OnOperationDoneType onWriteDone)
 {
-    performIndexPut(serialNum, lid, *doc, immediateCommit, onWriteDone);
+    performIndexPut(serialNum, lid, *doc, onWriteDone);
 }
 
 void
-SearchableFeedView::performIndexPut(SerialNum serialNum, search::DocumentIdT lid, FutureDoc futureDoc,
-                                    bool immediateCommit, OnOperationDoneType onWriteDone)
+SearchableFeedView::performIndexPut(SerialNum serialNum, search::DocumentIdT lid, FutureDoc futureDoc, OnOperationDoneType onWriteDone)
 {
     const auto &doc = futureDoc.get();
     if (doc) {
-        performIndexPut(serialNum, lid, *doc, immediateCommit, onWriteDone);
+        performIndexPut(serialNum, lid, *doc, onWriteDone);
     }
 }
 
 void
 SearchableFeedView::heartBeatIndexedFields(SerialNum serialNum)
 {
-    _writeService.index().execute(makeLambdaTask([=] { performIndexHeartBeat(serialNum); }));
+    _writeService.index().execute(makeLambdaTask([this, serialNum] { performIndexHeartBeat(serialNum); }));
 }
 
 void
@@ -115,49 +110,44 @@ SearchableFeedView::performIndexHeartBeat(SerialNum serialNum)
 }
 
 void
-SearchableFeedView::updateIndexedFields(SerialNum serialNum, search::DocumentIdT lid, FutureDoc futureDoc,
-                                        bool immediateCommit, OnOperationDoneType onWriteDone)
+SearchableFeedView::updateIndexedFields(SerialNum serialNum, search::DocumentIdT lid, FutureDoc futureDoc, OnOperationDoneType onWriteDone)
 {
     _writeService.index().execute(
             makeLambdaTask([serialNum, lid, futureDoc = std::move(futureDoc),
-                            immediateCommit, onWriteDone = std::move(onWriteDone), this]() mutable {
-                performIndexPut(serialNum, lid, std::move(futureDoc), immediateCommit, std::move(onWriteDone));
+                            onWriteDone = std::move(onWriteDone), this]() mutable {
+                performIndexPut(serialNum, lid, std::move(futureDoc), std::move(onWriteDone));
             }));
 }
 
 void
-SearchableFeedView::removeIndexedFields(SerialNum serialNum, search::DocumentIdT lid,
-                                        bool immediateCommit, OnRemoveDoneType onWriteDone)
+SearchableFeedView::removeIndexedFields(SerialNum serialNum, search::DocumentIdT lid, OnRemoveDoneType onWriteDone)
 {
     if (!hasIndexedFields()) {
         return;
     }
     _writeService.index().execute(
-            makeLambdaTask([=]() {
-                performIndexRemove(serialNum, lid, immediateCommit, onWriteDone);
+            makeLambdaTask([this, serialNum, lid, onWriteDone]() {
+                performIndexRemove(serialNum, lid, onWriteDone);
             }));
 }
 
 
 void
-SearchableFeedView::performIndexRemove(SerialNum serialNum, search::DocumentIdT lid,
-                                       bool immediateCommit, OnRemoveDoneType onWriteDone)
+SearchableFeedView::performIndexRemove(SerialNum serialNum, search::DocumentIdT lid, OnRemoveDoneType onWriteDone)
 {
+    (void) onWriteDone;
     assert(_writeService.index().isCurrentThread());
     VLOG(getDebugLevel(lid, nullptr),
         "database(%s): performIndexRemove: serialNum(%" PRIu64 "), lid(%d)",
          _params._docTypeName.toString().c_str(), serialNum, lid);
 
     _indexWriter->remove(serialNum, lid);
-    if (immediateCommit) {
-        _indexWriter->commit(serialNum, onWriteDone);
-    }
 }
 
 void
-SearchableFeedView::performIndexRemove(SerialNum serialNum, const LidVector &lidsToRemove,
-                                       bool immediateCommit, OnWriteDoneType onWriteDone)
+SearchableFeedView::performIndexRemove(SerialNum serialNum, const LidVector &lidsToRemove, OnWriteDoneType onWriteDone)
 {
+    (void) onWriteDone;
     assert(_writeService.index().isCurrentThread());
     for (const auto lid : lidsToRemove) {
         VLOG(getDebugLevel(lid, nullptr),
@@ -166,21 +156,18 @@ SearchableFeedView::performIndexRemove(SerialNum serialNum, const LidVector &lid
 
         _indexWriter->remove(serialNum, lid);
     }
-    if (immediateCommit) {
-        _indexWriter->commit(serialNum, onWriteDone);
-    }
 }
 
 void
 SearchableFeedView::removeIndexedFields(SerialNum serialNum, const LidVector &lidsToRemove,
-                                        bool immediateCommit, OnWriteDoneType onWriteDone)
+                                        OnWriteDoneType onWriteDone)
 {
     if (!hasIndexedFields())
         return;
 
     _writeService.index().execute(
-            makeLambdaTask([=]() {
-                performIndexRemove(serialNum, lidsToRemove, immediateCommit, onWriteDone);
+            makeLambdaTask([this, serialNum, lidsToRemove, onWriteDone]() {
+                performIndexRemove(serialNum, lidsToRemove, onWriteDone);
             }));
 }
 
@@ -204,16 +191,19 @@ SearchableFeedView::handleCompactLidSpace(const CompactLidSpaceOperation &op)
     Parent::handleCompactLidSpace(op);
     _writeService.index().execute(
             makeLambdaTask([this, &op]() {
-                               _indexWriter->compactLidSpace(op.getSerialNum(), op.getLidLimit());
-                           }));
+                _indexWriter->compactLidSpace(op.getSerialNum(), op.getLidLimit());
+            }));
     _writeService.index().sync();
 }
 
 void
-SearchableFeedView::internalForceCommit(SerialNum serialNum, OnForceCommitDoneType onCommitDone)
+SearchableFeedView::internalForceCommit(const CommitParam & param, OnForceCommitDoneType onCommitDone)
 {
-    Parent::internalForceCommit(serialNum, onCommitDone);
-    _writeService.index().execute(makeLambdaTask([=]() { performIndexForceCommit(serialNum, onCommitDone); }));
+    Parent::internalForceCommit(param, onCommitDone);
+    _writeService.index().execute(
+            makeLambdaTask([this, serialNum=param.lastSerialNum(), onCommitDone]() {
+                performIndexForceCommit(serialNum, onCommitDone);
+            }));
     _writeService.index().wakeup();
 }
 

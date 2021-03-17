@@ -14,6 +14,7 @@
 #include <vespa/vespalib/btree/btree.hpp>
 #include <vespa/vespalib/btree/btreestore.hpp>
 #include <vespa/vespalib/btree/btreeaggregator.hpp>
+#include <vespa/vespalib/datastore/buffer_type.hpp>
 #include <vespa/vespalib/test/btree/btree_printer.h>
 #include <vespa/vespalib/testkit/testapp.h>
 #include <vespa/vespalib/util/rand48.h>
@@ -595,13 +596,17 @@ Test::requireThatTreeInsertWorks()
     }
 }
 
+namespace {
+
 struct BTreeStealTraits
 {
-    static const size_t LEAF_SLOTS = 6;
-    static const size_t INTERNAL_SLOTS = 6;
-    static const size_t PATH_SIZE = 20;
-    static const bool BINARY_SEEK = true;
+    static constexpr size_t LEAF_SLOTS = 6;
+    static constexpr size_t INTERNAL_SLOTS = 6;
+    static constexpr size_t PATH_SIZE = 20;
+    [[maybe_unused]] static constexpr bool BINARY_SEEK = true;
 };
+
+}
 
 void
 Test::requireThatNodeStealWorks()

@@ -13,6 +13,7 @@ import java.net.URI;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Filter;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -26,8 +27,10 @@ import static java.util.logging.Level.CONFIG;
  *  - hostname verification is not enabled - CN/SAN verification is assumed to be handled by the underlying x509 trust manager.
  *  - ssl context or hostname verifier must not be overridden by the caller
  *
+ * @deprecated Use Apache httpclient based client factory instead (VespaHttpClientBuilder).
  * @author bjorncs
  */
+@Deprecated(forRemoval = true)
 public class VespaClientBuilderFactory implements AutoCloseable {
 
     private static final Logger log = Logger.getLogger(VespaClientBuilderFactory.class.getName());
@@ -57,10 +60,12 @@ public class VespaClientBuilderFactory implements AutoCloseable {
     }
 
 
-    private final TlsContext tlsContext = TransportSecurityUtils.createTlsContext().orElse(null);
+    private final TlsContext tlsContext = TransportSecurityUtils.getSystemTlsContext().orElse(null);
     private final MixedMode mixedMode = TransportSecurityUtils.getInsecureMixedMode();
+    private final AtomicBoolean closed = new AtomicBoolean(false);
 
     public ClientBuilder newBuilder() {
+        if (closed.get()) throw new IllegalStateException("Client already closed");
         ClientBuilder builder = ClientBuilder.newBuilder();
         setSslConfiguration(builder);
         return builder;
@@ -78,9 +83,7 @@ public class VespaClientBuilderFactory implements AutoCloseable {
 
     @Override
     public void close() {
-        if (tlsContext != null) {
-            tlsContext.close();
-        }
+        if (closed.getAndSet(true)) throw new IllegalStateException("Client already closed");
     }
 
     static class UriRewritingRequestFilter implements ClientRequestFilter {

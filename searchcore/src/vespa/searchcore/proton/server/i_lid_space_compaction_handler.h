@@ -2,17 +2,18 @@
 
 #pragma once
 
-#include "i_document_scan_iterator.h"
-#include "ifrozenbuckethandler.h"
-#include <vespa/searchcore/proton/feedoperation/compact_lid_space_operation.h>
-#include <vespa/searchcore/proton/feedoperation/moveoperation.h>
 #include <vespa/searchlib/common/lid_usage_stats.h>
+#include <vector>
 
-namespace search { class IDestructorCallback; }
-
+namespace vespalib { class IDestructorCallback; }
+namespace search { struct DocumentMetaData; }
 namespace proton::documentmetastore { class OperationListener; }
 
 namespace proton {
+
+class MoveOperation;
+class CompactLidSpaceOperation;
+struct IDocumentScanIterator;
 
 /**
  * Interface for handling of lid space compaction, used by a LidSpaceCompactionJob.
@@ -21,10 +22,10 @@ namespace proton {
  */
 struct ILidSpaceCompactionHandler
 {
-    typedef std::unique_ptr<ILidSpaceCompactionHandler> UP;
-    typedef std::vector<UP> Vector;
+    typedef std::shared_ptr<ILidSpaceCompactionHandler> SP;
+    using Vector = std::vector<SP>;
 
-    virtual ~ILidSpaceCompactionHandler() {}
+    virtual ~ILidSpaceCompactionHandler() = default;
 
     /**
      * Returns the name of this handler.
@@ -51,22 +52,27 @@ struct ILidSpaceCompactionHandler
     /**
      * Returns an iterator for scanning documents.
      */
-    virtual IDocumentScanIterator::UP getIterator() const = 0;
+    virtual std::unique_ptr<IDocumentScanIterator> getIterator() const = 0;
+
+    /**
+     * Return the meta data associated with the given lid
+     */
+    virtual search::DocumentMetaData getMetaData(uint32_t lid) const = 0;
 
     /**
      * Creates a move operation for moving the given document to the given lid.
      */
-    virtual MoveOperation::UP createMoveOperation(const search::DocumentMetaData &document, uint32_t moveToLid) const = 0;
+    virtual std::unique_ptr<MoveOperation> createMoveOperation(const search::DocumentMetaData &document, uint32_t moveToLid) const = 0;
 
     /**
      * Performs the actual move operation.
      */
-    virtual void handleMove(const MoveOperation &op, std::shared_ptr<search::IDestructorCallback> moveDoneCtx) = 0;
+    virtual void handleMove(const MoveOperation &op, std::shared_ptr<vespalib::IDestructorCallback> moveDoneCtx) = 0;
 
     /**
      * Compacts the underlying lid space by starting using the new lid limit.
      */
-    virtual void handleCompactLidSpace(const CompactLidSpaceOperation &op) = 0;
+    virtual void handleCompactLidSpace(const CompactLidSpaceOperation &op, std::shared_ptr<vespalib::IDestructorCallback> compact_done_context) = 0;
 };
 
 } // namespace proton

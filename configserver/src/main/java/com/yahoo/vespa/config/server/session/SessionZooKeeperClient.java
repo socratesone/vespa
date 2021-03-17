@@ -8,6 +8,7 @@ import com.yahoo.config.application.api.ApplicationPackage;
 import com.yahoo.config.application.api.DeployLogger;
 import com.yahoo.config.model.api.ConfigDefinitionRepo;
 import com.yahoo.config.model.api.Quota;
+import com.yahoo.config.model.api.TenantSecretStore;
 import com.yahoo.config.provision.AllocatedHosts;
 import com.yahoo.config.provision.ApplicationId;
 import com.yahoo.config.provision.AthenzDomain;
@@ -21,6 +22,7 @@ import com.yahoo.vespa.config.server.UserConfigDefinitionRepo;
 import com.yahoo.vespa.config.server.deploy.ZooKeeperClient;
 import com.yahoo.vespa.config.server.deploy.ZooKeeperDeployer;
 import com.yahoo.vespa.config.server.tenant.TenantRepository;
+import com.yahoo.vespa.config.server.tenant.TenantSecretStoreSerializer;
 import com.yahoo.vespa.config.server.zookeeper.ConfigCurator;
 import com.yahoo.vespa.config.server.zookeeper.ZKApplicationPackage;
 import com.yahoo.vespa.curator.Curator;
@@ -28,6 +30,7 @@ import com.yahoo.vespa.curator.transaction.CuratorOperations;
 import com.yahoo.vespa.curator.transaction.CuratorTransaction;
 
 import java.time.Instant;
+import java.util.List;
 import java.util.Optional;
 import java.util.logging.Level;
 
@@ -52,6 +55,8 @@ public class SessionZooKeeperClient {
     private static final String DOCKER_IMAGE_REPOSITORY_PATH = "dockerImageRepository";
     private static final String ATHENZ_DOMAIN = "athenzDomain";
     private static final String QUOTA_PATH = "quota";
+    private static final String TENANT_SECRET_STORES_PATH = "tenantSecretStores";
+
     private final Curator curator;
     private final ConfigCurator configCurator;
     private final TenantName tenantName;
@@ -189,6 +194,10 @@ public class SessionZooKeeperClient {
         return sessionPath.append(QUOTA_PATH).getAbsolute();
     }
 
+    private String tenantSecretStorePath() {
+        return sessionPath.append(TENANT_SECRET_STORES_PATH).getAbsolute();
+    }
+
     public void writeVespaVersion(Version version) {
         configCurator.putData(versionPath(), version.toString());
     }
@@ -205,7 +214,7 @@ public class SessionZooKeeperClient {
     }
 
     public void writeDockerImageRepository(Optional<DockerImage> dockerImageRepository) {
-        dockerImageRepository.ifPresent(repo -> configCurator.putData(dockerImageRepositoryPath(), repo.repository()));
+        dockerImageRepository.ifPresent(repo -> configCurator.putData(dockerImageRepositoryPath(), repo.untagged()));
     }
 
     public Instant readCreateTime() {
@@ -262,6 +271,22 @@ public class SessionZooKeeperClient {
         return Optional.ofNullable(configCurator.getData(quotaPath()))
                 .map(SlimeUtils::jsonToSlime)
                 .map(slime -> Quota.fromSlime(slime.get()));
+    }
+
+    public void writeTenantSecretStores(List<TenantSecretStore> tenantSecretStores) {
+        if (!tenantSecretStores.isEmpty()) {
+            var bytes = uncheck(() -> SlimeUtils.toJsonBytes(TenantSecretStoreSerializer.toSlime(tenantSecretStores)));
+            configCurator.putData(tenantSecretStorePath(), bytes);
+        }
+
+    }
+
+    public List<TenantSecretStore> readTenantSecretStores() {
+        if ( ! configCurator.exists(tenantSecretStorePath())) return List.of();
+        return Optional.ofNullable(configCurator.getData(tenantSecretStorePath()))
+                .map(SlimeUtils::jsonToSlime)
+                .map(slime -> TenantSecretStoreSerializer.listFromSlime(slime.get()))
+                .orElse(List.of());
     }
 
     /**

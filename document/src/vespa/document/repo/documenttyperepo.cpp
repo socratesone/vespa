@@ -25,7 +25,6 @@ using std::fstream;
 using std::make_pair;
 using std::pair;
 using std::vector;
-using vespalib::Closure1;
 using vespalib::Identifiable;
 using vespalib::IllegalArgumentException;
 using vespalib::hash_map;
@@ -587,9 +586,9 @@ DocumentTypeRepo::getAnnotationType(const DocumentType &doc_type, int32_t id) co
 }
 
 void
-DocumentTypeRepo::forEachDocumentType(Closure1<const DocumentType &> &c) const {
+DocumentTypeRepo::forEachDocumentType(Handler & handler) const {
     for (const auto & entry : *_doc_types) {
-        c.call(*entry.second->doc_type);
+        handler.handle(*entry.second->doc_type);
     }
 }
 

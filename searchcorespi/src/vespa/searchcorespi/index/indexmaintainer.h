@@ -224,17 +224,10 @@ class IndexMaintainer : public IIndexManager,
         Schema::SP _prunedSchema;
         ISearchableIndexCollection::SP _old_source_list; // Delays destruction
 
-        FusionArgs()
-            : _new_fusion_id(0u),
-              _changeGens(),
-              _schema(),
-              _prunedSchema(),
-              _old_source_list()
-        { }
+        FusionArgs();
         ~FusionArgs();
     };
 
-    IFlushTarget::SP getFusionTarget();
     void scheduleFusion(const FlushIds &flushIds);
     bool canRunFusion(const FusionSpec &spec) const;
     bool doneFusion(FusionArgs *args, IDiskIndex::SP *new_index);
@@ -246,12 +239,7 @@ class IndexMaintainer : public IIndexManager,
         IMemoryIndex::SP _oldIndex;
         ISearchableIndexCollection::SP _oldSourceList; // Delays destruction
 
-        SetSchemaArgs(void)
-            : _newSchema(),
-              _oldSchema(),
-              _oldIndex(),
-              _oldSourceList()
-        { }
+        SetSchemaArgs();
         ~SetSchemaArgs();
     };
 
@@ -267,8 +255,8 @@ class IndexMaintainer : public IIndexManager,
      * reconfigure index manager with closure as argument.  Wait for
      * result.
      */
-    bool reconfigure(vespalib::Closure0<bool>::UP closure);
-    virtual void warmupDone(ISearchableIndexCollection::SP current) override;
+    bool reconfigure(std::unique_ptr<Configure> configure);
+    void warmupDone(ISearchableIndexCollection::SP current) override;
     bool makeSureAllRemainingWarmupIsDone(ISearchableIndexCollection::SP keepAlive);
     void scheduleCommit();
     void commit();
@@ -292,13 +280,13 @@ public:
     /**
      * Runs fusion for any available specs and return the output fusion directory.
      */
-    vespalib::string doFusion(SerialNum serialNum);
-    uint32_t runFusion(const FusionSpec &fusion_spec);
+    vespalib::string doFusion(SerialNum serialNum, std::shared_ptr<search::IFlushToken> flush_token);
+    uint32_t runFusion(const FusionSpec &fusion_spec, std::shared_ptr<search::IFlushToken> flush_token);
     void removeOldDiskIndexes();
 
     struct FlushStats {
-        FlushStats() :
-            memory_before_bytes(0),
+        explicit FlushStats(uint64_t memory_before=0) :
+            memory_before_bytes(memory_before),
             memory_after_bytes(0),
             disk_write_bytes(0),
             cpu_time_required(0)
@@ -371,4 +359,3 @@ public:
 };
 
 }
-

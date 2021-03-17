@@ -1,6 +1,7 @@
-// Copyright 2017 Yahoo Holdings. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Verizon Media. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.config.server.deploy;
 
+import com.yahoo.cloud.config.ConfigserverConfig;
 import com.yahoo.component.Version;
 import com.yahoo.config.application.api.ApplicationPackage;
 import com.yahoo.config.application.api.DeployLogger;
@@ -15,20 +16,33 @@ import com.yahoo.config.model.api.Model;
 import com.yahoo.config.model.api.ModelContext;
 import com.yahoo.config.model.api.Provisioned;
 import com.yahoo.config.model.api.Quota;
+import com.yahoo.config.model.api.Reindexing;
 import com.yahoo.config.provision.ApplicationId;
 import com.yahoo.config.provision.AthenzDomain;
+import com.yahoo.config.provision.ClusterSpec;
 import com.yahoo.config.provision.DockerImage;
 import com.yahoo.config.provision.HostName;
+import com.yahoo.config.provision.NodeResources;
+import com.yahoo.config.provision.TenantName;
 import com.yahoo.config.provision.Zone;
+import com.yahoo.config.model.api.TenantSecretStore;
+import com.yahoo.container.jdisc.secretstore.SecretStore;
+import com.yahoo.vespa.config.server.tenant.SecretStoreExternalIdRetriever;
 import com.yahoo.vespa.flags.FetchVector;
 import com.yahoo.vespa.flags.FlagSource;
 import com.yahoo.vespa.flags.Flags;
+import com.yahoo.vespa.flags.PermanentFlags;
+import com.yahoo.vespa.flags.UnboundFlag;
 
 import java.io.File;
 import java.net.URI;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
+import java.util.function.ToIntFunction;
+
+import static com.yahoo.vespa.config.server.ConfigServerSpec.fromConfig;
+import static com.yahoo.vespa.flags.FetchVector.Dimension.CLUSTER_TYPE;
 
 /**
  * Implementation of {@link ModelContext} for configserver.
@@ -43,8 +57,9 @@ public class ModelContextImpl implements ModelContext {
     private final DeployLogger deployLogger;
     private final ConfigDefinitionRepo configDefinitionRepo;
     private final FileRegistry fileRegistry;
-    private final Optional<HostProvisioner> hostProvisioner;
+    private final HostProvisioner hostProvisioner;
     private final Provisioned provisioned;
+    private final Optional<? extends Reindexing> reindexing;
     private final ModelContext.Properties properties;
     private final Optional<File> appDir;
 
@@ -68,7 +83,8 @@ public class ModelContextImpl implements ModelContext {
                             DeployLogger deployLogger,
                             ConfigDefinitionRepo configDefinitionRepo,
                             FileRegistry fileRegistry,
-                            Optional<HostProvisioner> hostProvisioner,
+                            Optional<? extends Reindexing> reindexing,
+                            HostProvisioner hostProvisioner,
                             Provisioned provisioned,
                             ModelContext.Properties properties,
                             Optional<File> appDir,
@@ -81,6 +97,7 @@ public class ModelContextImpl implements ModelContext {
         this.deployLogger = deployLogger;
         this.configDefinitionRepo = configDefinitionRepo;
         this.fileRegistry = fileRegistry;
+        this.reindexing = reindexing;
         this.hostProvisioner = hostProvisioner;
         this.provisioned = provisioned;
         this.properties = properties;
@@ -103,9 +120,8 @@ public class ModelContextImpl implements ModelContext {
      * Returns the host provisioner to use, or empty to use the default provisioner,
      * creating hosts from the application package defined hosts
      */
-    // TODO: Don't allow empty here but create the right provisioner when this is set up instead
     @Override
-    public Optional<HostProvisioner> hostProvisioner() { return hostProvisioner; }
+    public HostProvisioner getHostProvisioner() { return hostProvisioner; }
 
     @Override
     public Provisioned provisioned() { return provisioned; }
@@ -118,6 +134,9 @@ public class ModelContextImpl implements ModelContext {
 
     @Override
     public FileRegistry getFileRegistry() { return fileRegistry; }
+
+    @Override
+    public Optional<? extends Reindexing> reindexing() { return  reindexing; }
 
     @Override
     public ModelContext.Properties properties() { return properties; }
@@ -134,8 +153,96 @@ public class ModelContextImpl implements ModelContext {
     @Override
     public Version wantedNodeVespaVersion() { return wantedNodeVespaVersion; }
 
+    public static class FeatureFlags implements ModelContext.FeatureFlags {
+
+        private final NodeResources dedicatedClusterControllerFlavor;
+        private final double defaultTermwiseLimit;
+        private final boolean useThreePhaseUpdates;
+        private final String feedSequencer;
+        private final String responseSequencer;
+        private final int numResponseThreads;
+        private final int maxPendingMoveOps;
+        private final boolean skipCommunicationManagerThread;
+        private final boolean skipMbusRequestThread;
+        private final boolean skipMbusReplyThread;
+        private final boolean useAccessControlTlsHandshakeClientAuth;
+        private final boolean useAsyncMessageHandlingOnSchedule;
+        private final double feedConcurrency;
+        private final boolean useBucketExecutorForLidSpaceCompact;
+        private final boolean useBucketExecutorForBucketMove;
+        private final boolean enableFeedBlockInDistributor;
+        private final double maxDeadBytesRatio;
+        private final int clusterControllerMaxHeapSizeInMb;
+        private final ToIntFunction<ClusterSpec.Type> metricsProxyMaxHeapSizeInMb;
+        private final List<String> allowedAthenzProxyIdentities;
+        private final boolean tenantIamRole;
+        private final int maxActivationInhibitedOutOfSyncGroups;
+
+        public FeatureFlags(FlagSource source, ApplicationId appId) {
+            this.dedicatedClusterControllerFlavor = parseDedicatedClusterControllerFlavor(flagValue(source, appId, Flags.DEDICATED_CLUSTER_CONTROLLER_FLAVOR));
+            this.defaultTermwiseLimit = flagValue(source, appId, Flags.DEFAULT_TERM_WISE_LIMIT);
+            this.useThreePhaseUpdates = flagValue(source, appId, Flags.USE_THREE_PHASE_UPDATES);
+            this.feedSequencer = flagValue(source, appId, Flags.FEED_SEQUENCER_TYPE);
+            this.responseSequencer = flagValue(source, appId, Flags.RESPONSE_SEQUENCER_TYPE);
+            this.numResponseThreads = flagValue(source, appId, Flags.RESPONSE_NUM_THREADS);
+            this.maxPendingMoveOps = flagValue(source, appId, Flags.MAX_PENDING_MOVE_OPS);
+            this.skipCommunicationManagerThread = flagValue(source, appId, Flags.SKIP_COMMUNICATIONMANAGER_THREAD);
+            this.skipMbusRequestThread = flagValue(source, appId, Flags.SKIP_MBUS_REQUEST_THREAD);
+            this.skipMbusReplyThread = flagValue(source, appId, Flags.SKIP_MBUS_REPLY_THREAD);
+            this.useAccessControlTlsHandshakeClientAuth = flagValue(source, appId, Flags.USE_ACCESS_CONTROL_CLIENT_AUTHENTICATION);
+            this.useAsyncMessageHandlingOnSchedule = flagValue(source, appId, Flags.USE_ASYNC_MESSAGE_HANDLING_ON_SCHEDULE);
+            this.feedConcurrency = flagValue(source, appId, Flags.FEED_CONCURRENCY);
+            this.useBucketExecutorForLidSpaceCompact = flagValue(source, appId, Flags.USE_BUCKET_EXECUTOR_FOR_LID_SPACE_COMPACT);
+            this.useBucketExecutorForBucketMove = flagValue(source, appId, Flags.USE_BUCKET_EXECUTOR_FOR_BUCKET_MOVE);
+            this.enableFeedBlockInDistributor = flagValue(source, appId, Flags.ENABLE_FEED_BLOCK_IN_DISTRIBUTOR);
+            this.maxDeadBytesRatio = flagValue(source, appId, Flags.MAX_DEAD_BYTES_RATIO);
+            this.clusterControllerMaxHeapSizeInMb = flagValue(source, appId, Flags.CLUSTER_CONTROLLER_MAX_HEAP_SIZE_IN_MB);
+            this.metricsProxyMaxHeapSizeInMb = type -> Flags.METRICS_PROXY_MAX_HEAP_SIZE_IN_MB.bindTo(source).with(CLUSTER_TYPE, type.name()).value();
+            this.allowedAthenzProxyIdentities = flagValue(source, appId, Flags.ALLOWED_ATHENZ_PROXY_IDENTITIES);
+            this.tenantIamRole = flagValue(source, appId.tenant(), Flags.TENANT_IAM_ROLE);
+            this.maxActivationInhibitedOutOfSyncGroups = flagValue(source, appId, Flags.MAX_ACTIVATION_INHIBITED_OUT_OF_SYNC_GROUPS);
+        }
+
+        @Override public Optional<NodeResources> dedicatedClusterControllerFlavor() { return Optional.ofNullable(dedicatedClusterControllerFlavor); }
+        @Override public double defaultTermwiseLimit() { return defaultTermwiseLimit; }
+        @Override public boolean useThreePhaseUpdates() { return useThreePhaseUpdates; }
+        @Override public String feedSequencerType() { return feedSequencer; }
+        @Override public String responseSequencerType() { return responseSequencer; }
+        @Override public int defaultNumResponseThreads() { return numResponseThreads; }
+        @Override public int maxPendingMoveOps() { return maxPendingMoveOps; }
+        @Override public boolean skipCommunicationManagerThread() { return skipCommunicationManagerThread; }
+        @Override public boolean skipMbusRequestThread() { return skipMbusRequestThread; }
+        @Override public boolean skipMbusReplyThread() { return skipMbusReplyThread; }
+        @Override public boolean useAccessControlTlsHandshakeClientAuth() { return useAccessControlTlsHandshakeClientAuth; }
+        @Override public boolean useAsyncMessageHandlingOnSchedule() { return useAsyncMessageHandlingOnSchedule; }
+        @Override public double feedConcurrency() { return feedConcurrency; }
+        @Override public boolean useBucketExecutorForLidSpaceCompact() { return useBucketExecutorForLidSpaceCompact; }
+        @Override public boolean useBucketExecutorForBucketMove() { return useBucketExecutorForBucketMove; }
+        @Override public boolean enableFeedBlockInDistributor() { return enableFeedBlockInDistributor; }
+        @Override public double maxDeadBytesRatio() { return maxDeadBytesRatio; }
+        @Override public int clusterControllerMaxHeapSizeInMb() { return clusterControllerMaxHeapSizeInMb; }
+        @Override public int metricsProxyMaxHeapSizeInMb(ClusterSpec.Type type) { return metricsProxyMaxHeapSizeInMb.applyAsInt(type); }
+        @Override public List<String> allowedAthenzProxyIdentities() { return allowedAthenzProxyIdentities; }
+        @Override public boolean tenantIamRole() { return tenantIamRole; }
+        @Override public int maxActivationInhibitedOutOfSyncGroups() { return maxActivationInhibitedOutOfSyncGroups; }
+
+        private static <V> V flagValue(FlagSource source, ApplicationId appId, UnboundFlag<? extends V, ?, ?> flag) {
+            return flag.bindTo(source)
+                    .with(FetchVector.Dimension.APPLICATION_ID, appId.serializedForm())
+                    .boxedValue();
+        }
+
+        private static <V> V flagValue(FlagSource source, TenantName tenant, UnboundFlag<? extends V, ?, ?> flag) {
+            return flag.bindTo(source)
+                    .with(FetchVector.Dimension.TENANT_ID, tenant.value())
+                    .boxedValue();
+        }
+
+    }
+
     public static class Properties implements ModelContext.Properties {
 
+        private final ModelContext.FeatureFlags featureFlags;
         private final ApplicationId applicationId;
         private final boolean multitenant;
         private final List<ConfigServerSpec> configServerSpecs;
@@ -147,38 +254,17 @@ public class ModelContextImpl implements ModelContext {
         private final Set<ContainerEndpoint> endpoints;
         private final boolean isBootstrap;
         private final boolean isFirstTimeDeployment;
-        private final boolean useContentNodeBtreeDb;
-        private final boolean useThreePhaseUpdates;
-        private final boolean useDirectStorageApiRpc;
-        private final boolean useFastValueTensorImplementation;
         private final Optional<EndpointCertificateSecrets> endpointCertificateSecrets;
-        private final double defaultTermwiseLimit;
-        private final double threadPoolSizeFactor;
-        private final double queueSizefactor;
-        private final String jvmGCOPtions;
-        private final String feedSequencer;
-        private final String responseSequencer;
-        private final int numResponseThreads;
-        private final boolean skipCommunicationManagerThread;
-        private final boolean skipMbusRequestThread;
-        private final boolean skipMbusReplyThread;
         private final Optional<AthenzDomain> athenzDomain;
         private final Optional<ApplicationRoles> applicationRoles;
-        private final double feedCoreThreadPoolSizeFactor;
-        private final double visibilityDelay;
         private final Quota quota;
-        private final boolean tlsUseFSync;
-        private final String tlsCompressionType;
-        private final boolean useNewRestapiHandler;
-        private final boolean useAccessControlTlsHandshakeClientAuth;
+        private final List<TenantSecretStore> tenantSecretStores;
+        private final SecretStore secretStore;
+
+        private final String jvmGcOptions;
 
         public Properties(ApplicationId applicationId,
-                          boolean multitenantFromConfig,
-                          List<ConfigServerSpec> configServerSpecs,
-                          HostName loadBalancerName,
-                          URI ztsUrl,
-                          String athenzDnsSuffix,
-                          boolean hostedVespa,
+                          ConfigserverConfig configserverConfig,
                           Zone zone,
                           Set<ContainerEndpoint> endpoints,
                           boolean isBootstrap,
@@ -187,66 +273,32 @@ public class ModelContextImpl implements ModelContext {
                           Optional<EndpointCertificateSecrets> endpointCertificateSecrets,
                           Optional<AthenzDomain> athenzDomain,
                           Optional<ApplicationRoles> applicationRoles,
-                          Optional<Quota> maybeQuota) {
+                          Optional<Quota> maybeQuota,
+                          List<TenantSecretStore> tenantSecretStores,
+                          SecretStore secretStore) {
+            this.featureFlags = new FeatureFlags(flagSource, applicationId);
             this.applicationId = applicationId;
-            this.multitenant = multitenantFromConfig || hostedVespa || Boolean.getBoolean("multitenant");
-            this.configServerSpecs = configServerSpecs;
-            this.loadBalancerName = loadBalancerName;
-            this.ztsUrl = ztsUrl;
-            this.athenzDnsSuffix = athenzDnsSuffix;
-            this.hostedVespa = hostedVespa;
+            this.multitenant = configserverConfig.multitenant() || configserverConfig.hostedVespa() || Boolean.getBoolean("multitenant");
+            this.configServerSpecs = fromConfig(configserverConfig);
+            this.loadBalancerName = HostName.from(configserverConfig.loadBalancerAddress());
+            this.ztsUrl = configserverConfig.ztsUrl() != null ? URI.create(configserverConfig.ztsUrl()) : null;
+            this.athenzDnsSuffix = configserverConfig.athenzDnsSuffix();
+            this.hostedVespa = configserverConfig.hostedVespa();
             this.zone = zone;
             this.endpoints = endpoints;
             this.isBootstrap = isBootstrap;
             this.isFirstTimeDeployment = isFirstTimeDeployment;
             this.endpointCertificateSecrets = endpointCertificateSecrets;
-            defaultTermwiseLimit = Flags.DEFAULT_TERM_WISE_LIMIT.bindTo(flagSource)
-                    .with(FetchVector.Dimension.APPLICATION_ID, applicationId.serializedForm()).value();
-            useContentNodeBtreeDb = Flags.USE_CONTENT_NODE_BTREE_DB.bindTo(flagSource)
-                    .with(FetchVector.Dimension.APPLICATION_ID, applicationId.serializedForm()).value();
-            useThreePhaseUpdates = Flags.USE_THREE_PHASE_UPDATES.bindTo(flagSource)
-                    .with(FetchVector.Dimension.APPLICATION_ID, applicationId.serializedForm()).value();
-            useDirectStorageApiRpc = Flags.USE_DIRECT_STORAGE_API_RPC.bindTo(flagSource)
-                    .with(FetchVector.Dimension.APPLICATION_ID, applicationId.serializedForm()).value();
-            useFastValueTensorImplementation = Flags.USE_FAST_VALUE_TENSOR_IMPLEMENTATION.bindTo(flagSource)
-                    .with(FetchVector.Dimension.APPLICATION_ID, applicationId.serializedForm()).value();
-            threadPoolSizeFactor = Flags.DEFAULT_THREADPOOL_SIZE_FACTOR.bindTo(flagSource)
-                    .with(FetchVector.Dimension.APPLICATION_ID, applicationId.serializedForm()).value();
-            visibilityDelay = Flags.VISIBILITY_DELAY.bindTo(flagSource)
-                    .with(FetchVector.Dimension.APPLICATION_ID, applicationId.serializedForm()).value();
-            tlsCompressionType = Flags.TLS_COMPRESSION_TYPE.bindTo(flagSource)
-                    .with(FetchVector.Dimension.APPLICATION_ID, applicationId.serializedForm()).value();
-            tlsUseFSync = Flags.TLS_USE_FSYNC.bindTo(flagSource)
-                    .with(FetchVector.Dimension.APPLICATION_ID, applicationId.serializedForm()).value();
-            queueSizefactor = Flags.DEFAULT_QUEUE_SIZE_FACTOR.bindTo(flagSource)
-                    .with(FetchVector.Dimension.APPLICATION_ID, applicationId.serializedForm()).value();
-            jvmGCOPtions = Flags.JVM_GC_OPTIONS.bindTo(flagSource)
-                    .with(FetchVector.Dimension.APPLICATION_ID, applicationId.serializedForm()).value();
-            feedSequencer = Flags.FEED_SEQUENCER_TYPE.bindTo(flagSource)
-                    .with(FetchVector.Dimension.APPLICATION_ID, applicationId.serializedForm()).value();
-            responseSequencer = Flags.RESPONSE_SEQUENCER_TYPE.bindTo(flagSource)
-                    .with(FetchVector.Dimension.APPLICATION_ID, applicationId.serializedForm()).value();
-            numResponseThreads = Flags.RESPONSE_NUM_THREADS.bindTo(flagSource)
-                    .with(FetchVector.Dimension.APPLICATION_ID, applicationId.serializedForm()).value();
-            skipCommunicationManagerThread = Flags.SKIP_COMMUNICATIONMANAGER_THREAD.bindTo(flagSource)
-                    .with(FetchVector.Dimension.APPLICATION_ID, applicationId.serializedForm()).value();
-            skipMbusRequestThread = Flags.SKIP_MBUS_REQUEST_THREAD.bindTo(flagSource)
-                    .with(FetchVector.Dimension.APPLICATION_ID, applicationId.serializedForm()).value();
-            skipMbusReplyThread = Flags.SKIP_MBUS_REPLY_THREAD.bindTo(flagSource)
-                    .with(FetchVector.Dimension.APPLICATION_ID, applicationId.serializedForm()).value();
             this.athenzDomain = athenzDomain;
             this.applicationRoles = applicationRoles;
-            feedCoreThreadPoolSizeFactor = Flags.FEED_CORE_THREAD_POOL_SIZE_FACTOR.bindTo(flagSource)
-                    .with(FetchVector.Dimension.APPLICATION_ID, applicationId.serializedForm()).value();
             this.quota = maybeQuota.orElseGet(Quota::unlimited);
-            this.useNewRestapiHandler = Flags.USE_NEW_RESTAPI_HANDLER.bindTo(flagSource)
-                    .with(FetchVector.Dimension.APPLICATION_ID, applicationId.serializedForm())
-                    .value();
-            this.useAccessControlTlsHandshakeClientAuth =
-                    Flags.USE_ACCESS_CONTROL_CLIENT_AUTHENTICATION.bindTo(flagSource)
-                            .with(FetchVector.Dimension.APPLICATION_ID, applicationId.serializedForm())
-                            .value();
+            this.tenantSecretStores = tenantSecretStores;
+            this.secretStore = secretStore;
+
+            jvmGcOptions = flagValue(flagSource, applicationId, PermanentFlags.JVM_GC_OPTIONS);
         }
+
+        @Override public ModelContext.FeatureFlags featureFlags() { return featureFlags; }
 
         @Override
         public boolean multitenant() { return multitenant; }
@@ -289,39 +341,6 @@ public class ModelContextImpl implements ModelContext {
         public Optional<EndpointCertificateSecrets> endpointCertificateSecrets() { return endpointCertificateSecrets; }
 
         @Override
-        public double defaultTermwiseLimit() { return defaultTermwiseLimit; }
-
-        @Override
-        public double threadPoolSizeFactor() {
-            return threadPoolSizeFactor;
-        }
-
-        @Override
-        public double queueSizeFactor() {
-            return queueSizefactor;
-        }
-
-        @Override
-        public boolean useContentNodeBtreeDb() {
-            return useContentNodeBtreeDb;
-        }
-
-        @Override
-        public boolean useThreePhaseUpdates() {
-            return useThreePhaseUpdates;
-        }
-
-        @Override
-        public boolean useDirectStorageApiRpc() {
-            return useDirectStorageApiRpc;
-        }
-
-        @Override
-        public boolean useFastValueTensorImplementation() {
-            return useFastValueTensorImplementation;
-        }
-
-        @Override
         public Optional<AthenzDomain> athenzDomain() { return athenzDomain; }
 
         @Override
@@ -329,24 +348,33 @@ public class ModelContextImpl implements ModelContext {
             return applicationRoles;
         }
 
-        @Override public String jvmGCOptions() { return jvmGCOPtions; }
-        @Override public String feedSequencerType() { return feedSequencer; }
-        @Override public String responseSequencerType() { return responseSequencer; }
-        @Override public int defaultNumResponseThreads() {
-            return numResponseThreads;
-        }
-        @Override public boolean skipCommunicationManagerThread() { return skipCommunicationManagerThread; }
-        @Override public boolean skipMbusRequestThread() { return skipMbusRequestThread; }
-        @Override public boolean skipMbusReplyThread() { return skipMbusReplyThread; }
-        @Override public double feedCoreThreadPoolSizeFactor() { return feedCoreThreadPoolSizeFactor; }
-        @Override public double visibilityDelay() { return visibilityDelay; }
-        @Override public boolean tlsUseFSync() { return tlsUseFSync; }
-        @Override public String tlsCompressionType() { return tlsCompressionType; }
         @Override public Quota quota() { return quota; }
 
-        @Override public boolean useNewRestapiHandler() { return useNewRestapiHandler; }
+        @Override
+        public List<TenantSecretStore> tenantSecretStores() {
+            return SecretStoreExternalIdRetriever.populateExternalId(secretStore, applicationId.tenant(), zone.system(), tenantSecretStores);
+        }
 
-        @Override public boolean useAccessControlTlsHandshakeClientAuth() { return useAccessControlTlsHandshakeClientAuth; }
+        @Override public String jvmGCOptions() { return jvmGcOptions; }
+
+        private static <V> V flagValue(FlagSource source, ApplicationId appId, UnboundFlag<? extends V, ?, ?> flag) {
+            return flag.bindTo(source)
+                    .with(FetchVector.Dimension.APPLICATION_ID, appId.serializedForm())
+                    .boxedValue();
+        }
+    }
+
+    private static NodeResources parseDedicatedClusterControllerFlavor(String flagValue) {
+        String[] parts = flagValue.split("-");
+        if (parts.length != 3)
+            return null;
+
+        return new NodeResources(Double.parseDouble(parts[0]),
+                                 Double.parseDouble(parts[1]),
+                                 Double.parseDouble(parts[2]),
+                                 0.3,
+                                 NodeResources.DiskSpeed.any,
+                                 NodeResources.StorageType.any);
     }
 
 }

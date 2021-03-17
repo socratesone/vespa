@@ -7,6 +7,7 @@ import com.yahoo.vespa.hosted.controller.api.identifiers.Property;
 import com.yahoo.vespa.hosted.controller.api.identifiers.PropertyId;
 import com.yahoo.vespa.hosted.controller.api.integration.organization.Contact;
 
+import java.time.Instant;
 import java.util.Objects;
 import java.util.Optional;
 
@@ -23,11 +24,11 @@ public class AthenzTenant extends Tenant {
 
     /**
      * This should only be used by serialization.
-     * Use {@link #create(TenantName, AthenzDomain, Property, Optional)}.
+     * Use {@link #create(TenantName, AthenzDomain, Property, Optional, Instant)}.
      * */
     public AthenzTenant(TenantName name, AthenzDomain domain, Property property, Optional<PropertyId> propertyId,
-                        Optional<Contact> contact) {
-        super(name, Objects.requireNonNull(contact, "contact must be non-null"));
+                        Optional<Contact> contact, Instant createdAt, LastLoginInfo lastLoginInfo) {
+        super(name, createdAt, lastLoginInfo, contact);
         this.domain = Objects.requireNonNull(domain, "domain must be non-null");
         this.property = Objects.requireNonNull(property, "property must be non-null");
         this.propertyId = Objects.requireNonNull(propertyId, "propertyId must be non-null");
@@ -60,20 +61,8 @@ public class AthenzTenant extends Tenant {
 
     /** Create a new Athenz tenant */
     public static AthenzTenant create(TenantName name, AthenzDomain domain, Property property,
-                                      Optional<PropertyId> propertyId) {
-        return new AthenzTenant(requireName(requireNoPrefix(name)), domain, property, propertyId, Optional.empty());
-    }
-
-    public static AthenzTenant create(TenantName name, AthenzDomain domain, Property property,
-                                      Optional<PropertyId> propertyId, Optional<Contact> contact) {
-        return new AthenzTenant(requireName(requireNoPrefix(name)), domain, property, propertyId, contact);
-    }
-
-    private static TenantName requireNoPrefix(TenantName name) {
-        if (name.value().startsWith(Tenant.userPrefix)) {
-            throw new IllegalArgumentException("Athenz tenant name cannot have prefix '" + Tenant.userPrefix + "'");
-        }
-        return name;
+                                      Optional<PropertyId> propertyId, Instant createdAt) {
+        return new AthenzTenant(requireName(name), domain, property, propertyId, Optional.empty(), createdAt, LastLoginInfo.EMPTY);
     }
 
     @Override

@@ -13,6 +13,7 @@ using namespace search;
 using namespace vespalib;
 
 using ReadGuard = ExclusiveAttributeReadAccessor::Guard;
+VESPA_THREAD_STACK_TAG(test_executor)
 
 AttributeVector::SP
 createAttribute()
@@ -29,7 +30,7 @@ struct Fixture
 
     Fixture()
         : attribute(createAttribute()),
-          writer(SequencedTaskExecutor::create(1)),
+          writer(SequencedTaskExecutor::create(test_executor, 1)),
           accessor(attribute, *writer)
     {}
 };
@@ -39,7 +40,7 @@ TEST_F("require that attribute write thread is blocked while guard is held", Fix
     ReadGuard::UP guard = f.accessor.takeGuard();
     Gate gate;
     f.writer->execute(f.writer->getExecutorIdFromName(f.attribute->getNamePrefix()), [&gate]() { gate.countDown(); });
-    bool reachedZero = gate.await(100);
+    bool reachedZero = gate.await(100ms);
     EXPECT_FALSE(reachedZero);
     EXPECT_EQUAL(1u, gate.getCount());
 

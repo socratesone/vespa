@@ -103,8 +103,7 @@ private:
     void fail_with_unresolvable_bucket_space(std::unique_ptr<documentapi::DocumentMessage> msg,
                                              const vespalib::string& error_message);
 
-    void serializeNodeState(const api::GetNodeStateReply& gns, std::ostream& os, bool includeDescription,
-                            bool includeDiskDescription, bool useOldFormat) const;
+    void serializeNodeState(const api::GetNodeStateReply& gns, std::ostream& os, bool includeDescription) const;
 
     static const uint64_t FORWARDED_MESSAGE = 0;
 
@@ -119,8 +118,7 @@ private:
     std::atomic<bool>     _closed;
     DocumentApiConverter  _docApiConverter;
     framework::Thread::UP _thread;
-    bool                  _skip_thread;
-    bool                  _use_direct_storageapi_rpc;
+    std::atomic<bool>     _skip_thread;
 
     void updateMetrics(const MetricLockGuard &) override;
     void enqueue_or_process(std::shared_ptr<api::StorageMessage> msg);

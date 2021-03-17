@@ -12,6 +12,7 @@
 #include <vespa/searchcore/proton/attribute/imported_attributes_repo.h>
 #include <vespa/searchcore/proton/attribute/sequential_attributes_initializer.h>
 #include <vespa/searchcore/proton/common/hw_info.h>
+#include <vespa/searchcore/proton/bucketdb/bucket_db_owner.h>
 #include <vespa/searchcore/proton/documentmetastore/documentmetastorecontext.h>
 #include <vespa/searchcore/proton/flushengine/shrink_lid_space_flush_target.h>
 #include <vespa/searchcore/proton/initializer/initializer_task.h>
@@ -25,7 +26,6 @@
 #include <vespa/searchlib/attribute/imported_attribute_vector_factory.h>
 #include <vespa/searchlib/attribute/predicate_attribute.h>
 #include <vespa/searchlib/attribute/reference_attribute.h>
-#include <vespa/searchlib/attribute/singlenumericattribute.hpp>
 #include <vespa/searchlib/common/indexmetainfo.h>
 #include <vespa/searchlib/index/dummyfileheadercontext.h>
 #include <vespa/searchlib/predicate/predicate_index.h>
@@ -35,6 +35,7 @@
 #include <vespa/vespalib/testkit/testapp.h>
 #include <vespa/vespalib/util/foreground_thread_executor.h>
 #include <vespa/vespalib/util/foregroundtaskexecutor.h>
+#include <vespa/vespalib/util/size_literals.h>
 #include <vespa/vespalib/util/threadstackexecutor.h>
 
 #include <vespa/log/log.h>
@@ -140,7 +141,7 @@ struct ImportedAttributesRepoBuilder {
         refAttr->setGidToLidMapperFactory(std::make_shared<MockGidToLidMapperFactory>());
         auto targetAttr = search::AttributeFactory::createAttribute(name + "_target", INT32_SINGLE);
         auto documentMetaStore = std::shared_ptr<search::IDocumentMetaStoreContext>();
-        auto targetDocumentMetaStore = std::make_shared<const DocumentMetaStoreContext>(std::make_shared<BucketDBOwner>());
+        auto targetDocumentMetaStore = std::make_shared<const DocumentMetaStoreContext>(std::make_shared<bucketdb::BucketDBOwner>());
         auto importedAttr = ImportedAttributeVectorFactory::create(name, refAttr, documentMetaStore, targetAttr, targetDocumentMetaStore, false);
         _repo->add(name, importedAttr);
     }
@@ -230,10 +231,9 @@ struct DummyInitializerTask : public InitializerTask
 struct ParallelAttributeManager
 {
     InitializerTask::SP documentMetaStoreInitTask;
-    BucketDBOwner::SP bucketDbOwner;
+    std::shared_ptr<bucketdb::BucketDBOwner> bucketDbOwner;
     DocumentMetaStore::SP documentMetaStore;
-    search::GrowStrategy attributeGrow;
-    size_t attributeGrowNumDocs;
+    AllocStrategy        alloc_strategy;
     bool fastAccessAttributesOnly;
     std::shared_ptr<AttributeManager::SP> mgr;
     vespalib::ThreadStackExecutor masterExecutor;
@@ -248,21 +248,20 @@ struct ParallelAttributeManager
 ParallelAttributeManager::ParallelAttributeManager(search::SerialNum configSerialNum, AttributeManager::SP baseAttrMgr,
                                                    const AttributesConfig &attrCfg, uint32_t docIdLimit)
     : documentMetaStoreInitTask(std::make_shared<DummyInitializerTask>()),
-      bucketDbOwner(std::make_shared<BucketDBOwner>()),
+      bucketDbOwner(std::make_shared<bucketdb::BucketDBOwner>()),
       documentMetaStore(std::make_shared<DocumentMetaStore>(bucketDbOwner)),
-      attributeGrow(),
-      attributeGrowNumDocs(1),
+      alloc_strategy(),
       fastAccessAttributesOnly(false),
       mgr(std::make_shared<AttributeManager::SP>()),
-      masterExecutor(1, 128 * 1024),
+      masterExecutor(1, 128_Ki),
       master(masterExecutor),
       initializer(std::make_shared<AttributeManagerInitializer>(configSerialNum, documentMetaStoreInitTask,
                                                                 documentMetaStore, baseAttrMgr, attrCfg,
-                                                                attributeGrow, attributeGrowNumDocs,
+                                                                alloc_strategy,
                                                                 fastAccessAttributesOnly, master, mgr))
 {
     documentMetaStore->setCommittedDocIdLimit(docIdLimit);
-    vespalib::ThreadStackExecutor executor(3, 128 * 1024);
+    vespalib::ThreadStackExecutor executor(3, 128_Ki);
     initializer::TaskRunner taskRunner(executor);
     taskRunner.runTask(initializer);
 }
@@ -395,7 +394,7 @@ TEST_F("require that predicate attributes are flushed and loaded", BaseFixture)
         uint32_t doc_id;
         a1->addDoc(doc_id);
         index.indexEmptyDocument(doc_id);
-        pa.commit(100, 100);
+        pa.commit(CommitParam(100));
 
         EXPECT_EQUAL(2u, a1->getNumDocs());
 
@@ -417,7 +416,7 @@ TEST_F("require that predicate attributes are flushed and loaded", BaseFixture)
         PredicateTreeAnnotations annotations(3);
         annotations.interval_map[123] = {{ 0x0001ffff }};
         index.indexDocument(1, annotations);
-        pa.commit(200, 200);
+        pa.commit(CommitParam(200));
 
         EXPECT_EQUAL(3u, a1->getNumDocs());
         EXPECT_TRUE(ia1.load());
@@ -541,7 +540,7 @@ TEST_F("require that extra attribute is not treated as removed", Fixture)
 {
     AttributeVector::SP ex(createInt32Attribute("ex"));
     f._m.addExtraAttribute(ex);
-    ex->commit(1,1);
+    ex->commit(CommitParam(1));
 
     AttrSpecList ns;
     SequentialAttributeManager am2(f._m, AttrMgrSpec(ns, 2, 1));

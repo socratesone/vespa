@@ -32,6 +32,11 @@
       <scope>test</scope>
     </dependency>
     <dependency>
+      <groupId>org.assertj</groupId>
+      <artifactId>assertj-core</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
       <groupId>com.yahoo.vespa</groupId>
       <artifactId>config-lib</artifactId>
       <version>${project.version}</version>
@@ -133,18 +138,6 @@
     </dependency>
     <!-- end WARNING -->
 
-    <!-- dependencies used by container-core -->
-    <dependency>
-        <groupId>com.fasterxml.jackson.datatype</groupId>
-        <artifactId>jackson-datatype-jsr310</artifactId>
-        <scope>provided</scope>
-    </dependency>
-    <dependency>
-        <groupId>com.fasterxml.jackson.datatype</groupId>
-        <artifactId>jackson-datatype-jdk8</artifactId>
-        <scope>provided</scope>
-    </dependency>
-
     <!-- ensure that transitive Jackson dependencies are not included in compile scope -->
     <dependency>
       <groupId>com.fasterxml.jackson.core</groupId>
@@ -185,6 +178,7 @@
             <buildLegacyVespaPlatformBundle>true</buildLegacyVespaPlatformBundle>
             <discPreInstallBundle>
                 <!-- Vespa bundles -->
+                configgen.jar,
                 config-bundle-jar-with-dependencies.jar,
                 configdefinitions-jar-with-dependencies.jar,
                 container-jersey2-jar-with-dependencies.jar,
@@ -220,6 +214,8 @@
                 jackson-jaxrs-base-${jackson2.version}.jar,
                 jackson-jaxrs-json-provider-${jackson2.version}.jar,
                 jackson-module-jaxb-annotations-${jackson2.version}.jar,
+                jakarta.activation-api-${jakarta-activation-api.version}.jar,
+                jakarta.xml.bind-api-${jakarta-xml-bind-api.version}.jar,
                 javassist-${javassist.version}.jar,
                 javax.ws.rs-api-${javax.ws.rs-api.version}.jar,
                 jersey-client-${jersey2.version}.jar,

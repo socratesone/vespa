@@ -4,7 +4,6 @@ package com.yahoo.vespa.hosted.provision;
 import com.yahoo.config.provision.DockerImage;
 import com.yahoo.config.provision.Flavor;
 import com.yahoo.config.provision.NodeFlavors;
-import com.yahoo.config.provision.NodeResources;
 import com.yahoo.config.provision.NodeType;
 import com.yahoo.config.provision.Zone;
 import com.yahoo.config.provisioning.FlavorsConfig;
@@ -12,13 +11,14 @@ import com.yahoo.test.ManualClock;
 import com.yahoo.vespa.curator.mock.MockCurator;
 import com.yahoo.vespa.flags.InMemoryFlagSource;
 import com.yahoo.vespa.hosted.provision.node.Agent;
+import com.yahoo.vespa.hosted.provision.node.IP;
 import com.yahoo.vespa.hosted.provision.provisioning.EmptyProvisionServiceProvider;
 import com.yahoo.vespa.hosted.provision.provisioning.FlavorConfigBuilder;
 import com.yahoo.vespa.hosted.provision.testutils.MockNameResolver;
 
-import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 
 /**
  * @author bratseth
@@ -36,7 +36,7 @@ public class NodeRepositoryTester {
         curator = new MockCurator();
         curator.setZooKeeperEnsembleConnectionSpec("server1:1234,server2:5678");
         nodeRepository = new NodeRepository(nodeFlavors,
-                                            new EmptyProvisionServiceProvider().getHostResourcesCalculator(),
+                                            new EmptyProvisionServiceProvider(),
                                             curator,
                                             clock,
                                             Zone.defaultZone(),
@@ -44,7 +44,6 @@ public class NodeRepositoryTester {
                                             DockerImage.fromString("docker-registry.domain.tld:8080/dist/vespa"),
                                             new InMemoryFlagSource(),
                                             true,
-                                            false,
                                             0, 1000);
     }
     
@@ -52,25 +51,22 @@ public class NodeRepositoryTester {
     public MockCurator curator() { return curator; }
     
     public List<Node> getNodes(NodeType type, Node.State ... inState) {
-        return nodeRepository.getNodes(type, inState);
+        return nodeRepository.nodes().list(inState).nodeType(type).asList();
     }
-    
+
     public Node addHost(String id, String hostname, String flavor, NodeType type) {
-        Node node = nodeRepository.createNode(id, hostname, Optional.empty(), 
-                                              nodeFlavors.getFlavorOrThrow(flavor), type);
-        return nodeRepository.addNodes(Collections.singletonList(node), Agent.system).get(0);
+        return addNode(id, hostname, null, nodeFlavors.getFlavorOrThrow(flavor), type);
     }
 
     public Node addNode(String id, String hostname, String parentHostname, String flavor, NodeType type) {
-        Node node = nodeRepository.createNode(id, hostname, Optional.of(parentHostname),
-                                              nodeFlavors.getFlavorOrThrow(flavor), type);
-        return nodeRepository.addNodes(Collections.singletonList(node), Agent.system).get(0);
+        return addNode(id, hostname, parentHostname, nodeFlavors.getFlavorOrThrow(flavor), type);
     }
 
-    public Node addNode(String id, String hostname, String parentHostname, NodeResources resources) {
-        Node node = nodeRepository.createNode(id, hostname, Optional.of(parentHostname),
-                                              new Flavor(resources), NodeType.tenant);
-        return nodeRepository.addNodes(Collections.singletonList(node), Agent.system).get(0);
+    private Node addNode(String id, String hostname, String parentHostname, Flavor flavor, NodeType type) {
+        Set<String> ips = nodeRepository.nameResolver().resolveAll(hostname);
+        IP.Config ipConfig = new IP.Config(ips, type.isHost() ? ips : Set.of());
+        Node node = Node.create(id, ipConfig, hostname, flavor, type).parentHostname(parentHostname).build();
+        return nodeRepository.nodes().addNodes(List.of(node), Agent.system).get(0);
     }
 
     /**
@@ -79,7 +75,7 @@ public class NodeRepositoryTester {
      * of valid state transitions
      */
     public void setNodeState(String hostname, Node.State state) {
-        Node node = nodeRepository.getNode(hostname).orElseThrow(RuntimeException::new);
+        Node node = nodeRepository.nodes().node(hostname).orElseThrow(RuntimeException::new);
         nodeRepository.database().writeTo(state, node, Agent.system, Optional.empty());
     }
 

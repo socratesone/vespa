@@ -13,10 +13,10 @@
 
 #pragma once
 
-#include "mergestatus.h"
 #include <vespa/document/bucket/bucket.h>
 #include <vespa/storage/storageutil/resumeguard.h>
 #include <vespa/storage/common/messagesender.h>
+#include <vespa/storageapi/messageapi/storagemessage.h>
 
 namespace storage {
 namespace api {
@@ -34,6 +34,7 @@ struct FileStorMetrics;
 struct MessageSender;
 struct ServiceLayerComponentRegister;
 class AbortBucketOperationsCommand;
+class MergeStatus;
 
 class FileStorHandler : public MessageSender {
 public:
@@ -58,10 +59,33 @@ public:
     };
 
     using LockedMessage = std::pair<BucketLockInterface::SP, api::StorageMessage::SP>;
+    class ScheduleAsyncResult {
+    private:
+        bool _was_scheduled;
+        LockedMessage _async_message;
+
+    public:
+        ScheduleAsyncResult() : _was_scheduled(false), _async_message() {}
+        explicit ScheduleAsyncResult(LockedMessage&& async_message_in)
+            : _was_scheduled(true),
+              _async_message(std::move(async_message_in))
+        {}
+        bool was_scheduled() const {
+            return _was_scheduled;
+        }
+        bool has_async_message() const {
+            return _async_message.first.get() != nullptr;
+        }
+        const LockedMessage& async_message() const {
+            return _async_message;
+        }
+        LockedMessage&& release_async_message() {
+            return std::move(_async_message);
+        }
+    };
 
     enum DiskState {
         AVAILABLE,
-        DISABLED,
         CLOSED
     };
 
@@ -80,14 +104,8 @@ public:
     virtual void setDiskState(DiskState state) = 0;
     virtual DiskState getDiskState() const = 0;
 
-    /** Check whether it is enabled or not. */
-    bool enabled() { return (getDiskState() == AVAILABLE); }
-    bool closed() { return (getDiskState() == CLOSED); }
-    /**
-     * Disable the disk. Operations towards threads using this disk will
-     * start to fail. Typically called when disk errors are detected.
-     */
-    void disable() { setDiskState(DISABLED); }
+    /** Check if it has been closed. */
+    bool closed() const { return (getDiskState() == CLOSED); }
     /** Closes all disk threads. */
     virtual void close() = 0;
 
@@ -102,6 +120,11 @@ public:
      * @return True if we maanged to schedule operation. False if not
      */
     virtual bool schedule(const std::shared_ptr<api::StorageMessage>&) = 0;
+
+    /**
+     * Schedule the given message to be processed and return the next async message to process (if any).
+     */
+    virtual ScheduleAsyncResult schedule_and_get_next_async_message(const std::shared_ptr<api::StorageMessage>& msg) = 0;
 
     /**
      * Used by file stor threads to get their next message to process.
@@ -125,18 +148,6 @@ public:
      *
      */
     virtual BucketLockInterface::SP lock(const document::Bucket&, api::LockingRequirements lockReq) = 0;
-
-    /**
-     * Called by FileStorThread::onBucketDiskMove() after moving file, in case
-     * we need to move operations from one disk queue to another.
-     *
-     * get/put/remove/update/revert/stat/multiop - Move to correct queue
-     * merge messages - Move to correct queue. Move any filestor thread state.
-     * join/split/getiter/repair/deletebucket - Move to correct queue
-     * requeststatus - Ignore
-     * readbucketinfo/bucketdiskmove/internalbucketjoin - Fail and log errors
-     */
-    virtual void remapQueueAfterDiskMove(const document::Bucket &bucket) = 0;
 
     /**
      * Called by FileStorThread::onJoin() after joining a bucket into another,
@@ -177,11 +188,6 @@ public:
                                       RemapInfo& target1,
                                       RemapInfo& target2) = 0;
 
-    struct DeactivateCallback {
-        virtual ~DeactivateCallback() {}
-        virtual void handleDeactivate() = 0;
-    };
-
     /**
      * Fail all operations towards a single bucket currently queued to the
      * given thread with the given error code.
@@ -191,7 +197,7 @@ public:
     /**
      * Add a new merge state to the registry.
      */
-    virtual void addMergeStatus(const document::Bucket&, MergeStatus::SP) = 0;
+    virtual void addMergeStatus(const document::Bucket&, std::shared_ptr<MergeStatus>) = 0;
 
     /**
      * Returns the reference to the current merge status for the given bucket.
@@ -209,14 +215,6 @@ public:
      * @return Returns true if the bucket is being merged.
      */
     virtual bool isMerging(const document::Bucket& bucket) const = 0;
-
-    /**
-     * @return Returns the number of active merges on the node.
-     */
-    virtual uint32_t getNumActiveMerges() const = 0;
-
-    /// Provides the next stripe id for a certain disk.
-    virtual uint32_t getNextStripeId() = 0;
 
     /** Removes the merge status for the given bucket. */
     virtual void clearMergeStatus(const document::Bucket&) = 0;

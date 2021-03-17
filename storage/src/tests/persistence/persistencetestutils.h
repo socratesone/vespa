@@ -6,21 +6,22 @@
 #include <vespa/storage/persistence/persistencethread.h>
 #include <vespa/storage/persistence/filestorage/filestorhandler.h>
 #include <vespa/storage/persistence/persistenceutil.h>
+#include <vespa/storage/persistence/bucketownershipnotifier.h>
 #include <vespa/storage/common/messagesender.h>
 #include <vespa/storage/common/storagecomponent.h>
-#include <vespa/persistence/spi/persistenceprovider.h>
-#include <vespa/persistence/dummyimpl/dummypersistence.h>
-#include <vespa/storage/storageserver/communicationmanager.h>
+#include <vespa/storage/common/storagelink.h>
+#include <vespa/storageapi/messageapi/storagecommand.h>
+#include <vespa/storageapi/messageapi/storagereply.h>
 #include <vespa/document/base/testdocman.h>
 #include <vespa/vespalib/gtest/gtest.h>
 
 namespace storage {
 
 struct MessageKeeper : public MessageSender {
-    std::vector<api::StorageMessage::SP> _msgs;
+    std::vector<std::shared_ptr<api::StorageMessage>> _msgs;
 
-    void sendCommand(const api::StorageCommand::SP& m) override { _msgs.push_back(m); }
-    void sendReply(const api::StorageReply::SP& m) override { _msgs.push_back(m); }
+    void sendCommand(const std::shared_ptr<api::StorageCommand> & m) override { _msgs.push_back(m); }
+    void sendReply(const std::shared_ptr<api::StorageReply> & m) override { _msgs.push_back(m); }
 };
 
 struct PersistenceTestEnvironment {
@@ -71,10 +72,11 @@ public:
     std::unique_ptr<PersistenceTestEnvironment> _env;
     std::unique_ptr<vespalib::ISequencedTaskExecutor> _sequenceTaskExecutor;
     ReplySender _replySender;
-
+    BucketOwnershipNotifier _bucketOwnershipNotifier;
+    std::unique_ptr<PersistenceHandler> _persistenceHandler;
 
     PersistenceTestUtils();
-    virtual ~PersistenceTestUtils();
+    ~PersistenceTestUtils() override;
 
     document::Document::SP schedulePut(uint32_t location, spi::Timestamp timestamp, uint32_t minSize = 0, uint32_t maxSize = 128);
 
@@ -108,7 +110,8 @@ public:
 
     MessageTracker::UP
     createTracker(api::StorageMessage::SP cmd, document::Bucket bucket) {
-        return MessageTracker::createForTesting(getEnv(), _replySender, NoBucketLock::make(bucket), std::move(cmd));
+        return MessageTracker::createForTesting(framework::MilliSecTimer(getEnv()._component.getClock()), getEnv(),
+                                                _replySender, NoBucketLock::make(bucket), std::move(cmd));
     }
 
     api::ReturnCode
@@ -223,11 +226,6 @@ public:
     void createTestBucket(const document::Bucket&);
 
     /**
-     * Create a new persistence thread.
-     */
-    std::unique_ptr<PersistenceThread> createPersistenceThread();
-
-    /**
      * In-place modify doc so that it has no more body fields.
      */
     void clearBody(document::Document& doc);
@@ -236,9 +234,6 @@ public:
 class SingleDiskPersistenceTestUtils : public PersistenceTestUtils
 {
 public:
-    void SetUp() override {
-        setupDisks();
-    }
 };
 
 } // storage

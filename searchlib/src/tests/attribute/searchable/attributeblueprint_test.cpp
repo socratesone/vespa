@@ -1,18 +1,14 @@
 // Copyright 2017 Yahoo Holdings. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
-#include <vespa/eval/eval/engine_or_factory.h>
-#include <vespa/eval/tensor/default_tensor_engine.h>
-#include <vespa/eval/tensor/dense/dense_tensor_view.h>
+#include <vespa/eval/eval/tensor_spec.h>
+#include <vespa/eval/eval/value.h>
+#include <vespa/eval/eval/value_codec.h>
 #include <vespa/searchcommon/attribute/iattributecontext.h>
 #include <vespa/searchlib/attribute/attribute_blueprint_factory.h>
 #include <vespa/searchlib/attribute/attribute_read_guard.h>
 #include <vespa/searchlib/attribute/attributecontext.h>
 #include <vespa/searchlib/attribute/attributefactory.h>
-#include <vespa/searchlib/attribute/attributevector.h>
-#include <vespa/searchlib/attribute/extendableattributes.h>
-#include <vespa/searchlib/attribute/singlenumericattribute.h>
-#include <vespa/searchlib/attribute/singlenumericattribute.hpp>
-#include <vespa/searchlib/attribute/singlenumericpostattribute.hpp>
+#include <vespa/searchlib/attribute/attribute.h>
 #include <vespa/searchlib/fef/matchdata.h>
 #include <vespa/searchlib/query/tree/location.h>
 #include <vespa/searchlib/query/tree/point.h>
@@ -30,7 +26,6 @@ LOG_SETUP("attributeblueprint_test");
 using search::AttributeGuard;
 using search::AttributeVector;
 using search::IAttributeManager;
-using search::SingleStringExtAttribute;
 using search::attribute::IAttributeContext;
 using search::fef::MatchData;
 using search::fef::TermFieldMatchData;
@@ -51,7 +46,6 @@ using search::queryeval::SearchIterator;
 using std::string;
 using std::vector;
 using vespalib::eval::TensorSpec;
-using vespalib::eval::EngineOrFactory;
 using vespalib::eval::Value;
 using vespalib::eval::ValueType;
 using namespace search::attribute;
@@ -342,7 +336,7 @@ public:
         request_ctx.set_query_tensor("query_tensor", tensor_spec);
     }
     Blueprint::UP create_blueprint() {
-        query::NearestNeighborTerm term("query_tensor", attr_name, 0, Weight(0), 7, true, 33);
+        query::NearestNeighborTerm term("query_tensor", attr_name, 0, Weight(0), 7, true, 33, 100100.25);
         return BlueprintFactoryFixture::create_blueprint(term);
     }
 };
@@ -358,7 +352,7 @@ expect_nearest_neighbor_blueprint(const vespalib::string& attribute_tensor_type_
     auto result = f.create_blueprint();
     const auto& nearest = downcast<const NearestNeighborBlueprint>(*result);
     EXPECT_EQ(attribute_tensor_type_spec, nearest.get_attribute_tensor().getTensorType().to_spec());
-    EXPECT_EQ(converted_query_tensor, EngineOrFactory::get().to_spec(nearest.get_query_tensor()));
+    EXPECT_EQ(converted_query_tensor, spec_from_value(nearest.get_query_tensor()));
     EXPECT_EQ(7u, nearest.get_target_num_hits());
 }
 

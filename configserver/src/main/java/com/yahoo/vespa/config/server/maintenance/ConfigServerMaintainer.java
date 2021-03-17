@@ -11,12 +11,16 @@ import com.yahoo.transaction.Mutex;
 import com.yahoo.vespa.config.server.ApplicationRepository;
 import com.yahoo.vespa.curator.Curator;
 import com.yahoo.vespa.flags.FlagSource;
-import com.yahoo.vespa.flags.Flags;
 import com.yahoo.vespa.flags.ListFlag;
+import com.yahoo.vespa.flags.PermanentFlags;
 
 import java.time.Duration;
+import java.time.Instant;
+import java.util.Arrays;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
  * A maintainer is some job which runs at a fixed interval to perform some maintenance task in the config server.
@@ -27,10 +31,11 @@ public abstract class ConfigServerMaintainer extends Maintainer {
 
     protected final ApplicationRepository applicationRepository;
 
+    /** Creates a maintainer where maintainers on different nodes in this cluster run with even delay. */
     ConfigServerMaintainer(ApplicationRepository applicationRepository, Curator curator, FlagSource flagSource,
-                           Duration initialDelay, Duration interval) {
-        super(null, interval, initialDelay, new JobControl(new JobControlFlags(curator, flagSource)),
-              jobMetrics(applicationRepository.metric()));
+                           Instant now, Duration interval) {
+        super(null, interval, now, new JobControl(new JobControlFlags(curator, flagSource)),
+              jobMetrics(applicationRepository.metric()), cluster(curator), false);
         this.applicationRepository = applicationRepository;
     }
 
@@ -51,7 +56,7 @@ public abstract class ConfigServerMaintainer extends Maintainer {
 
         public JobControlFlags(Curator curator, FlagSource flagSource) {
             this.curator = curator;
-            this.inactiveJobsFlag = Flags.INACTIVE_MAINTENANCE_JOBS.bindTo(flagSource);
+            this.inactiveJobsFlag = PermanentFlags.INACTIVE_MAINTENANCE_JOBS.bindTo(flagSource);
         }
 
         @Override
@@ -65,5 +70,14 @@ public abstract class ConfigServerMaintainer extends Maintainer {
         }
 
     }
+
+    /** Returns all hosts configured to be part of this ZooKeeper cluster */
+    public static List<String> cluster(Curator curator) {
+        return Arrays.stream(curator.zooKeeperEnsembleConnectionSpec().split(","))
+                     .filter(hostAndPort -> !hostAndPort.isEmpty())
+                     .map(hostAndPort -> hostAndPort.split(":")[0])
+                     .collect(Collectors.toList());
+    }
+
 
 }

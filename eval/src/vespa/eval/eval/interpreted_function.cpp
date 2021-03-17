@@ -4,10 +4,9 @@
 #include "node_visitor.h"
 #include "node_traverser.h"
 #include "tensor_nodes.h"
-#include "tensor_engine.h"
 #include "make_tensor_function.h"
+#include "optimize_tensor_function.h"
 #include "compile_tensor_function.h"
-#include "simple_tensor_engine.h"
 #include <vespa/vespalib/util/classname.h>
 #include <vespa/eval/eval/llvm/compile_cache.h>
 #include <vespa/vespalib/util/benchmark_timer.h>
@@ -30,11 +29,13 @@ const Function *get_lambda(const nodes::Node &node) {
     return nullptr;
 }
 
+void my_nop(InterpretedFunction::State &, uint64_t) {}
+
 } // namespace vespalib::<unnamed>
 
 
-InterpretedFunction::State::State(EngineOrFactory engine_in)
-    : engine(engine_in),
+InterpretedFunction::State::State(const ValueBuilderFactory &factory_in)
+    : factory(factory_in),
       params(nullptr),
       stash(),
       stack(),
@@ -55,26 +56,32 @@ InterpretedFunction::State::init(const LazyParams &params_in) {
 }
 
 InterpretedFunction::Context::Context(const InterpretedFunction &ifun)
-    : _state(ifun._tensor_engine)
+    : _state(ifun._factory)
 {
 }
 
-InterpretedFunction::InterpretedFunction(EngineOrFactory engine, const TensorFunction &function)
-    : _program(),
-      _stash(),
-      _tensor_engine(engine)
+InterpretedFunction::Instruction
+InterpretedFunction::Instruction::nop()
 {
-    _program = compile_tensor_function(engine, function, _stash);
+    return Instruction(my_nop);
 }
 
-InterpretedFunction::InterpretedFunction(EngineOrFactory engine, const nodes::Node &root, const NodeTypes &types)
+InterpretedFunction::InterpretedFunction(const ValueBuilderFactory &factory, const TensorFunction &function)
     : _program(),
       _stash(),
-      _tensor_engine(engine)
+      _factory(factory)
 {
-    const TensorFunction &plain_fun = make_tensor_function(engine, root, types, _stash);
-    const TensorFunction &optimized = engine.optimize(plain_fun, _stash);
-    _program = compile_tensor_function(engine, optimized, _stash);
+    _program = compile_tensor_function(factory, function, _stash);
+}
+
+InterpretedFunction::InterpretedFunction(const ValueBuilderFactory &factory, const nodes::Node &root, const NodeTypes &types)
+    : _program(),
+      _stash(),
+      _factory(factory)
+{
+    const TensorFunction &plain_fun = make_tensor_function(factory, root, types, _stash);
+    const TensorFunction &optimized = optimize_tensor_function(factory, plain_fun, _stash);
+    _program = compile_tensor_function(factory, optimized, _stash);
 }
 
 InterpretedFunction::~InterpretedFunction() = default;
@@ -118,8 +125,8 @@ InterpretedFunction::detect_issues(const Function &function)
     return Function::Issues(std::move(checker.issues));
 }
 
-InterpretedFunction::EvalSingle::EvalSingle(EngineOrFactory engine, Instruction op, const LazyParams &params)
-    : _state(engine),
+InterpretedFunction::EvalSingle::EvalSingle(const ValueBuilderFactory &factory, Instruction op, const LazyParams &params)
+    : _state(factory),
       _op(op)
 {
     _state.params = &params;

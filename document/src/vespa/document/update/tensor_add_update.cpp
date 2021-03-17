@@ -1,6 +1,7 @@
 // Copyright 2019 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
 #include "tensor_add_update.h"
+#include "tensor_partial_update.h"
 #include <vespa/document/base/exceptions.h>
 #include <vespa/document/base/field.h>
 #include <vespa/document/datatype/tensor_data_type.h>
@@ -9,9 +10,7 @@
 #include <vespa/document/serialization/vespadocumentdeserializer.h>
 #include <vespa/document/util/serializableexceptions.h>
 #include <vespa/eval/eval/value.h>
-#include <vespa/eval/eval/engine_or_factory.h>
-#include <vespa/eval/tensor/partial_update.h>
-#include <vespa/eval/tensor/tensor.h>
+#include <vespa/eval/eval/fast_value.h>
 #include <vespa/vespalib/objects/nbostream.h>
 #include <vespa/vespalib/stllike/asciistream.h>
 #include <vespa/vespalib/util/stringfmt.h>
@@ -21,8 +20,7 @@
 using vespalib::IllegalArgumentException;
 using vespalib::IllegalStateException;
 using vespalib::make_string;
-using vespalib::eval::EngineOrFactory;
-using vespalib::tensor::TensorPartialUpdate;
+using vespalib::eval::FastValueBuilderFactory;
 
 namespace document {
 
@@ -85,10 +83,15 @@ TensorAddUpdate::checkCompatibility(const Field& field) const
 std::unique_ptr<vespalib::eval::Value>
 TensorAddUpdate::applyTo(const vespalib::eval::Value &tensor) const
 {
-    auto addTensor = _tensor->getAsTensorPtr();
-    if (addTensor) {
-        auto engine = EngineOrFactory::get();
-        return TensorPartialUpdate::add(tensor, *addTensor, engine);
+    return apply_to(tensor, FastValueBuilderFactory::get());
+}
+
+std::unique_ptr<vespalib::eval::Value>
+TensorAddUpdate::apply_to(const Value &old_tensor,
+                          const ValueBuilderFactory &factory) const
+{
+    if (auto addTensor = _tensor->getAsTensorPtr()) {
+        return TensorPartialUpdate::add(old_tensor, *addTensor, factory);
     }
     return {};
 }
@@ -100,6 +103,7 @@ TensorAddUpdate::applyTo(FieldValue& value) const
         TensorFieldValue &tensorFieldValue = static_cast<TensorFieldValue &>(value);
         tensorFieldValue.make_empty_if_not_existing();
         auto oldTensor = tensorFieldValue.getAsTensorPtr();
+        assert(oldTensor);
         auto newTensor = applyTo(*oldTensor);
         if (newTensor) {
             tensorFieldValue = std::move(newTensor);

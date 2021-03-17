@@ -11,14 +11,18 @@ import ai.vespa.metricsproxy.rpc.RpcConnector;
 import ai.vespa.metricsproxy.rpc.RpcConnectorConfig;
 import ai.vespa.metricsproxy.service.VespaServices;
 import ai.vespa.metricsproxy.service.VespaServicesConfig;
+import com.yahoo.config.model.api.ModelContext;
 import com.yahoo.config.model.api.container.ContainerServiceType;
-import com.yahoo.config.model.producer.AbstractConfigProducer;
+import com.yahoo.config.model.deploy.DeployState;
 import com.yahoo.config.provision.ClusterMembership;
+import com.yahoo.search.config.QrStartConfig;
+import com.yahoo.vespa.model.HostResource;
 import com.yahoo.vespa.model.PortAllocBridge;
 import com.yahoo.vespa.model.container.Container;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Optional;
 
 import static com.yahoo.config.model.api.container.ContainerServiceType.METRICS_PROXY_CONTAINER;
 import static com.yahoo.vespa.model.admin.metricsproxy.MetricsProxyContainerCluster.METRICS_PROXY_BUNDLE_NAME;
@@ -33,15 +37,23 @@ public class MetricsProxyContainer extends Container implements
         NodeDimensionsConfig.Producer,
         NodeInfoConfig.Producer,
         RpcConnectorConfig.Producer,
-        VespaServicesConfig.Producer
+        VespaServicesConfig.Producer,
+        QrStartConfig.Producer
 {
     public static final int BASEPORT = 19092;
 
     final boolean isHostedVespa;
+    private final Optional<ClusterMembership> clusterMembership;
+    private final ModelContext.FeatureFlags featureFlags;
+    private final MetricsProxyContainerCluster cluster;
 
-    public MetricsProxyContainer(AbstractConfigProducer parent, String hostname, int index, boolean isHostedVespa) {
-        super(parent, hostname, index, isHostedVespa);
-        this.isHostedVespa = isHostedVespa;
+
+    public MetricsProxyContainer(MetricsProxyContainerCluster cluster, HostResource host, int index, DeployState deployState) {
+        super(cluster, host.getHostname(), index, deployState.isHosted());
+        this.isHostedVespa = deployState.isHosted();
+        this.clusterMembership = host.spec().membership();
+        this.featureFlags = deployState.featureFlags();
+        this.cluster = cluster;
         setProp("clustertype", "admin");
         setProp("index", String.valueOf(index));
         addNodeSpecificComponents();
@@ -131,6 +143,18 @@ public class MetricsProxyContainer extends Container implements
                 .hostname(getHostName());
     }
 
+    @Override
+    public void getConfig(QrStartConfig.Builder builder) {
+        cluster.getConfig(builder);
+
+        if (clusterMembership.isPresent()) {
+            int maxHeapSize = featureFlags.metricsProxyMaxHeapSizeInMb(clusterMembership.get().cluster().type());
+            builder.jvm
+                    .verbosegc(true)
+                    .heapsize(maxHeapSize);
+        }
+    }
+
     private String getNodeRole() {
         String hostConfigId = getHost().getHost().getConfigId();
         if (! isHostedVespa) return hostConfigId;
@@ -141,6 +165,11 @@ public class MetricsProxyContainer extends Container implements
 
     private void addMetricsProxyComponent(Class<?> componentClass) {
         addSimpleComponent(componentClass.getName(), null, METRICS_PROXY_BUNDLE_NAME);
+    }
+
+    @Override
+    protected String defaultPreload() {
+        return "";
     }
 
 }

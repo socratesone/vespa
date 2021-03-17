@@ -57,7 +57,7 @@ struct FixtureBase {
         config.getConfig("stor-server").set("node_index", "1");
         addSlobrokConfig(config, slobrok);
 
-        shared_rpc_resources = std::make_unique<SharedRpcResources>(config.getConfigId(), 0, 1);
+        shared_rpc_resources = std::make_unique<SharedRpcResources>(config.getConfigId(), 0, 1, 1);
         cc_service = std::make_unique<ClusterControllerApiRpcService>(dispatcher, *shared_rpc_resources);
         shared_rpc_resources->start_server_and_register_slobrok("my_cool_rpc_test");
     }
@@ -155,6 +155,15 @@ TEST_F(ClusterControllerApiRpcServiceTest, set_distribution_states_rpc_with_deri
              {FixedBucketSpaces::global_space(), state_of("version:123 distributor:3 .1.s:d storage:3")}});
 
     f.assert_request_received_and_propagated(spaces_bundle);
+}
+
+TEST_F(ClusterControllerApiRpcServiceTest, set_distribution_states_rpc_with_feed_block_state) {
+    SetStateFixture f;
+    lib::ClusterStateBundle bundle(
+            lib::ClusterState("version:123 distributor:3 storage:3"), {},
+            lib::ClusterStateBundle::FeedBlock(true, "full disk"), true);
+
+    f.assert_request_received_and_propagated(bundle);
 }
 
 TEST_F(ClusterControllerApiRpcServiceTest, compressed_bundle_is_transparently_uncompressed) {

@@ -4,11 +4,11 @@ package com.yahoo.jdisc.http.server.jetty;
 import com.google.inject.AbstractModule;
 import com.google.inject.Module;
 import com.google.inject.util.Modules;
-import com.yahoo.jdisc.application.BindingRepository;
+import com.yahoo.container.logging.ConnectionLog;
+import com.yahoo.container.logging.RequestLog;
 import com.yahoo.jdisc.http.ServerConfig;
 import com.yahoo.jdisc.http.ServletPathsConfig;
 import com.yahoo.jdisc.http.guiceModules.ConnectorFactoryRegistryModule;
-import com.yahoo.jdisc.http.server.FilterBindings;
 import com.yahoo.jdisc.test.ServerProviderConformanceTest;
 import org.apache.http.HttpResponse;
 import org.apache.http.HttpVersion;
@@ -520,7 +520,7 @@ public class HttpServerConformanceTest extends ServerProviderConformanceTest {
     @Override
     @Test
     public void testRequestContentCloseNondeterministicExceptionWithSyncCompletion() throws Throwable {
-        new TestRunner().expect(anyOf(success(), serverError()))
+        new TestRunner().expect(anyOf(success(), serverError(), successNoContent()))
                         .execute();
     }
 
@@ -770,13 +770,15 @@ public class HttpServerConformanceTest extends ServerProviderConformanceTest {
                         @Override
                         protected void configure() {
                             bind(FilterBindings.class)
-                                    .toInstance(new FilterBindings(
-                                            new BindingRepository<>(),
-                                            new BindingRepository<>()));
+                                    .toInstance(new FilterBindings.Builder().build());
                             bind(ServerConfig.class)
                                     .toInstance(new ServerConfig(new ServerConfig.Builder()));
                             bind(ServletPathsConfig.class)
                                     .toInstance(new ServletPathsConfig(new ServletPathsConfig.Builder()));
+                            bind(ConnectionLog.class)
+                                    .toInstance(new VoidConnectionLog());
+                            bind(RequestLog.class)
+                                    .toInstance(new VoidRequestLog());
                         }
                     },
                     new ConnectorFactoryRegistryModule());

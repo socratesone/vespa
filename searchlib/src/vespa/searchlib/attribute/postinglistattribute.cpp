@@ -14,11 +14,10 @@ PostingListAttributeBase<P>::
 PostingListAttributeBase(AttributeVector &attr,
                          IEnumStore &enumStore)
     : attribute::IPostingListAttributeBase(),
-      _postingList(enumStore.get_dictionary().get_posting_dictionary(), attr.getStatus(),
+      _postingList(enumStore.get_dictionary(), attr.getStatus(),
                    attr.getConfig()),
       _attr(attr),
-      _dict(enumStore.get_dictionary().get_posting_dictionary()),
-      _esb(enumStore)
+      _dictionary(enumStore.get_dictionary())
 { }
 
 template <typename P>
@@ -30,19 +29,11 @@ PostingListAttributeBase<P>::clearAllPostings()
 {
     _postingList.clearBuilder();
     _attr.incGeneration(); // Force freeze
-    auto itr = _dict.begin();
-    EntryRef prev;
-    while (itr.valid()) {
-        EntryRef ref(itr.getData());
-        if (ref.ref() != prev.ref()) {
-            if (ref.valid()) {
-                _postingList.clear(ref);
-            }
-            prev = ref;
-        }
-        itr.writeData(EntryRef().ref());
-        ++itr;
-    }
+    auto clearer = [this](EntryRef posting_idx)
+                   {
+                       _postingList.clear(posting_idx);
+                   };
+    _dictionary.clear_all_posting_lists(clearer);
     _attr.incGeneration(); // Force freeze
 }
 
@@ -62,7 +53,8 @@ PostingListAttributeBase<P>::handle_load_posting_lists_and_update_enum_store(enu
     uint32_t preve = 0;
     uint32_t refCount = 0;
 
-    auto itr = _dict.begin();
+    auto& dict = _dictionary.get_posting_dictionary();
+    auto itr = dict.begin();
     auto posting_itr = itr;
     assert(itr.valid());
     for (const auto& elem : loaded_enums) {
@@ -118,21 +110,19 @@ PostingListAttributeBase<P>::updatePostings(PostingMap &changePost,
                                             vespalib::datastore::EntryComparator &cmp)
 {
     for (auto& elem : changePost) {
-        auto& change = elem.second;
         EnumIndex idx = elem.first.getEnumIdx();
-        auto dictItr = _dict.lowerBound(idx, cmp);
-        assert(dictItr.valid() && dictItr.getKey() == idx);
-        EntryRef newPosting(dictItr.getData());
-        
+        auto& change = elem.second;
         change.removeDups();
-        _postingList.apply(newPosting,
-                           &change._additions[0],
-                           &change._additions[0] + change._additions.size(),
-                           &change._removals[0],
-                           &change._removals[0] + change._removals.size());
-        
-        _dict.thaw(dictItr);
-        dictItr.writeData(newPosting.ref());
+        auto updater= [this, &change](EntryRef posting_idx) -> EntryRef
+                      {
+                          _postingList.apply(posting_idx,
+                                             &change._additions[0],
+                                             &change._additions[0] + change._additions.size(),
+                                             &change._removals[0],
+                                             &change._removals[0] + change._removals.size());
+                          return posting_idx;
+                      };
+        _dictionary.update_posting_list(idx, cmp, updater);
     }
 }
 
@@ -169,21 +159,16 @@ clearPostings(attribute::IAttributeVector::EnumHandle eidx,
     }
 
     EntryRef er(eidx);
-    auto itr = _dict.lowerBound(er, cmp);
-    assert(itr.valid());
-    
-    EntryRef newPosting(itr.getData());
-    assert(newPosting.valid());
-    
-    _postingList.apply(newPosting,
-                       &postings._additions[0],
-                       &postings._additions[0] +
-                       postings._additions.size(),
-                       &postings._removals[0],
-                       &postings._removals[0] +
-                       postings._removals.size());
-    _dict.thaw(itr);
-    itr.writeData(newPosting.ref());
+    auto updater = [this, &postings](EntryRef posting_idx) -> EntryRef
+                   {
+                       _postingList.apply(posting_idx,
+                                          &postings._additions[0],
+                                          &postings._additions[0] + postings._additions.size(),
+                                          &postings._removals[0],
+                                          &postings._removals[0] + postings._removals.size());
+                       return posting_idx;
+                   };
+    _dictionary.update_posting_list(er, cmp, updater);
 }
 
 template <typename P>
@@ -233,7 +218,7 @@ handle_load_posting_lists(LoadedVector& loaded)
             LoadedValueType prev = value.getValue();
             for (size_t i(0), m(loaded.size()); i < m; i++, loaded.next()) {
                 value = loaded.read();
-                if (FoldedComparatorType::equal(prev, value.getValue())) {
+                if (FoldedComparatorType::equal_helper(prev, value.getValue())) {
                     // for single value attributes loaded[numDocs] is used
                     // for default value but we don't want to add an
                     // invalid docId to the posting list.

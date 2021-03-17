@@ -3,8 +3,10 @@
 #include "asynchandler.h"
 #include "persistenceutil.h"
 #include "testandsethelper.h"
+#include <vespa/persistence/spi/persistenceprovider.h>
 #include <vespa/document/update/documentupdate.h>
 #include <vespa/vespalib/util/isequencedtaskexecutor.h>
+#include <vespa/vespalib/util/destructor_callbacks.h>
 
 namespace storage {
 
@@ -19,7 +21,7 @@ public:
     }
 
     void addResultHandler(const spi::ResultHandler *resultHandler) {
-        // Only handles a signal handler now,
+        // Only handles a single handler now,
         // Can be extended if necessary later on
         assert(_resultHandler == nullptr);
         _resultHandler = resultHandler;
@@ -86,17 +88,31 @@ private:
 
 }
 AsyncHandler::AsyncHandler(const PersistenceUtil & env, spi::PersistenceProvider & spi,
-                           vespalib::ISequencedTaskExecutor & executor)
+                           vespalib::ISequencedTaskExecutor & executor,
+                           const document::BucketIdFactory & bucketIdFactory)
     : _env(env),
       _spi(spi),
-      _sequencedExecutor(executor)
+      _sequencedExecutor(executor),
+      _bucketIdFactory(bucketIdFactory)
 {}
+
+MessageTracker::UP
+AsyncHandler::handleRunTask(RunTaskCommand& cmd, MessageTracker::UP tracker) const {
+    auto task = makeResultTask([tracker = std::move(tracker)](spi::Result::UP response) {
+        tracker->checkForError(*response);
+        tracker->sendReply();
+    });
+    spi::Bucket bucket(cmd.getBucket());
+    auto onDone = std::make_unique<ResultTaskOperationDone>(_sequencedExecutor, cmd.getBucketId(), std::move(task));
+    cmd.run(bucket, std::make_shared<vespalib::KeepAlive<decltype(onDone)>>(std::move(onDone)));
+    return tracker;
+}
 
 MessageTracker::UP
 AsyncHandler::handlePut(api::PutCommand& cmd, MessageTracker::UP trackerUP) const
 {
     MessageTracker & tracker = *trackerUP;
-    auto& metrics = _env._metrics.put[cmd.getLoadType()];
+    auto& metrics = _env._metrics.put;
     tracker.setMetric(metrics);
     metrics.request_size.addValue(cmd.getApproxByteSize());
 
@@ -122,7 +138,7 @@ MessageTracker::UP
 AsyncHandler::handleUpdate(api::UpdateCommand& cmd, MessageTracker::UP trackerUP) const
 {
     MessageTracker & tracker = *trackerUP;
-    auto& metrics = _env._metrics.update[cmd.getLoadType()];
+    auto& metrics = _env._metrics.update;
     tracker.setMetric(metrics);
     metrics.request_size.addValue(cmd.getApproxByteSize());
 
@@ -152,7 +168,7 @@ MessageTracker::UP
 AsyncHandler::handleRemove(api::RemoveCommand& cmd, MessageTracker::UP trackerUP) const
 {
     MessageTracker & tracker = *trackerUP;
-    auto& metrics = _env._metrics.remove[cmd.getLoadType()];
+    auto& metrics = _env._metrics.remove;
     tracker.setMetric(metrics);
     metrics.request_size.addValue(cmd.getApproxByteSize());
 
@@ -180,6 +196,19 @@ AsyncHandler::handleRemove(api::RemoveCommand& cmd, MessageTracker::UP trackerUP
 }
 
 bool
+AsyncHandler::is_async_message(api::MessageType::Id type_id) noexcept
+{
+    switch (type_id) {
+        case api::MessageType::PUT_ID:
+        case api::MessageType::UPDATE_ID:
+        case api::MessageType::REMOVE_ID:
+            return true;
+        default:
+            return false;
+    }
+}
+
+bool
 AsyncHandler::tasConditionExists(const api::TestAndSetCommand & cmd) {
     return cmd.getCondition().isPresent();
 }
@@ -188,7 +217,7 @@ bool
 AsyncHandler::tasConditionMatches(const api::TestAndSetCommand & cmd, MessageTracker & tracker,
                                   spi::Context & context, bool missingDocumentImpliesMatch) const {
     try {
-        TestAndSetHelper helper(_env, _spi, cmd, missingDocumentImpliesMatch);
+        TestAndSetHelper helper(_env, _spi, _bucketIdFactory, cmd, missingDocumentImpliesMatch);
 
         auto code = helper.retrieveAndMatch(context);
         if (code.failed()) {
@@ -203,4 +232,5 @@ AsyncHandler::tasConditionMatches(const api::TestAndSetCommand & cmd, MessageTra
 
     return true;
 }
+
 }

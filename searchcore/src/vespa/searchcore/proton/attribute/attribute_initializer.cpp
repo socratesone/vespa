@@ -23,6 +23,7 @@ using search::attribute::CollectionType;
 using search::attribute::Config;
 using search::AttributeVector;
 using search::IndexMetaInfo;
+using search::CommitParam;
 
 namespace proton {
 
@@ -198,8 +199,8 @@ AttributeInitializer::loadAttribute(const AttributeVectorSP &attr,
             attr->getBaseFileName().c_str());
         return false;
     } else {
-        attr->commit(serialNum, serialNum);
-        EventLogger::loadAttributeComplete(_documentSubDbName, attr->getName(), vespalib::count_ms(timer.elapsed()));
+        attr->commit(CommitParam(serialNum));
+        EventLogger::loadAttributeComplete(_documentSubDbName, attr->getName(), timer.elapsed());
     }
     return true;
 }
@@ -219,7 +220,7 @@ AttributeInitializer::setupEmptyAttribute(AttributeVectorSP &attr, search::Seria
     }
     LOG(info, "Returning empty attribute vector for '%s'", attr->getBaseFileName().c_str());
     _factory.setupEmpty(attr, _currentSerialNum);
-    attr->commit(serialNum, serialNum);
+    attr->commit(CommitParam(serialNum));
 }
 
 AttributeVector::SP

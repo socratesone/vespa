@@ -3,7 +3,9 @@ package com.yahoo.vespa.hosted.provision.provisioning;
 
 import com.google.inject.Inject;
 import com.yahoo.component.Version;
+import com.yahoo.config.provision.ActivationContext;
 import com.yahoo.config.provision.ApplicationId;
+import com.yahoo.config.provision.ApplicationTransaction;
 import com.yahoo.config.provision.Deployment;
 import com.yahoo.config.provision.HostFilter;
 import com.yahoo.config.provision.HostName;
@@ -18,6 +20,7 @@ import com.yahoo.vespa.hosted.provision.maintenance.InfrastructureVersions;
 import com.yahoo.vespa.service.monitor.DuperModelInfraApi;
 import com.yahoo.vespa.service.monitor.InfraApplicationApi;
 
+import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
 import java.util.logging.Level;
@@ -51,7 +54,10 @@ public class InfraDeployerImpl implements InfraDeployer {
 
     @Override
     public void activateAllSupportedInfraApplications(boolean propagateException) {
-        duperModel.getSupportedInfraApplications().forEach(api -> {
+        duperModel.getSupportedInfraApplications().stream()
+                // nodes cannot be activated before their host, so try to activate the host first
+                .sorted(Comparator.comparing(n -> !n.getCapacity().type().isHost()))
+                .forEach(api -> {
             var application = api.getApplicationId();
             var deployment = new InfraDeployment(api);
             try {
@@ -83,7 +89,7 @@ public class InfraDeployerImpl implements InfraDeployer {
         public void prepare() {
             if (prepared) return;
 
-            try (Mutex lock = nodeRepository.lock(application.getApplicationId())) {
+            try (Mutex lock = nodeRepository.nodes().lock(application.getApplicationId())) {
                 NodeType nodeType = application.getCapacity().type();
                 Version targetVersion = infrastructureVersions.getTargetVersionFor(nodeType);
                 hostSpecs = provisioner.prepare(application.getApplicationId(),
@@ -105,7 +111,7 @@ public class InfraDeployerImpl implements InfraDeployer {
                     removeApplication(application.getApplicationId());
                 } else {
                     NestedTransaction nestedTransaction = new NestedTransaction();
-                    provisioner.activate(nestedTransaction, hostSpecs, lock);
+                    provisioner.activate(hostSpecs, new ActivationContext(0), new ApplicationTransaction(lock, nestedTransaction));
                     nestedTransaction.commit();
 
                     duperModel.infraApplicationActivated(
@@ -130,7 +136,7 @@ public class InfraDeployerImpl implements InfraDeployer {
         if (duperModel.infraApplicationIsActive(applicationId)) {
             try (var lock = provisioner.lock(applicationId)) {
                 NestedTransaction nestedTransaction = new NestedTransaction();
-                provisioner.remove(nestedTransaction, lock);
+                provisioner.remove(new ApplicationTransaction(lock, nestedTransaction));
                 nestedTransaction.commit();
                 duperModel.infraApplicationRemoved(applicationId);
             }

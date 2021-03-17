@@ -13,6 +13,7 @@
 #include <vespa/searchlib/attribute/attributecontext.h>
 #include <vespa/searchlib/attribute/attribute_read_guard.h>
 #include <vespa/searchlib/attribute/imported_attribute_vector.h>
+#include <vespa/searchlib/common/flush_token.h>
 #include <vespa/searchcommon/attribute/i_attribute_functor.h>
 #include <vespa/searchlib/attribute/interlock.h>
 #include <vespa/vespalib/util/isequencedtaskexecutor.h>
@@ -176,10 +177,14 @@ AttributeManager::transferExistingAttributes(const AttributeManager &currMgr,
             auto shrinker = wrap->getShrinker();
             assert(shrinker);
             addAttribute(AttributeWrap::normalAttribute(av), shrinker);
+            auto id = _attributeFieldWriter.getExecutorIdFromName(av->getNamePrefix());
+            auto cfg = aspec.getConfig();
+            _attributeFieldWriter.execute(id, [av, cfg]() { av->update_config(cfg); });
         } else {
             toBeAdded.push_back(aspec);
         }
     }
+    _attributeFieldWriter.sync();
 }
 
 void
@@ -326,8 +331,8 @@ AttributeManager::flushAll(SerialNum currentSerial)
     auto flushTargets = getFlushTargets();
     for (const auto &ft : flushTargets) {
         vespalib::Executor::Task::UP task;
-        task = ft->initFlush(currentSerial);
-        if (task.get() != NULL) {
+        task = ft->initFlush(currentSerial, std::make_shared<search::FlushToken>());
+        if (task) {
             task->run();
         }
     }

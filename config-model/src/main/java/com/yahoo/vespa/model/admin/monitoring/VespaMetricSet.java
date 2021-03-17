@@ -106,6 +106,8 @@ public class VespaMetricSet {
     private static Set<Metric> getContainerMetrics() {
         Set<Metric> metrics = new LinkedHashSet<>();
 
+        addMetric(metrics, "jdisc.http.requests", List.of("rate", "count"));
+
         metrics.add(new Metric("handled.requests.count"));
         metrics.add(new Metric("handled.latency.max"));
         metrics.add(new Metric("handled.latency.sum"));
@@ -130,11 +132,18 @@ public class VespaMetricSet {
         metrics.add(new Metric("serverActiveThreads.count"));
         metrics.add(new Metric("serverActiveThreads.last"));
 
+        metrics.add(new Metric("serverNumOpenConnections.average"));
+        metrics.add(new Metric("serverNumOpenConnections.max"));
+        metrics.add(new Metric("serverNumOpenConnections.last"));
+        metrics.add(new Metric("serverNumConnections.average"));
+        metrics.add(new Metric("serverNumConnections.max"));
+        metrics.add(new Metric("serverNumConnections.last"));
+
         {
-            List<String> suffices = List.of("sum", "count", "last", "min", "max");
-            addMetric(metrics, "jdisc.thread_pool.unhandled_exceptions", suffices);
-            addMetric(metrics, "jdisc.thread_pool.work_queue.capacity", suffices);
-            addMetric(metrics, "jdisc.thread_pool.work_queue.size", suffices);
+            List<String> suffixes = List.of("sum", "count", "last", "min", "max");
+            addMetric(metrics, "jdisc.thread_pool.unhandled_exceptions", suffixes);
+            addMetric(metrics, "jdisc.thread_pool.work_queue.capacity", suffixes);
+            addMetric(metrics, "jdisc.thread_pool.work_queue.size", suffixes);
         }
 
         metrics.add(new Metric("httpapi_latency.max"));
@@ -206,6 +215,16 @@ public class VespaMetricSet {
         addMetric(metrics, "jdisc.http.jetty.threadpool.thread.total", List.of("sum", "count", "min", "max"));
         addMetric(metrics, "jdisc.http.jetty.threadpool.queue.size", List.of("sum", "count", "min", "max"));
 
+        addMetric(metrics, "jdisc.http.filtering.request.handled", List.of("rate"));
+        addMetric(metrics, "jdisc.http.filtering.request.unhandled", List.of("rate"));
+        addMetric(metrics, "jdisc.http.filtering.response.handled", List.of("rate"));
+        addMetric(metrics, "jdisc.http.filtering.response.unhandled", List.of("rate"));
+
+        addMetric(metrics, "jdisc.application.failed_component_graphs", List.of("rate"));
+
+        addMetric(metrics, "jdisc.http.filter.rule.blocked_requests", List.of("rate"));
+        addMetric(metrics, "jdisc.http.filter.rule.allowed_requests", List.of("rate"));
+
         return metrics;
     }
 
@@ -224,6 +243,14 @@ public class VespaMetricSet {
         // TODO(hakonhall): Update this name once persistent "count" metrics has been implemented.
         // DO NOT RELY ON THIS METRIC YET.
         metrics.add(new Metric("cluster-controller.node-event.count"));
+
+        metrics.add(new Metric("cluster-controller.resource_usage.nodes_above_limit.last"));
+        metrics.add(new Metric("cluster-controller.resource_usage.max_memory_utilization.last"));
+        metrics.add(new Metric("cluster-controller.resource_usage.max_disk_utilization.last"));
+        metrics.add(new Metric("cluster-controller.resource_usage.disk_limit.last"));
+        metrics.add(new Metric("cluster-controller.resource_usage.memory_limit.last"));
+
+        metrics.add(new Metric("reindexing.progress.last"));
 
         return metrics;
     }
@@ -272,6 +299,8 @@ public class VespaMetricSet {
         metrics.add(new Metric("hits_per_query.sum"));
         metrics.add(new Metric("hits_per_query.count"));
         metrics.add(new Metric("hits_per_query.average")); // TODO: Remove in Vespa 8
+        metrics.add(new Metric("hits_per_query.95percentile"));
+        metrics.add(new Metric("hits_per_query.99percentile"));
         metrics.add(new Metric("query_hit_offset.max"));
         metrics.add(new Metric("query_hit_offset.sum"));
         metrics.add(new Metric("query_hit_offset.count"));
@@ -284,6 +313,8 @@ public class VespaMetricSet {
         metrics.add(new Metric("totalhits_per_query.sum"));
         metrics.add(new Metric("totalhits_per_query.count"));
         metrics.add(new Metric("totalhits_per_query.average")); // TODO: Remove in Vespa 8
+        metrics.add(new Metric("totalhits_per_query.95percentile"));
+        metrics.add(new Metric("totalhits_per_query.99percentile"));
         metrics.add(new Metric("empty_results.rate"));
         metrics.add(new Metric("requestsOverQuota.rate"));
         metrics.add(new Metric("requestsOverQuota.count"));
@@ -403,6 +434,15 @@ public class VespaMetricSet {
         metrics.add(new Metric("content.proton.documentdb.ready.lid_space.lid_limit.last"));
         metrics.add(new Metric("content.proton.documentdb.notready.lid_space.lid_limit.last"));
         metrics.add(new Metric("content.proton.documentdb.removed.lid_space.lid_limit.last"));
+        metrics.add(new Metric("content.proton.documentdb.ready.lid_space.highest_used_lid.last"));
+        metrics.add(new Metric("content.proton.documentdb.notready.lid_space.highest_used_lid.last"));
+        metrics.add(new Metric("content.proton.documentdb.removed.lid_space.highest_used_lid.last"));
+        metrics.add(new Metric("content.proton.documentdb.ready.lid_space.used_lids.last"));
+        metrics.add(new Metric("content.proton.documentdb.notready.lid_space.used_lids.last"));
+        metrics.add(new Metric("content.proton.documentdb.removed.lid_space.used_lids.last"));
+
+        // bucket move
+        metrics.add(new Metric("content.proton.documentdb.bucket_move.buckets_pending.last"));
 
         // resource usage
         metrics.add(new Metric("content.proton.resource_usage.disk.average"));
@@ -526,6 +566,7 @@ public class VespaMetricSet {
         // TODO: For the purpose of this file and likely elsewhere, all but the last aggregate specifier,
         // TODO: such as 'average' and 'sum' in the metric names below are just confusing and can be mentally
         // TODO: disregarded when considering metric names. Consider cleaning up for Vespa 8.
+        // TODO Vespa 8 all metrics with .sum in the name should have that removed.
         metrics.add(new Metric("vds.datastored.alldisks.docs.average"));
         metrics.add(new Metric("vds.datastored.alldisks.bytes.average"));
         metrics.add(new Metric("vds.visitor.allthreads.averagevisitorlifetime.sum.max"));
@@ -585,6 +626,9 @@ public class VespaMetricSet {
         metrics.add(new Metric("vds.filestor.alldisks.allthreads.put.sum.latency.sum"));
         metrics.add(new Metric("vds.filestor.alldisks.allthreads.put.sum.latency.count"));
         metrics.add(new Metric("vds.filestor.alldisks.allthreads.put.sum.latency.average")); // TODO: Remove in Vespa 8
+        metrics.add(new Metric("vds.filestor.alldisks.allthreads.put.sum.request_size.max"));
+        metrics.add(new Metric("vds.filestor.alldisks.allthreads.put.sum.request_size.sum"));
+        metrics.add(new Metric("vds.filestor.alldisks.allthreads.put.sum.request_size.count"));
         metrics.add(new Metric("vds.filestor.alldisks.allthreads.remove.sum.count.rate"));
         metrics.add(new Metric("vds.filestor.alldisks.allthreads.remove.sum.failed.rate"));
         metrics.add(new Metric("vds.filestor.alldisks.allthreads.remove.sum.test_and_set_failed.rate"));
@@ -592,12 +636,18 @@ public class VespaMetricSet {
         metrics.add(new Metric("vds.filestor.alldisks.allthreads.remove.sum.latency.sum"));
         metrics.add(new Metric("vds.filestor.alldisks.allthreads.remove.sum.latency.count"));
         metrics.add(new Metric("vds.filestor.alldisks.allthreads.remove.sum.latency.average")); // TODO: Remove in Vespa 8
+        metrics.add(new Metric("vds.filestor.alldisks.allthreads.remove.sum.request_size.max"));
+        metrics.add(new Metric("vds.filestor.alldisks.allthreads.remove.sum.request_size.sum"));
+        metrics.add(new Metric("vds.filestor.alldisks.allthreads.remove.sum.request_size.count"));
         metrics.add(new Metric("vds.filestor.alldisks.allthreads.get.sum.count.rate"));
         metrics.add(new Metric("vds.filestor.alldisks.allthreads.get.sum.failed.rate"));
         metrics.add(new Metric("vds.filestor.alldisks.allthreads.get.sum.latency.max"));
         metrics.add(new Metric("vds.filestor.alldisks.allthreads.get.sum.latency.sum"));
         metrics.add(new Metric("vds.filestor.alldisks.allthreads.get.sum.latency.count"));
         metrics.add(new Metric("vds.filestor.alldisks.allthreads.get.sum.latency.average")); // TODO: Remove in Vespa 8
+        metrics.add(new Metric("vds.filestor.alldisks.allthreads.get.sum.request_size.max"));
+        metrics.add(new Metric("vds.filestor.alldisks.allthreads.get.sum.request_size.sum"));
+        metrics.add(new Metric("vds.filestor.alldisks.allthreads.get.sum.request_size.count"));
         metrics.add(new Metric("vds.filestor.alldisks.allthreads.update.sum.count.rate"));
         metrics.add(new Metric("vds.filestor.alldisks.allthreads.update.sum.failed.rate"));
         metrics.add(new Metric("vds.filestor.alldisks.allthreads.update.sum.test_and_set_failed.rate"));
@@ -605,6 +655,9 @@ public class VespaMetricSet {
         metrics.add(new Metric("vds.filestor.alldisks.allthreads.update.sum.latency.sum"));
         metrics.add(new Metric("vds.filestor.alldisks.allthreads.update.sum.latency.count"));
         metrics.add(new Metric("vds.filestor.alldisks.allthreads.update.sum.latency.average")); // TODO: Remove in Vespa 8
+        metrics.add(new Metric("vds.filestor.alldisks.allthreads.update.sum.request_size.max"));
+        metrics.add(new Metric("vds.filestor.alldisks.allthreads.update.sum.request_size.sum"));
+        metrics.add(new Metric("vds.filestor.alldisks.allthreads.update.sum.request_size.count"));
         metrics.add(new Metric("vds.filestor.alldisks.allthreads.createiterator.latency.max"));
         metrics.add(new Metric("vds.filestor.alldisks.allthreads.createiterator.latency.sum"));
         metrics.add(new Metric("vds.filestor.alldisks.allthreads.createiterator.latency.count"));

@@ -1,6 +1,9 @@
 // Copyright 2018 Yahoo Holdings. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.select;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.yahoo.prelude.query.AndItem;
 import com.yahoo.prelude.query.ExactStringItem;
 import com.yahoo.prelude.query.Item;
@@ -18,18 +21,20 @@ import com.yahoo.processing.IllegalInputException;
 import com.yahoo.search.Query;
 import com.yahoo.search.grouping.GroupingRequest;
 import com.yahoo.search.grouping.request.AllOperation;
+import com.yahoo.search.grouping.request.AttributeValue;
+import com.yahoo.search.grouping.request.CountAggregator;
+import com.yahoo.search.grouping.request.EachOperation;
+import com.yahoo.search.grouping.request.MaxAggregator;
+import com.yahoo.search.grouping.request.MinAggregator;
 import com.yahoo.search.query.QueryTree;
 import com.yahoo.search.query.Select;
 import com.yahoo.search.query.SelectParser;
 import com.yahoo.search.query.parser.Parsable;
 import com.yahoo.search.query.parser.ParserEnvironment;
 import com.yahoo.search.yql.VespaGroupingStep;
-import org.json.JSONException;
-import org.json.JSONObject;
 import org.junit.Test;
 
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.List;
 
 import static org.junit.Assert.assertEquals;
@@ -48,15 +53,18 @@ import static org.junit.Assert.fail;
  */
 public class SelectTestCase {
 
+    private static final ObjectMapper jsonMapper = new ObjectMapper();
+
     private final SelectParser parser = new SelectParser(new ParserEnvironment());
 
     //------------------------------------------------------------------- "where" tests
 
     @Test
-    public void test_contains() throws Exception {
-        JSONObject json = new JSONObject();
-        List<String> contains = Arrays.asList("default", "foo");
-        json.put("contains", contains);
+    public void test_contains() {
+        ObjectNode json = jsonMapper.createObjectNode();
+        ArrayNode arrayNode = jsonMapper.createArrayNode();
+        arrayNode.add("default").add("foo");
+        json.set("contains", arrayNode);
         assertParse(json.toString(), "default:foo");
     }
 
@@ -77,21 +85,21 @@ public class SelectTestCase {
 
     @Test
     public void testOr() throws Exception {
-        JSONObject json_two_or = new JSONObject();
-        JSONObject json_three_or = new JSONObject();
-        List<String> contains1 = Arrays.asList("title", "madonna");
-        List<String> contains2 = Arrays.asList("title", "saint");
-        List<String> contains3 = Arrays.asList("title", "angel");
+        ObjectNode json_two_or = jsonMapper.createObjectNode();
+        ObjectNode json_three_or = jsonMapper.createObjectNode();
+        ArrayNode contains1 = jsonMapper.createArrayNode().add("title").add("madonna");
+        ArrayNode contains2 = jsonMapper.createArrayNode().add("title").add("saint");
+        ArrayNode contains3 = jsonMapper.createArrayNode().add("title").add("angel");
 
-        JSONObject contains_json1 = new JSONObject();
-        JSONObject contains_json2 = new JSONObject();
-        JSONObject contains_json3 = new JSONObject();
-        contains_json1.put("contains", contains1);
-        contains_json2.put("contains", contains2);
-        contains_json3.put("contains", contains3);
+        ObjectNode contains_json1 = jsonMapper.createObjectNode();
+        ObjectNode contains_json2 = jsonMapper.createObjectNode();
+        ObjectNode contains_json3 = jsonMapper.createObjectNode();
+        contains_json1.set("contains", contains1);
+        contains_json2.set("contains", contains2);
+        contains_json3.set("contains", contains3);
 
-        json_two_or.put("or", Arrays.asList(contains_json1, contains_json2));
-        json_three_or.put("or", Arrays.asList(contains_json1, contains_json2, contains_json3));
+        json_two_or.set("or", jsonMapper.createArrayNode().add(contains_json1).add(contains_json2));
+        json_three_or.set("or", jsonMapper.createArrayNode().add(contains_json1).add(contains_json2).add(contains_json3));
 
         assertParse(json_two_or.toString(), "OR title:madonna title:saint");
         assertParse(json_three_or.toString(), "OR title:madonna title:saint title:angel");
@@ -99,178 +107,178 @@ public class SelectTestCase {
 
     @Test
     public void testAnd() throws Exception{
-        JSONObject json_two_and = new JSONObject();
-        JSONObject json_three_and = new JSONObject();
-        List<String> contains1 = Arrays.asList("title", "madonna");
-        List<String> contains2 = Arrays.asList("title", "saint");
-        List<String> contains3 = Arrays.asList("title", "angel");
+        ObjectNode json_two_and = jsonMapper.createObjectNode();
+        ObjectNode json_three_and = jsonMapper.createObjectNode();
+        ArrayNode contains1 = jsonMapper.createArrayNode().add("title").add("madonna");
+        ArrayNode contains2 = jsonMapper.createArrayNode().add("title").add("saint");
+        ArrayNode contains3 = jsonMapper.createArrayNode().add("title").add("angel");
 
-        JSONObject contains_json1 = new JSONObject();
-        JSONObject contains_json2 = new JSONObject();
-        JSONObject contains_json3 = new JSONObject();
-        contains_json1.put("contains", contains1);
-        contains_json2.put("contains", contains2);
-        contains_json3.put("contains", contains3);
+        ObjectNode contains_json1 = jsonMapper.createObjectNode();
+        ObjectNode contains_json2 = jsonMapper.createObjectNode();
+        ObjectNode contains_json3 = jsonMapper.createObjectNode();
+        contains_json1.set("contains", contains1);
+        contains_json2.set("contains", contains2);
+        contains_json3.set("contains", contains3);
 
-        json_two_and.put("and", Arrays.asList(contains_json1, contains_json2));
-        json_three_and.put("and", Arrays.asList(contains_json1, contains_json2, contains_json3));
+        json_two_and.set("and", jsonMapper.createArrayNode().add(contains_json1).add(contains_json2));
+        json_three_and.set("and", jsonMapper.createArrayNode().add(contains_json1).add(contains_json2).add(contains_json3));
 
         assertParse(json_two_and.toString(), "AND title:madonna title:saint");
         assertParse(json_three_and.toString(), "AND title:madonna title:saint title:angel");
     }
 
     @Test
-    public void testAndNot() throws JSONException {
-        JSONObject json_and_not = new JSONObject();
-        List<String> contains1 = Arrays.asList("title", "madonna");
-        List<String> contains2 = Arrays.asList("title", "saint");
+    public void testAndNot() {
+        ObjectNode json_and_not = jsonMapper.createObjectNode();
+        ArrayNode contains1 = jsonMapper.createArrayNode().add("title").add("madonna");
+        ArrayNode contains2 = jsonMapper.createArrayNode().add("title").add("saint");
 
-        JSONObject contains_json1 = new JSONObject();
-        JSONObject contains_json2 = new JSONObject();
-        contains_json1.put("contains", contains1);
-        contains_json2.put("contains", contains2);
+        ObjectNode contains_json1 = jsonMapper.createObjectNode();
+        ObjectNode contains_json2 = jsonMapper.createObjectNode();
+        contains_json1.set("contains", contains1);
+        contains_json2.set("contains", contains2);
 
-        json_and_not.put("and_not", Arrays.asList(contains_json1, contains_json2));
+        json_and_not.set("and_not", jsonMapper.createArrayNode().add(contains_json1).add(contains_json2));
 
         assertParse(json_and_not.toString(),
                 "+title:madonna -title:saint");
     }
 
     @Test
-    public void testLessThan() throws JSONException {
-        JSONObject range_json = new JSONObject();
-        JSONObject operators = new JSONObject();
+    public void testLessThan() {
+        ObjectNode range_json = jsonMapper.createObjectNode();
+        ObjectNode operators = jsonMapper.createObjectNode();
         operators.put("<", 500);
 
-        List<Object> range = Arrays.asList("price", operators);
+        ArrayNode range = jsonMapper.createArrayNode().add("price").add(operators);
 
-        range_json.put("range", range);
+        range_json.set("range", range);
 
         assertParse(range_json.toString(),
                 "price:<500");
     }
 
     @Test
-    public void testGreaterThan() throws JSONException {
-        JSONObject range_json = new JSONObject();
-        JSONObject operators = new JSONObject();
+    public void testGreaterThan() {
+        ObjectNode range_json = jsonMapper.createObjectNode();
+        ObjectNode operators = jsonMapper.createObjectNode();
         operators.put(">", 500);
 
-        List<Object> range = Arrays.asList("price", operators);
+        ArrayNode range = jsonMapper.createArrayNode().add("price").add(operators);
 
-        range_json.put("range", range);
+        range_json.set("range", range);
 
         assertParse(range_json.toString(),
                 "price:>500");
     }
 
     @Test
-    public void testLessThanOrEqual() throws JSONException {
-        JSONObject range_json = new JSONObject();
-        JSONObject operators = new JSONObject();
+    public void testLessThanOrEqual() {
+        ObjectNode range_json = jsonMapper.createObjectNode();
+        ObjectNode operators = jsonMapper.createObjectNode();
         operators.put("<=", 500);
 
-        List<Object> range = Arrays.asList("price", operators);
+        ArrayNode range = jsonMapper.createArrayNode().add("price").add(operators);
 
-        range_json.put("range", range);
+        range_json.set("range", range);
 
         assertParse(range_json.toString(),
                 "price:[;500]");
     }
 
     @Test
-    public void testGreaterThanOrEqual() throws JSONException {
-        JSONObject range_json = new JSONObject();
-        JSONObject operators = new JSONObject();
+    public void testGreaterThanOrEqual() {
+        ObjectNode range_json = jsonMapper.createObjectNode();
+        ObjectNode operators = jsonMapper.createObjectNode();
         operators.put(">=", 500);
 
-        List<Object> range = Arrays.asList("price", operators);
+        ArrayNode range = jsonMapper.createArrayNode().add("price").add(operators);
 
-        range_json.put("range", range);
+        range_json.set("range", range);
 
         assertParse(range_json.toString(),
                 "price:[500;]");
     }
 
     @Test
-    public void testEquality() throws JSONException {
-        JSONObject range_json = new JSONObject();
-        JSONObject operators = new JSONObject();
+    public void testEquality() {
+        ObjectNode range_json = jsonMapper.createObjectNode();
+        ObjectNode operators = jsonMapper.createObjectNode();
         operators.put("=", 500);
 
-        List<Object> range = Arrays.asList("price", operators);
+        ArrayNode range = jsonMapper.createArrayNode().add("price").add(operators);
 
-        range_json.put("range", range);
+        range_json.set("range", range);
 
         assertParse(range_json.toString(),
                 "price:500");
     }
 
     @Test
-    public void testNegativeLessThan() throws JSONException {
-        JSONObject range_json = new JSONObject();
-        JSONObject operators = new JSONObject();
+    public void testNegativeLessThan() {
+        ObjectNode range_json = jsonMapper.createObjectNode();
+        ObjectNode operators = jsonMapper.createObjectNode();
         operators.put("<", -500);
 
-        List<Object> range = Arrays.asList("price", operators);
+        ArrayNode range = jsonMapper.createArrayNode().add("price").add(operators);
 
-        range_json.put("range", range);
+        range_json.set("range", range);
 
         assertParse(range_json.toString(),
                 "price:<-500");
     }
 
     @Test
-    public void testNegativeGreaterThan() throws JSONException {
-        JSONObject range_json = new JSONObject();
-        JSONObject operators = new JSONObject();
+    public void testNegativeGreaterThan() {
+        ObjectNode range_json = jsonMapper.createObjectNode();
+        ObjectNode operators = jsonMapper.createObjectNode();
         operators.put(">", -500);
 
-        List<Object> range = Arrays.asList("price", operators);
+        ArrayNode range = jsonMapper.createArrayNode().add("price").add(operators);
 
-        range_json.put("range", range);
+        range_json.set("range", range);
 
         assertParse(range_json.toString(),
                 "price:>-500");
     }
 
     @Test
-    public void testNegativeLessThanOrEqual() throws JSONException {
-        JSONObject range_json = new JSONObject();
-        JSONObject operators = new JSONObject();
+    public void testNegativeLessThanOrEqual() {
+        ObjectNode range_json = jsonMapper.createObjectNode();
+        ObjectNode operators = jsonMapper.createObjectNode();
         operators.put("<=", -500);
 
-        List<Object> range = Arrays.asList("price", operators);
+        ArrayNode range = jsonMapper.createArrayNode().add("price").add(operators);
 
-        range_json.put("range", range);
+        range_json.set("range", range);
 
         assertParse(range_json.toString(),
                 "price:[;-500]");
     }
 
     @Test
-    public void testNegativeGreaterThanOrEqual() throws JSONException {
-        JSONObject range_json = new JSONObject();
-        JSONObject operators = new JSONObject();
+    public void testNegativeGreaterThanOrEqual() {
+        ObjectNode range_json = jsonMapper.createObjectNode();
+        ObjectNode operators = jsonMapper.createObjectNode();
         operators.put(">=", -500);
 
-        List<Object> range = Arrays.asList("price", operators);
+        ArrayNode range = jsonMapper.createArrayNode().add("price").add(operators);
 
-        range_json.put("range", range);
+        range_json.set("range", range);
 
         assertParse(range_json.toString(),
                 "price:[-500;]");
     }
 
     @Test
-    public void testNegativeEquality() throws JSONException {
-        JSONObject range_json = new JSONObject();
-        JSONObject operators = new JSONObject();
+    public void testNegativeEquality() {
+        ObjectNode range_json = jsonMapper.createObjectNode();
+        ObjectNode operators = jsonMapper.createObjectNode();
         operators.put("=", -500);
 
-        List<Object> range = Arrays.asList("price", operators);
+        ArrayNode range = jsonMapper.createArrayNode().add("price").add(operators);
 
-        range_json.put("range", range);
+        range_json.set("range", range);
 
         assertParse(range_json.toString(),
                 "price:-500");
@@ -537,13 +545,14 @@ public class SelectTestCase {
     @Test
     public void testNearestNeighbor() {
         assertParse("{ \"nearestNeighbor\": [ \"f1field\", \"q2prop\" ] }",
-                "NEAREST_NEIGHBOR {field=f1field,queryTensorName=q2prop,hnsw.exploreAdditionalHits=0,approximate=true,targetHits=0}");
+                "NEAREST_NEIGHBOR {field=f1field,queryTensorName=q2prop,hnsw.exploreAdditionalHits=0,distanceThreshold=Infinity,approximate=true,targetHits=0}");
 
-        assertParse("{ \"nearestNeighbor\": { \"children\" : [ \"f3field\", \"q4prop\" ], \"attributes\" : {\"targetHits\": 37} }}",
-                "NEAREST_NEIGHBOR {field=f3field,queryTensorName=q4prop,hnsw.exploreAdditionalHits=0,approximate=true,targetHits=37}");
+        assertParse("{ \"nearestNeighbor\": { \"children\" : [ \"f3field\", \"q4prop\" ], \"attributes\" : {\"targetHits\": 37, \"hnsw.exploreAdditionalHits\": 42, \"distanceThreshold\": 100100.25 } }}",
+                "NEAREST_NEIGHBOR {field=f3field,queryTensorName=q4prop,hnsw.exploreAdditionalHits=42,distanceThreshold=100100.25,approximate=true,targetHits=37}");
     }
 
     @Test
+    @SuppressWarnings("deprecation")
     public void testWeakAnd() {
         assertParse("{ \"weakAnd\": [{ \"contains\": [\"a\", \"A\"] }, { \"contains\": [\"b\", \"B\"] } ] }",
                 "WAND(100) a:A b:B");
@@ -764,6 +773,32 @@ public class SelectTestCase {
 
         Query clone = query.clone();
         assertEquals(clone.getSelect().getGroupingExpressionString(), query.getSelect().getGroupingExpressionString());
+    }
+
+    @Test
+    public void testProgrammaticBuilding() {
+        String expected =
+                "all(group(myfield) max(10000) each(" +
+                  "output(min(foo), max(bar)) " +
+                  "all(group(foo) max(10000) output(count()))" +
+                "))";
+        Query query = new Query();
+        GroupingRequest grouping = GroupingRequest.newInstance(query);
+        AllOperation root = new AllOperation();
+        root.setGroupBy(new AttributeValue("myfield"));
+        root.setMax(10000);
+        EachOperation each = new EachOperation();
+        each.addOutput(new MinAggregator(new AttributeValue("foo")));
+        each.addOutput(new MaxAggregator(new AttributeValue("bar")));
+        AllOperation all = new AllOperation();
+        all.setGroupBy(new AttributeValue("foo"));
+        all.setMax(10000);
+        all.addOutput(new CountAggregator());
+        each.addChild(all);
+        root.addChild(each);
+        grouping.setRootOperation(root);
+
+        assertEquals(expected, query.getSelect().getGrouping().get(0).toString());
     }
 
     //------------------------------------------------------------------- Assert methods

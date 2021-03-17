@@ -1,7 +1,9 @@
 // Copyright 2018 Yahoo Holdings. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.hosted.provision.testutils;
 
+import com.yahoo.config.provision.ActivationContext;
 import com.yahoo.config.provision.ApplicationId;
+import com.yahoo.config.provision.ApplicationTransaction;
 import com.yahoo.config.provision.Capacity;
 import com.yahoo.config.provision.ClusterSpec;
 import com.yahoo.config.provision.HostFilter;
@@ -9,7 +11,6 @@ import com.yahoo.config.provision.HostSpec;
 import com.yahoo.config.provision.ProvisionLock;
 import com.yahoo.config.provision.ProvisionLogger;
 import com.yahoo.config.provision.Provisioner;
-import com.yahoo.transaction.NestedTransaction;
 
 import java.util.Collection;
 import java.util.List;
@@ -25,29 +26,13 @@ public class MockProvisioner implements Provisioner {
     }
 
     @Override
-    public void activate(NestedTransaction transaction, ApplicationId application, Collection<HostSpec> hosts) {
-
-    }
+    public void activate(Collection<HostSpec> hosts, ActivationContext context, ApplicationTransaction transaction) { }
 
     @Override
-    public void activate(NestedTransaction transaction, Collection<HostSpec> hosts, ProvisionLock lock) {
-
-    }
+    public void remove(ApplicationTransaction transaction) { }
 
     @Override
-    public void remove(NestedTransaction transaction, ApplicationId application) {
-
-    }
-
-    @Override
-    public void remove(NestedTransaction transaction, ProvisionLock lock) {
-
-    }
-
-    @Override
-    public void restart(ApplicationId application, HostFilter filter) {
-
-    }
+    public void restart(ApplicationId application, HostFilter filter) { }
 
     @Override
     public ProvisionLock lock(ApplicationId application) {

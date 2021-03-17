@@ -6,6 +6,7 @@
 #include "i_feed_handler_owner.h"
 #include "ifeedview.h"
 #include "configstore.h"
+#include <vespa/document/util/feed_reject_helper.h>
 #include <vespa/document/base/exceptions.h>
 #include <vespa/document/datatype/documenttype.h>
 #include <vespa/document/repo/documenttyperepo.h>
@@ -17,10 +18,11 @@
 #include <vespa/searchcore/proton/feedoperation/operations.h>
 #include <vespa/searchcore/proton/common/eventlogger.h>
 #include <vespa/searchcorespi/index/ithreadingservice.h>
-#include <vespa/searchlib/common/gatecallback.h>
+#include <vespa/vespalib/util/destructor_callbacks.h>
 #include <vespa/searchlib/transactionlog/client_session.h>
 #include <vespa/vespalib/util/exceptions.h>
 #include <vespa/vespalib/util/lambdatask.h>
+#include <cassert>
 #include <unistd.h>
 
 #include <vespa/log/log.h>
@@ -40,6 +42,7 @@ using vespalib::makeLambdaTask;
 using vespalib::make_string;
 using std::make_unique;
 using std::make_shared;
+using search::CommitParam;
 
 namespace proton {
 
@@ -108,7 +111,7 @@ TlsMgrWriter::sync(SerialNum syncTo)
     throw IllegalStateException(make_string("Failed to sync TLS to token %" PRIu64 ".", syncTo));
 }
 
-class OnCommitDone : public search::IDestructorCallback {
+class OnCommitDone : public vespalib::IDestructorCallback {
 public:
     OnCommitDone(Executor & executor, std::unique_ptr<Executor::Task> task) noexcept
         : _executor(executor),
@@ -120,12 +123,20 @@ private:
     std::unique_ptr<Executor::Task> _task;
 };
 
-template <typename T>
-struct KeepAlive : public search::IDestructorCallback {
-    explicit KeepAlive(T toKeep) : _toKeep(std::move(toKeep)) { }
-    ~KeepAlive() override = default;
-    T _toKeep;
+/**
+ * Wraps the original feed token so that it will be delivered
+ * when the derived operation is completed.
+ */
+class DaisyChainedFeedToken : public feedtoken::ITransport {
+public:
+    DaisyChainedFeedToken(FeedToken token) : _token(std::move(token)) {}
+    void send(ResultUP, bool ) override {
+        _token.reset();
+    }
+private:
+    FeedToken _token;
 };
+
 }  // namespace
 
 void
@@ -212,9 +223,8 @@ FeedHandler::createNonExistingDocument(FeedToken token, const UpdateOperation &o
     if (token) {
         token->setResult(make_unique<UpdateResult>(putOp.getTimestamp()), true);
     }
-    TransportLatch latch(1);
-    _activeFeedView->handlePut(feedtoken::make(latch), putOp);
-    latch.await();
+
+    _activeFeedView->handlePut(feedtoken::make(std::make_unique<DaisyChainedFeedToken>(std::move(token))), putOp);
 }
 
 
@@ -302,6 +312,12 @@ FeedHandler::performEof()
     assert(_writeService.master().isCurrentThread());
     _writeService.sync();
     LOG(debug, "Visiting done for transaction log domain '%s', eof received", _tlsMgr.getDomainName().c_str());
+    // Replay must be complete
+    if (_replay_end_serial_num != _serialNum) {
+        LOG(warning, "Expected replay end serial number %" PRIu64 ", got serial number %" PRIu64,
+            _replay_end_serial_num, _serialNum);
+        assert(_replay_end_serial_num == _serialNum);
+    }
     _owner.onTransactionLogReplayDone();
     _tlsMgr.replayDone();
     changeToNormalFeedState();
@@ -405,6 +421,7 @@ FeedHandler::FeedHandler(IThreadingService &writeService,
       _tlsReplayProgress(),
       _serialNum(0),
       _prunedSerialNum(0),
+      _replay_end_serial_num(0u),
       _prepare_serial_num(0u),
       _numOperationsPendingCommit(0),
       _numOperationsCompleted(0),
@@ -428,13 +445,14 @@ FeedHandler::~FeedHandler() = default;
 void
 FeedHandler::init(SerialNum oldestConfigSerial)
 {
-    _tlsMgr.init(oldestConfigSerial, _prunedSerialNum, _serialNum);
+    _tlsMgr.init(oldestConfigSerial, _prunedSerialNum, _replay_end_serial_num);
+    _serialNum = _prunedSerialNum;
     if (_tlsWriter == nullptr) {
         _tlsMgrWriter = std::make_unique<TlsMgrWriter>(_tlsMgr, _tlsWriterfactory);
         _tlsWriter = _tlsMgrWriter.get();
     }
     _allowSync = true;
-    syncTls(_serialNum);
+    syncTls(_replay_end_serial_num);
 }
 
 
@@ -457,18 +475,18 @@ FeedHandler::replayTransactionLog(SerialNum flushedIndexMgrSerial, SerialNum flu
     assert(_activeFeedView);
     assert(_bucketDBHandler);
     auto state = make_shared<ReplayTransactionLogState>
-                          (getDocTypeName(), _activeFeedView, *_bucketDBHandler, _replayConfig, config_store);
+                          (getDocTypeName(), _activeFeedView, *_bucketDBHandler, _replayConfig, config_store, *this);
     changeFeedState(state);
     // Resurrected attribute vector might cause oldestFlushedSerial to
     // be lower than _prunedSerialNum, so don't warn for now.
     (void) oldestFlushedSerial;
-    assert(_serialNum >= newestFlushedSerial);
+    assert(_replay_end_serial_num >= newestFlushedSerial);
 
     TransactionLogManager::prepareReplay(_tlsMgr.getClient(), _docTypeName.getName(),
                                          flushedIndexMgrSerial, flushedSummaryMgrSerial, config_store);
 
-    _tlsReplayProgress = _tlsMgr.make_replay_progress(_prunedSerialNum, _serialNum);
-    _tlsMgr.startReplay(_prunedSerialNum, _serialNum, *this);
+    _tlsReplayProgress = _tlsMgr.make_replay_progress(_serialNum, _replay_end_serial_num);
+    _tlsMgr.startReplay(_serialNum, _replay_end_serial_num, *this);
 }
 
 void
@@ -527,17 +545,17 @@ FeedHandler::initiateCommit() {
                 onCommitDone(numPendingAtStart);
             }));
     auto commitResult = _tlsWriter->startCommit(onCommitDoneContext);
-    if (_activeFeedView && ! _activeFeedView->allowEarlyAck()) {
-        using KeepAlivePair = KeepAlive<std::pair<CommitResult, DoneCallback>>;
+    if (_activeFeedView) {
+        using KeepAlivePair = vespalib::KeepAlive<std::pair<CommitResult, DoneCallback>>;
         auto pair = std::make_pair(std::move(commitResult), std::move(onCommitDoneContext));
-        _activeFeedView->forceCommit(_serialNum, std::make_shared<KeepAlivePair>(std::move(pair)));
+        _activeFeedView->forceCommit(CommitParam(_serialNum, CommitParam::UpdateStats::SKIP), std::make_shared<KeepAlivePair>(std::move(pair)));
     }
 }
 
 void
 FeedHandler::appendOperation(const FeedOperation &op, TlsWriter::DoneCallback onDone) {
     if (!op.getSerialNum()) {
-        const_cast<FeedOperation &>(op).setSerialNum(incSerialNum());
+        const_cast<FeedOperation &>(op).setSerialNum(inc_serial_num());
     }
     _tlsWriter->appendOperation(op, std::move(onDone));
     if (++_numOperationsPendingCommit == 1) {
@@ -550,11 +568,12 @@ FeedHandler::startCommit(DoneCallback onDone) {
     return _tlsWriter->startCommit(std::move(onDone));
 }
 
-void
+FeedHandler::CommitResult
 FeedHandler::storeOperationSync(const FeedOperation &op) {
     vespalib::Gate gate;
-    appendAndCommitOperation(op, make_shared<search::GateCallback>(gate));
+    auto commit_result = appendAndCommitOperation(op, make_shared<vespalib::GateCallback>(gate));
     gate.await();
+    return commit_result;
 }
 
 void
@@ -567,14 +586,9 @@ FeedHandler::tlsPrune(SerialNum oldest_to_keep) {
 
 namespace {
 
-bool
-isRejectableFeedOperation(FeedOperation::Type type)
-{
-    return type == FeedOperation::PUT || type == FeedOperation::UPDATE_42 || type == FeedOperation::UPDATE;
-}
-
 template <typename ResultType>
-void feedOperationRejected(FeedToken & token, const vespalib::string &opType, const vespalib::string &docId,
+void
+feedOperationRejected(FeedToken & token, const vespalib::string &opType, const vespalib::string &docId,
                            const DocTypeName & docTypeName, const vespalib::string &rejectMessage)
 {
     if (token) {
@@ -600,12 +614,42 @@ notifyFeedOperationRejected(FeedToken & token, const FeedOperation &op,
     }
 }
 
+/**
+ * Tells wether an operation should be blocked when resourcelimits have been reached.
+ * It looks at the operation type and also the content if it is an 'update' operation.
+ */
+class FeedRejectHelper {
+public:
+    static bool isRejectableFeedOperation(const FeedOperation & op);
+    static bool mustReject(const UpdateOperation & updateOperation);
+};
+
+bool
+FeedRejectHelper::mustReject(const UpdateOperation & updateOperation) {
+    if (updateOperation.getUpdate()) {
+        return document::FeedRejectHelper::mustReject(*updateOperation.getUpdate());
+    }
+    return false;
+}
+
+bool
+FeedRejectHelper::isRejectableFeedOperation(const FeedOperation & op)
+{
+    FeedOperation::Type type = op.getType();
+    if (type == FeedOperation::PUT) {
+        return true;
+    } else if (type == FeedOperation::UPDATE_42 || type == FeedOperation::UPDATE) {
+        return mustReject(dynamic_cast<const UpdateOperation &>(op));
+    }
+    return false;
+}
+
 }
 
 bool
 FeedHandler::considerWriteOperationForRejection(FeedToken & token, const FeedOperation &op)
 {
-    if (!_writeFilter.acceptWriteOperation() && isRejectableFeedOperation(op.getType())) {
+    if (!_writeFilter.acceptWriteOperation() && FeedRejectHelper::isRejectableFeedOperation(op)) {
         IResourceWriteFilter::State state = _writeFilter.getAcceptState();
         if (!state.acceptWriteOperation()) {
             notifyFeedOperationRejected(token, op, _docTypeName, state.message());
@@ -704,7 +748,7 @@ FeedHandler::handleOperation(FeedToken token, FeedOperation::UP op)
 }
 
 void
-FeedHandler::handleMove(MoveOperation &op, std::shared_ptr<search::IDestructorCallback> moveDoneCtx)
+FeedHandler::handleMove(MoveOperation &op, std::shared_ptr<vespalib::IDestructorCallback> moveDoneCtx)
 {
     assert(_writeService.master().isCurrentThread());
     op.set_prepare_serial_num(inc_prepare_serial_num());
@@ -756,7 +800,7 @@ performPruneRemovedDocuments(PruneRemovedDocumentsOperation &pruneOp)
 {
     const LidVectorContext::SP lids_to_remove = pruneOp.getLidsToRemove();
     if (lids_to_remove && lids_to_remove->getNumLids() != 0) {
-        storeOperationSync(pruneOp);
+        appendOperation(pruneOp, DoneCallback());
         _activeFeedView->handlePruneRemovedDocuments(pruneOp);
     }
 }

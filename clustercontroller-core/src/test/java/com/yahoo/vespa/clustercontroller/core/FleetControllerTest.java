@@ -1,4 +1,4 @@
-// Copyright 2017 Yahoo Holdings. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Verizon Media. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.clustercontroller.core;
 
 import com.yahoo.jrt.Request;
@@ -9,7 +9,6 @@ import com.yahoo.jrt.Target;
 import com.yahoo.jrt.Transport;
 import com.yahoo.jrt.slobrok.api.BackOffPolicy;
 import com.yahoo.jrt.slobrok.server.Slobrok;
-import java.util.logging.Level;
 import com.yahoo.log.LogSetup;
 import com.yahoo.vdslib.distribution.ConfiguredNode;
 import com.yahoo.vdslib.state.ClusterState;
@@ -22,7 +21,7 @@ import com.yahoo.vespa.clustercontroller.core.database.ZooKeeperDatabaseFactory;
 import com.yahoo.vespa.clustercontroller.core.rpc.RPCCommunicator;
 import com.yahoo.vespa.clustercontroller.core.rpc.RpcServer;
 import com.yahoo.vespa.clustercontroller.core.rpc.SlobrokClient;
-import com.yahoo.vespa.clustercontroller.core.status.statuspage.StatusPageServer;
+import com.yahoo.vespa.clustercontroller.core.status.StatusHandler;
 import com.yahoo.vespa.clustercontroller.core.status.statuspage.StatusPageServerInterface;
 import com.yahoo.vespa.clustercontroller.core.testutils.WaitCondition;
 import com.yahoo.vespa.clustercontroller.core.testutils.WaitTask;
@@ -40,12 +39,15 @@ import java.util.Collection;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.TreeSet;
+import java.util.logging.Level;
 import java.util.logging.Logger;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 
 import static org.junit.Assert.fail;
 
@@ -58,7 +60,7 @@ public abstract class FleetControllerTest implements Waiter {
     private static final int DEFAULT_NODE_COUNT = 10;
 
     Supervisor supervisor;
-    protected FakeTimer timer = new FakeTimer();
+    protected final FakeTimer timer = new FakeTimer();
     boolean usingFakeTimer = false;
     protected Slobrok slobrok;
     protected FleetControllerOptions options;
@@ -123,9 +125,9 @@ public abstract class FleetControllerTest implements Waiter {
     }
 
     static protected FleetControllerOptions defaultOptions(String clusterName) {
-        var opts = new FleetControllerOptions(clusterName);
-        opts.enableTwoPhaseClusterStateActivation = true; // Enable by default, tests can explicitly disable.
-        return opts;
+        return defaultOptions(clusterName, IntStream.range(0, DEFAULT_NODE_COUNT)
+                                                    .mapToObj(i -> new ConfiguredNode(i, false))
+                                                    .collect(Collectors.toSet()));
     }
 
     static protected FleetControllerOptions defaultOptions(String clusterName, Collection<ConfiguredNode> nodes) {
@@ -149,15 +151,14 @@ public abstract class FleetControllerTest implements Waiter {
     }
 
     FleetController createFleetController(boolean useFakeTimer, FleetControllerOptions options, boolean startThread, StatusPageServerInterface status) throws Exception {
+        Objects.requireNonNull(status, "status server cannot be null");
         Timer timer = useFakeTimer ? this.timer : new RealTimer();
         MetricUpdater metricUpdater = new MetricUpdater(new NoMetricReporter(), options.fleetControllerIndex);
         EventLog log = new EventLog(timer, metricUpdater);
         ContentCluster cluster = new ContentCluster(
                 options.clusterName,
                 options.nodes,
-                options.storageDistribution,
-                options.minStorageNodesUp,
-                options.minRatioOfStorageNodesUp);
+                options.storageDistribution);
         NodeStateGatherer stateGatherer = new NodeStateGatherer(timer, timer, log);
         Communicator communicator = new RPCCommunicator(
                 RPCCommunicator.createRealSupervisor(),
@@ -169,12 +170,9 @@ public abstract class FleetControllerTest implements Waiter {
                 options.nodeStateRequestRoundTripTimeMaxSeconds);
         SlobrokClient lookUp = new SlobrokClient(timer);
         lookUp.setSlobrokConnectionSpecs(new String[0]);
-        if (status == null) {
-            status = new StatusPageServer(timer, timer, options.httpPort);
-        }
         RpcServer rpcServer = new RpcServer(timer, timer, options.clusterName, options.fleetControllerIndex, options.slobrokBackOffPolicy);
         DatabaseHandler database = new DatabaseHandler(new ZooKeeperDatabaseFactory(), timer, options.zooKeeperServerAddress, options.fleetControllerIndex, timer);
-        StateChangeHandler stateGenerator = new StateChangeHandler(timer, log, metricUpdater);
+        StateChangeHandler stateGenerator = new StateChangeHandler(timer, log);
         SystemStateBroadcaster stateBroadcaster = new SystemStateBroadcaster(timer, timer);
         MasterElectionHandler masterElectionHandler = new MasterElectionHandler(options.fleetControllerIndex, options.fleetControllerCount, timer, timer);
         FleetController controller = new FleetController(timer, log, cluster, stateGatherer, communicator, status, rpcServer, lookUp, database, stateGenerator, stateBroadcaster, masterElectionHandler, metricUpdater, options);
@@ -189,7 +187,7 @@ public abstract class FleetControllerTest implements Waiter {
     }
 
     protected void setUpFleetController(boolean useFakeTimer, FleetControllerOptions options, boolean startThread) throws Exception {
-        setUpFleetController(useFakeTimer, options, startThread, null);
+        setUpFleetController(useFakeTimer, options, startThread, new StatusHandler.ContainerStatusPageServer());
     }
     protected void setUpFleetController(boolean useFakeTimer, FleetControllerOptions options, boolean startThread, StatusPageServerInterface status) throws Exception {
         if (slobrok == null) setUpSystem(useFakeTimer, options);
@@ -209,7 +207,7 @@ public abstract class FleetControllerTest implements Waiter {
 
     void startFleetController() throws Exception {
         if (fleetController == null) {
-            fleetController = createFleetController(usingFakeTimer, options, true, null);
+            fleetController = createFleetController(usingFakeTimer, options, true, new StatusHandler.ContainerStatusPageServer());
         } else {
             log.log(Level.WARNING, "already started fleetcontroller, not starting another");
         }

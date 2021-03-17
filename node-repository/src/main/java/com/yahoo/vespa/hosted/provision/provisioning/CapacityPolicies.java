@@ -8,7 +8,10 @@ import com.yahoo.config.provision.Environment;
 import com.yahoo.config.provision.NodeResources;
 import com.yahoo.config.provision.SystemName;
 import com.yahoo.config.provision.Zone;
+import com.yahoo.vespa.flags.PermanentFlags;
 import com.yahoo.vespa.hosted.provision.NodeRepository;
+
+import java.util.function.Supplier;
 
 /**
  * Defines the policies for assigning cluster capacity in various environments
@@ -19,9 +22,11 @@ import com.yahoo.vespa.hosted.provision.NodeRepository;
 public class CapacityPolicies {
 
     private final Zone zone;
+    private final Supplier<Boolean> sharedHosts;
 
     public CapacityPolicies(NodeRepository nodeRepository) {
         this.zone = nodeRepository.zone();
+        this.sharedHosts = PermanentFlags.SHARED_HOST.bindTo(nodeRepository.flagSource()).value()::isEnabled;
     }
 
     public int decideSize(int requested, Capacity capacity, ClusterSpec cluster, ApplicationId application) {
@@ -44,9 +49,9 @@ public class CapacityPolicies {
 
         if (capacity.isRequired()) return target;
 
-        // Dev does not cap the cpu of containers since usage is spotty: Allocate just a small amount exclusively
-        if (zone.environment() == Environment.dev && zone.getCloud().allowHostSharing())
-            target = target.withVcpu(0.1);
+        // Dev does not cap the cpu or network of containers since usage is spotty: Allocate just a small amount exclusively
+        if (zone.environment() == Environment.dev && !zone.getCloud().dynamicProvisioning())
+            target = target.withVcpu(0.1).withBandwidthGbps(0.1);
 
         // Allow slow storage in zones which are not performance sensitive
         if (zone.system().isCd() || zone.environment() == Environment.dev || zone.environment() == Environment.test)
@@ -61,22 +66,22 @@ public class CapacityPolicies {
                 // Use small logserver in dev system
                 return new NodeResources(0.1, 1, 10, 0.3);
             }
-            return zone.getCloud().allowHostSharing() ?
-                   new NodeResources(0.5, 2, 50, 0.3) :
-                   new NodeResources(0.5, 4, 50, 0.3);
+            return zone.getCloud().dynamicProvisioning() && ! sharedHosts.get() ?
+                   new NodeResources(0.5, 4, 50, 0.3) :
+                   new NodeResources(0.5, 2, 50, 0.3);
         }
 
-        return zone.getCloud().allowHostSharing() ?
-                new NodeResources(1.5, 8, 50, 0.3) :
-                new NodeResources(2.0, 8, 50, 0.3);
+        return zone.getCloud().dynamicProvisioning() ?
+                new NodeResources(2.0, 8, 50, 0.3) :
+                new NodeResources(1.5, 8, 50, 0.3);
     }
 
     /**
      * Whether or not the nodes requested can share physical host with other applications.
      * A security feature which only makes sense for prod.
      */
-    public boolean decideExclusivity(boolean requestedExclusivity) {
-        return requestedExclusivity && zone.environment() == Environment.prod;
+    public boolean decideExclusivity(Capacity capacity, boolean requestedExclusivity) {
+        return requestedExclusivity && (capacity.isRequired() || zone.environment() == Environment.prod);
     }
 
     /**

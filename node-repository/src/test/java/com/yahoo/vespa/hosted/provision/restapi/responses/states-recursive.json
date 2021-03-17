@@ -45,7 +45,6 @@
     "dirty": {
       "url": "http://localhost:8080/nodes/v2/state/dirty",
       "nodes": [
-        @include(node55.json)
       ]
     },
     "failed": {
@@ -57,10 +56,16 @@
     "parked": {
       "url": "http://localhost:8080/nodes/v2/state/parked",
       "nodes": [
+        @include(node55.json)
       ]
     },
     "deprovisioned": {
       "url": "http://localhost:8080/nodes/v2/state/deprovisioned",
+      "nodes": [
+      ]
+    },
+    "breakfixed": {
+      "url": "http://localhost:8080/nodes/v2/state/breakfixed",
       "nodes": [
       ]
     }

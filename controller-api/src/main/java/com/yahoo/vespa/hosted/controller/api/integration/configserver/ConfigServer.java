@@ -3,6 +3,7 @@ package com.yahoo.vespa.hosted.controller.api.integration.configserver;
 
 import com.yahoo.component.Version;
 import com.yahoo.config.provision.ApplicationId;
+import com.yahoo.config.provision.TenantName;
 import com.yahoo.config.provision.zone.ZoneId;
 import com.yahoo.vespa.flags.json.FlagData;
 import com.yahoo.vespa.hosted.controller.api.application.v4.model.ClusterMetrics;
@@ -14,6 +15,7 @@ import com.yahoo.vespa.hosted.controller.api.integration.LogEntry;
 import com.yahoo.vespa.hosted.controller.api.integration.deployment.TestReport;
 import com.yahoo.vespa.hosted.controller.api.integration.deployment.TesterCloud;
 import com.yahoo.vespa.hosted.controller.api.integration.noderepository.RestartFilter;
+import com.yahoo.vespa.hosted.controller.api.integration.secrets.TenantSecretStore;
 import com.yahoo.vespa.serviceview.bindings.ApplicationView;
 
 import java.io.InputStream;
@@ -25,7 +27,7 @@ import java.util.Optional;
 /**
  * The API controllers use when communicating with config servers.
  *
- * @author Oyvind Grønnesby
+ * @author Øyvind Grønnesby
  */
 public interface ConfigServer {
 
@@ -34,6 +36,14 @@ public interface ConfigServer {
     }
 
     PreparedApplication deploy(DeploymentData deployment);
+
+    void reindex(DeploymentId deployment, List<String> clusterNames, List<String> documentTypes, boolean indexedOnly);
+
+    Optional<ApplicationReindexing> getReindexing(DeploymentId deployment);
+
+    void disableReindexing(DeploymentId deployment);
+
+    void enableReindexing(DeploymentId deployment);
 
     void restart(DeploymentId deployment, RestartFilter restartFilter);
 
@@ -45,7 +55,7 @@ public interface ConfigServer {
 
     Map<?,?> getServiceApiResponse(DeploymentId deployment, String serviceName, String restPath);
 
-    String getClusterControllerStatus(DeploymentId deployment, String restPath);
+    String getClusterControllerStatus(DeploymentId deployment, String node, String subPath);
 
     /**
      * Gets the Vespa logs of the given deployment.
@@ -136,4 +146,11 @@ public interface ConfigServer {
 
     /** Get maximum resources consumed */
     QuotaUsage getQuotaUsage(DeploymentId deploymentId);
+
+    /** Sets suspension status — whether application node operations are orchestrated — for the given deployment. */
+    void setSuspension(DeploymentId deploymentId, boolean suspend);
+
+    /** Validates secret store configuration. */
+    String validateSecretStore(DeploymentId deploymentId, TenantSecretStore tenantSecretStore, String region, String parameterName);
+
 }

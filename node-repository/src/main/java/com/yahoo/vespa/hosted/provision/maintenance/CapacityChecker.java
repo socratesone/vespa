@@ -26,7 +26,7 @@ public class CapacityChecker {
 
     // We only care about nodes in one of these states.
     private static final Set<Node.State> relevantNodeStates = EnumSet.of(
-            Node.State.active, Node.State.inactive, Node.State.dirty, Node.State.provisioned, Node.State.ready, Node.State.reserved);
+            Node.State.active, Node.State.inactive, Node.State.provisioned, Node.State.ready, Node.State.reserved);
 
     private final List<Node> hosts;
     private final Map<String, Node> nodeMap;
@@ -135,12 +135,12 @@ public class CapacityChecker {
         for (var host : hosts) {
             NodeResources hostResources = host.flavor().resources();
             int occupiedIps = 0;
-            Set<String> ipPool = host.ipConfig().pool().asSet();
+            Set<String> ipPool = host.ipConfig().pool().getIpSet();
             for (var child : nodeChildren.get(host)) {
                 hostResources = hostResources.subtract(child.resources().justNumbers());
                 occupiedIps += child.ipConfig().primary().stream().filter(ipPool::contains).count();
             }
-            availableResources.put(host, new AllocationResources(hostResources, host.ipConfig().pool().asSet().size() - occupiedIps));
+            availableResources.put(host, new AllocationResources(hostResources, host.ipConfig().pool().getIpSet().size() - occupiedIps));
         }
 
         return availableResources;
@@ -161,7 +161,7 @@ public class CapacityChecker {
 
             int timesHostCanBeRemoved = 0;
             Optional<Node> unallocatedNode;
-            while (timesHostCanBeRemoved < 1000) { // Arbitrary upper bound
+            while (timesHostCanBeRemoved < 100) { // Arbitrary upper bound
                 unallocatedNode = tryAllocateNodes(nodeChildren.get(host), hosts, resourceMap, containedAllocations);
                 if (unallocatedNode.isEmpty()) {
                     timesHostCanBeRemoved++;

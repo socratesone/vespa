@@ -14,6 +14,7 @@ import com.yahoo.config.provision.ApplicationName;
 import com.yahoo.config.provision.CertificateNotReadyException;
 import com.yahoo.config.provision.InstanceName;
 import com.yahoo.config.provision.TenantName;
+import com.yahoo.config.provision.Zone;
 import com.yahoo.config.provision.exception.LoadBalancerServiceException;
 import com.yahoo.io.IOUtils;
 import com.yahoo.path.Path;
@@ -22,17 +23,18 @@ import com.yahoo.security.KeyUtils;
 import com.yahoo.security.SignatureAlgorithm;
 import com.yahoo.security.X509CertificateBuilder;
 import com.yahoo.security.X509CertificateUtils;
+import com.yahoo.vespa.config.server.MockProvisioner;
 import com.yahoo.vespa.config.server.MockSecretStore;
-import com.yahoo.vespa.config.server.TestComponentRegistry;
+import com.yahoo.vespa.config.server.TestConfigDefinitionRepo;
 import com.yahoo.vespa.config.server.TimeoutBudgetTest;
 import com.yahoo.vespa.config.server.application.PermanentApplicationPackage;
 import com.yahoo.vespa.config.server.deploy.DeployHandlerLogger;
+import com.yahoo.vespa.config.server.filedistribution.MockFileDistributionFactory;
 import com.yahoo.vespa.config.server.host.HostRegistry;
 import com.yahoo.vespa.config.server.http.InvalidApplicationException;
 import com.yahoo.vespa.config.server.model.TestModelFactory;
 import com.yahoo.vespa.config.server.modelfactory.ModelFactoryRegistry;
 import com.yahoo.vespa.config.server.provision.HostProvisionerProvider;
-import com.yahoo.vespa.config.server.MockProvisioner;
 import com.yahoo.vespa.config.server.tenant.ContainerEndpointsCache;
 import com.yahoo.vespa.config.server.tenant.EndpointCertificateMetadataStore;
 import com.yahoo.vespa.config.server.tenant.EndpointCertificateRetriever;
@@ -79,6 +81,7 @@ public class SessionPreparerTest {
     private static final File invalidTestApp = new File("src/test/apps/illegalApp");
     private static final Version version123 = new Version(1, 2, 3);
     private static final Version version321 = new Version(3, 2, 1);
+    private static final Zone zone = Zone.defaultZone();
     private final KeyPair keyPair = KeyUtils.generateKeypair(KeyAlgorithm.EC, 256);
     private final X509Certificate certificate = X509CertificateBuilder.fromKeypair(keyPair, new X500Principal("CN=subject"),
             Instant.now(), Instant.now().plus(1, ChronoUnit.DAYS), SignatureAlgorithm.SHA512_WITH_ECDSA, BigInteger.valueOf(12345)).build();
@@ -86,8 +89,8 @@ public class SessionPreparerTest {
     private MockCurator curator;
     private ConfigCurator configCurator;
     private SessionPreparer preparer;
-    private TestComponentRegistry componentRegistry;
     private final MockSecretStore secretStore = new MockSecretStore();
+    private ConfigserverConfig configserverConfig;
 
     @Rule
     public TemporaryFolder folder = new TemporaryFolder();
@@ -99,13 +102,10 @@ public class SessionPreparerTest {
     public void setUp() throws IOException {
         curator = new MockCurator();
         configCurator = ConfigCurator.create(curator);
-        componentRegistry = new TestComponentRegistry.Builder()
-                .curator(curator)
-                .configServerConfig(new ConfigserverConfig.Builder()
-                                            .fileReferencesDir(folder.newFolder().getAbsolutePath())
-                                            .configServerDBDir(folder.newFolder().getAbsolutePath())
-                                            .configDefinitionsDir(folder.newFolder().getAbsolutePath())
-                                            .build())
+        configserverConfig = new ConfigserverConfig.Builder()
+                .fileReferencesDir(folder.newFolder().getAbsolutePath())
+                .configServerDBDir(folder.newFolder().getAbsolutePath())
+                .configDefinitionsDir(folder.newFolder().getAbsolutePath())
                 .build();
         preparer = createPreparer();
     }
@@ -124,13 +124,13 @@ public class SessionPreparerTest {
                                            HostProvisionerProvider hostProvisionerProvider) {
         return new SessionPreparer(
                 modelFactoryRegistry,
-                componentRegistry.getFileDistributionFactory(),
+                new MockFileDistributionFactory(configserverConfig),
                 hostProvisionerProvider,
-                new PermanentApplicationPackage(componentRegistry.getConfigserverConfig()),
-                componentRegistry.getConfigserverConfig(),
-                componentRegistry.getStaticConfigDefinitionRepo(),
+                new PermanentApplicationPackage(configserverConfig),
+                configserverConfig,
+                new TestConfigDefinitionRepo(),
                 curator,
-                componentRegistry.getZone(),
+                zone,
                 flagSource,
                 secretStore);
     }
@@ -187,7 +187,7 @@ public class SessionPreparerTest {
     @Test(expected = InvalidApplicationException.class)
     public void require_exception_for_overlapping_host() throws IOException {
         FilesApplicationPackage app = getApplicationPackage(testApp);
-        HostRegistry<ApplicationId> hostValidator = new HostRegistry<>();
+        HostRegistry hostValidator = new HostRegistry();
         hostValidator.update(applicationId("foo"), Collections.singletonList("mytesthost"));
         preparer.prepare(hostValidator, new BaseDeployLogger(), new PrepareParams.Builder().applicationId(applicationId("default")).build(),
                          Optional.empty(), Instant.now(), app.getAppDir(), app, createSessionZooKeeperClient());
@@ -200,7 +200,7 @@ public class SessionPreparerTest {
             if (level.equals(Level.WARNING) && message.contains("The host mytesthost is already in use")) logged.append("ok");
         };
         FilesApplicationPackage app = getApplicationPackage(testApp);
-        HostRegistry<ApplicationId> hostValidator = new HostRegistry<>();
+        HostRegistry hostValidator = new HostRegistry();
         ApplicationId applicationId = applicationId();
         hostValidator.update(applicationId, Collections.singletonList("mytesthost"));
         preparer.prepare(hostValidator, logger, new PrepareParams.Builder().applicationId(applicationId).build(),
@@ -289,27 +289,6 @@ public class SessionPreparerTest {
     }
 
     @Test
-    public void require_that_tlssecretkey_is_written() throws IOException {
-        var tlskey = "vespa.tlskeys.tenant1--app1";
-        var applicationId = applicationId("test");
-        var params = new PrepareParams.Builder().applicationId(applicationId).tlsSecretsKeyName(tlskey).build();
-
-        secretStore.put("vespa.tlskeys.tenant1--app1-cert", X509CertificateUtils.toPem(certificate));
-        secretStore.put("vespa.tlskeys.tenant1--app1-key", KeyUtils.toPem(keyPair.getPrivate()));
-
-        prepare(new File("src/test/resources/deploy/hosted-app"), params);
-
-        // Read from zk and verify cert and key are available
-        Path tenantPath = TenantRepository.getTenantPath(applicationId.tenant());
-        Optional<EndpointCertificateSecrets> endpointCertificateSecrets = new EndpointCertificateMetadataStore(curator, tenantPath)
-                .readEndpointCertificateMetadata(applicationId)
-                .flatMap(p -> new EndpointCertificateRetriever(secretStore).readEndpointCertificateSecrets(p));
-        assertTrue(endpointCertificateSecrets.isPresent());
-        assertTrue(endpointCertificateSecrets.get().key().startsWith("-----BEGIN EC PRIVATE KEY"));
-        assertTrue(endpointCertificateSecrets.get().certificate().startsWith("-----BEGIN CERTIFICATE"));
-    }
-
-    @Test
     public void require_that_endpoint_certificate_metadata_is_written() throws IOException {
         var applicationId = applicationId("test");
         var params = new PrepareParams.Builder().applicationId(applicationId).endpointCertificateMetadata("{\"keyName\": \"vespa.tlskeys.tenant1--app1-key\", \"certName\":\"vespa.tlskeys.tenant1--app1-cert\", \"version\": 7}").build();
@@ -329,25 +308,24 @@ public class SessionPreparerTest {
     }
 
     @Test(expected = CertificateNotReadyException.class)
-    public void require_that_tlssecretkey_is_missing_when_not_in_secretstore() throws IOException {
-        var tlskey = "vespa.tlskeys.tenant1--app1";
+    public void endpoint_certificate_is_missing_when_not_in_secretstore() throws IOException {
         var applicationId = applicationId("test");
-        var params = new PrepareParams.Builder().applicationId(applicationId).tlsSecretsKeyName(tlskey).build();
+        var params = new PrepareParams.Builder().applicationId(applicationId).endpointCertificateMetadata("{\"keyName\": \"vespa.tlskeys.tenant1--app1-key\", \"certName\":\"vespa.tlskeys.tenant1--app1-cert\", \"version\": 7}").build();
         prepare(new File("src/test/resources/deploy/hosted-app"), params);
     }
 
     @Test(expected = CertificateNotReadyException.class)
-    public void require_that_tlssecretkey_is_missing_when_certificate_not_in_secretstore() throws IOException {
+    public void endpoint_certificate_is_missing_when_certificate_not_in_secretstore() throws IOException {
         var tlskey = "vespa.tlskeys.tenant1--app1";
         var applicationId = applicationId("test");
-        var params = new PrepareParams.Builder().applicationId(applicationId).tlsSecretsKeyName(tlskey).build();
-        secretStore.put(tlskey+"-key", "KEY");
+        var params = new PrepareParams.Builder().applicationId(applicationId).endpointCertificateMetadata("{\"keyName\": \"vespa.tlskeys.tenant1--app1-key\", \"certName\":\"vespa.tlskeys.tenant1--app1-cert\", \"version\": 7}").build();
+        secretStore.put(tlskey+"-key", 7, "KEY");
         prepare(new File("src/test/resources/deploy/hosted-app"), params);
     }
 
     @Test(expected = LoadBalancerServiceException.class)
     public void require_that_conflict_is_returned_when_creating_load_balancer_fails() throws IOException {
-        preparer = createPreparer(HostProvisionerProvider.withProvisioner(new MockProvisioner().transientFailureOnPrepare()));
+        preparer = createPreparer(HostProvisionerProvider.withProvisioner(new MockProvisioner().transientFailureOnPrepare(), true));
         var params = new PrepareParams.Builder().applicationId(applicationId("test")).build();
         prepare(new File("src/test/resources/deploy/hosted-app"), params);
     }
@@ -367,7 +345,7 @@ public class SessionPreparerTest {
 
     private PrepareResult prepare(File app, PrepareParams params, long sessionId) throws IOException {
         FilesApplicationPackage applicationPackage = getApplicationPackage(app);
-        return preparer.prepare(new HostRegistry<>(), getLogger(), params,
+        return preparer.prepare(new HostRegistry(), getLogger(), params,
                                 Optional.empty(), Instant.now(), applicationPackage.getAppDir(),
                                 applicationPackage, createSessionZooKeeperClient(sessionId));
     }

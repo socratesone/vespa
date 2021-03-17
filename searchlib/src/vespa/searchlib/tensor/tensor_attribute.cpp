@@ -7,13 +7,15 @@
 #include <vespa/vespalib/data/slime/cursor.h>
 #include <vespa/vespalib/data/slime/inserter.h>
 #include <vespa/vespalib/util/rcuvector.hpp>
-#include <vespa/eval/eval/engine_or_factory.h>
+#include <vespa/eval/eval/fast_value.h>
+#include <vespa/eval/eval/value_codec.h>
 #include <vespa/eval/eval/tensor_spec.h>
 #include <vespa/eval/eval/value.h>
 
 using document::TensorDataType;
+using document::TensorUpdate;
 using document::WrongTensorTypeException;
-using vespalib::eval::EngineOrFactory;
+using vespalib::eval::FastValueBuilderFactory;
 using vespalib::eval::TensorSpec;
 using vespalib::eval::Value;
 using vespalib::eval::ValueType;
@@ -31,9 +33,9 @@ constexpr size_t DEAD_SLACK = 0x10000u;
 Value::UP
 createEmptyTensor(const ValueType &type)
 {
-    auto engine = EngineOrFactory::get();
+    const auto &factory = FastValueBuilderFactory::get();
     TensorSpec empty_spec(type.to_spec());
-    return engine.from_spec(empty_spec);
+    return vespalib::eval::value_from_spec(empty_spec, factory);
 }
 
 vespalib::string makeWrongTensorTypeMsg(const ValueType &fieldTensorType, const ValueType &tensorType)
@@ -183,26 +185,22 @@ TensorAttribute::populate_state(vespalib::slime::Cursor& object) const
 vespalib::eval::Value::UP
 TensorAttribute::getEmptyTensor() const
 {
-    return EngineOrFactory::get().copy(*_emptyTensor);
+    return FastValueBuilderFactory::get().copy(*_emptyTensor);
 }
 
-void
-TensorAttribute::extract_dense_view(uint32_t docid, vespalib::tensor::MutableDenseTensorView& tensor) const
+vespalib::eval::TypedCells
+TensorAttribute::extract_cells_ref(uint32_t /*docid*/) const
 {
-    (void) docid;
-    (void) tensor;
     notImplemented();
 }
 
 const vespalib::eval::Value&
-TensorAttribute::get_tensor_ref(uint32_t docid) const
+TensorAttribute::get_tensor_ref(uint32_t /*docid*/) const
 {
-    (void) docid;
     notImplemented();
-    abort(); // Needed to avoid compile error
 }
 
-vespalib::eval::ValueType
+const vespalib::eval::ValueType &
 TensorAttribute::getTensorType() const
 {
     return getConfig().tensorType();
@@ -251,6 +249,26 @@ TensorAttribute::getRefCopy() const
     uint32_t size = getCommittedDocIdLimit();
     assert(size <= _refVector.size());
     return RefCopyVector(&_refVector[0], &_refVector[0] + size);
+}
+
+void
+TensorAttribute::update_tensor(DocId docId,
+                               const document::TensorUpdate &update,
+                               bool create_empty_if_non_existing)
+{
+    const vespalib::eval::Value * old_v = nullptr;
+    auto old_tensor = getTensor(docId);
+    if (old_tensor) {
+        old_v = old_tensor.get();
+    } else if (create_empty_if_non_existing) {
+        old_v = _emptyTensor.get();
+    } else {
+        return;
+    }
+    auto new_value = update.apply_to(*old_v, FastValueBuilderFactory::get());
+    if (new_value) {
+        setTensor(docId, *new_value);
+    }
 }
 
 std::unique_ptr<PrepareResult>

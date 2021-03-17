@@ -27,6 +27,7 @@ ContainerServices =
     Http? &
     AccessLog* &
     SecretStore? &
+    ZooKeeper? &
     GenericConfig*
 
 # TODO(ogronnesby): Change this configuration syntax
@@ -53,6 +54,7 @@ Http = element http {
 }
 
 Filtering = element filtering {
+    attribute strict-mode { xsd:boolean }? &
     HttpFilter* &
     AccessControl? &
     element request-chain {
@@ -66,6 +68,8 @@ Filtering = element filtering {
 HttpServer =  element server {
     attribute port { xsd:nonNegativeInteger }? &
     attribute required { xsd:boolean }? &
+    attribute default-request-chain { xsd:string }? &
+    attribute default-response-chain { xsd:string }? &
     ComponentId &
     (Ssl | SslProvider)? &
     GenericConfig*
@@ -76,16 +80,25 @@ AccessLog = element accesslog {
     attribute fileNamePattern { string }? &
     attribute compressOnRotation { xsd:boolean }? &
     attribute symlinkName { string }? &
+    attribute compressionType { string "gzip" | string "zstd" }? &
 
     attribute rotationInterval { string }?
 }
 
 SecretStore = element secret-store {
-    attribute type { string "oath-ckms" } &
+    attribute type { string "oath-ckms" | string "cloud" } &
     element group {
       attribute name { string } &
       attribute environment { string "alpha" | string "corp" | string "prod" | string "aws" | string "aws_stage" }
-    } +
+    } * &
+    element aws-parameter-store {
+      attribute name { string } &
+      attribute region { string }
+    } *
+}
+
+ZooKeeper = element zookeeper {
+    empty
 }
 
 ModelEvaluation = element model-evaluation {
@@ -219,9 +232,7 @@ DocumentApi = element document-api {
    HttpClientApi?
 }
 
-DocumentRestApi = element rest-api {
-    Threadpool?
-}
+DocumentRestApi = element rest-api { empty }
 
 HttpClientApi = element http-client-api {
     Threadpool?

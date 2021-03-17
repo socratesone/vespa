@@ -4,14 +4,17 @@
 
 #include <vespa/vespalib/util/singleexecutor.h>
 #include <vespa/vespalib/util/lambdatask.h>
+#include <vespa/vespalib/util/alloc.h>
 #include <atomic>
 
 using namespace vespalib;
 
+VESPA_THREAD_STACK_TAG(sequenced_executor)
+
 TEST("test that all tasks are executed") {
 
     std::atomic<uint64_t> counter(0);
-    SingleExecutor executor(10);
+    SingleExecutor executor(sequenced_executor, 10);
 
     for (uint64_t i(0); i < 10; i++) {
         executor.execute(makeLambdaTask([&counter] {counter++;}));
@@ -32,7 +35,7 @@ void verifyResizeTaskLimit(bool up) {
     std::condition_variable cond;
     std::atomic<uint64_t> started(0);
     std::atomic<uint64_t> allowed(0);
-    SingleExecutor executor(10);
+    SingleExecutor executor(sequenced_executor, 10);
 
     uint32_t targetTaskLimit = up ? 20 : 5;
     uint32_t roundedTaskLimit = roundUp2inN(targetTaskLimit);

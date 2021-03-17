@@ -1,6 +1,7 @@
 // Copyright 2019 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
 #include "tensor_modify_update.h"
+#include "tensor_partial_update.h"
 #include <vespa/document/base/exceptions.h>
 #include <vespa/document/base/field.h>
 #include <vespa/document/datatype/tensor_data_type.h>
@@ -10,10 +11,7 @@
 #include <vespa/document/util/serializableexceptions.h>
 #include <vespa/eval/eval/operation.h>
 #include <vespa/eval/eval/value.h>
-#include <vespa/eval/eval/engine_or_factory.h>
-#include <vespa/eval/tensor/partial_update.h>
-#include <vespa/eval/tensor/tensor.h>
-#include <vespa/eval/tensor/cell_values.h>
+#include <vespa/eval/eval/fast_value.h>
 #include <vespa/vespalib/objects/nbostream.h>
 #include <vespa/vespalib/stllike/asciistream.h>
 #include <vespa/vespalib/util/stringfmt.h>
@@ -24,8 +22,8 @@ using vespalib::IllegalArgumentException;
 using vespalib::IllegalStateException;
 using vespalib::make_string;
 using vespalib::eval::ValueType;
-using vespalib::eval::EngineOrFactory;
-using vespalib::tensor::TensorPartialUpdate;
+using vespalib::eval::CellType;
+using vespalib::eval::FastValueBuilderFactory;
 
 using join_fun_t = double (*)(double, double);
 
@@ -80,7 +78,7 @@ convertToCompatibleType(const TensorDataType &tensorType)
     for (const auto &dim : tensorType.getTensorType().dimensions()) {
         list.emplace_back(dim.name);
     }
-    return std::make_unique<const TensorDataType>(ValueType::tensor_type(std::move(list), tensorType.getTensorType().cell_type()));
+    return std::make_unique<const TensorDataType>(ValueType::make_type(tensorType.getTensorType().cell_type(), std::move(list)));
 }
 
 }
@@ -163,10 +161,16 @@ TensorModifyUpdate::checkCompatibility(const Field& field) const
 std::unique_ptr<vespalib::eval::Value>
 TensorModifyUpdate::applyTo(const vespalib::eval::Value &tensor) const
 {
-    auto cellsTensor = _tensor->getAsTensorPtr();
-    if (cellsTensor) {
-        auto engine = EngineOrFactory::get();
-        return TensorPartialUpdate::modify(tensor, getJoinFunction(_operation), *cellsTensor, engine);
+    return apply_to(tensor, FastValueBuilderFactory::get());
+}
+
+std::unique_ptr<vespalib::eval::Value>
+TensorModifyUpdate::apply_to(const Value &old_tensor,
+                             const ValueBuilderFactory &factory) const
+{
+    if (auto cellsTensor = _tensor->getAsTensorPtr()) {
+        auto op = getJoinFunction(_operation);
+        return TensorPartialUpdate::modify(old_tensor, op, *cellsTensor, factory);
     }
     return {};
 }
@@ -215,8 +219,7 @@ verifyCellsTensorIsSparse(const vespalib::eval::Value *cellsTensor)
     if (cellsTensor == nullptr) {
         return;
     }
-    auto engine = EngineOrFactory::get();
-    if (TensorPartialUpdate::check_suitably_sparse(*cellsTensor, engine)) {
+    if (cellsTensor->type().is_sparse()) {
         return;
     }
     vespalib::string err = make_string("Expected cells tensor to be sparse, but has type '%s'",

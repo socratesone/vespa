@@ -3,7 +3,7 @@ package com.yahoo.vespa.hosted.provision.provisioning;
 
 import com.yahoo.config.provision.Flavor;
 import com.yahoo.config.provision.NodeResources;
-import com.yahoo.vespa.hosted.provision.Node;
+import com.yahoo.config.provision.NodeType;
 import com.yahoo.vespa.hosted.provision.NodeRepository;
 import com.yahoo.vespa.hosted.provision.Nodelike;
 import com.yahoo.vespa.hosted.provision.lb.LoadBalancerService;
@@ -35,16 +35,19 @@ public class EmptyProvisionServiceProvider implements ProvisionServiceProvider {
     private static class IdentityHostResourcesCalculator implements HostResourcesCalculator {
 
         @Override
-        public NodeResources realResourcesOf(Nodelike node, NodeRepository repository) { return node.resources(); }
+        public NodeResources realResourcesOf(Nodelike node, NodeRepository repository, boolean exclusive) { return node.resources(); }
 
         @Override
         public NodeResources advertisedResourcesOf(Flavor flavor) { return flavor.resources(); }
 
         @Override
-        public NodeResources requestToReal(NodeResources resources) { return resources; }
+        public NodeResources requestToReal(NodeResources resources, boolean exclusive) { return resources; }
 
         @Override
-        public NodeResources realToRequest(NodeResources resources) { return resources; }
+        public NodeResources realToRequest(NodeResources resources, boolean exclusive) { return resources; }
+
+        @Override
+        public long thinPoolSizeInBase2Gb(NodeType nodeType, boolean sharedHost) { return 0; }
 
     }
 

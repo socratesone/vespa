@@ -21,7 +21,6 @@ import com.yahoo.jdisc.application.OsgiFramework;
 import com.yahoo.jdisc.handler.RequestHandler;
 import com.yahoo.jdisc.service.ClientProvider;
 import com.yahoo.jdisc.service.ServerProvider;
-import java.util.logging.Level;
 import com.yahoo.osgi.OsgiImpl;
 import com.yahoo.osgi.OsgiWrapper;
 import com.yahoo.statistics.Statistics;
@@ -30,14 +29,13 @@ import org.osgi.framework.wiring.BundleWiring;
 
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Set;
 import java.util.concurrent.Executor;
 import java.util.concurrent.Executors;
+import java.util.logging.Level;
 import java.util.logging.Logger;
-import java.util.Set;
 
 import static com.yahoo.collections.CollectionUtil.first;
-import static com.yahoo.container.util.Util.quote;
-
 
 /**
  * For internal use only.
@@ -49,6 +47,9 @@ import static com.yahoo.container.util.Util.quote;
 public class HandlersConfigurerDi {
 
     private static final Logger log = Logger.getLogger(HandlersConfigurerDi.class.getName());
+
+    private static final Executor fallbackExecutor = Executors.newCachedThreadPool(
+            ThreadFactoryFactory.getThreadFactory("HandlersConfigurerDI"));
 
     private final com.yahoo.container.Container vespaContainer;
     private final Container container;
@@ -76,7 +77,7 @@ public class HandlersConfigurerDi {
 
         this.vespaContainer = vespaContainer;
         container = new Container(subscriberFactory, configId, deconstructor, osgiWrapper);
-        getNewComponentGraph(discInjector, false);
+        getNewComponentGraph(discInjector, true);
     }
 
     private static class ContainerAndDiOsgi extends OsgiImpl implements OsgiWrapper {
@@ -108,7 +109,7 @@ public class HandlersConfigurerDi {
             } else {
                 Bundle bundle = getBundle(bundleSpec);
                 if (bundle == null)
-                    throw new RuntimeException("No bundle matching " + quote(bundleSpec));
+                    throw new RuntimeException("No bundle matching '" + bundleSpec + "'");
 
                 return new BundleClasses(bundle, OsgiUtil.getClassEntriesInBundleClassPath(bundle, packagesToScan));
             }
@@ -130,21 +131,22 @@ public class HandlersConfigurerDi {
     /**
      * Wait for new config to arrive and produce the new graph
      */
-    public void getNewComponentGraph(Injector discInjector, boolean restartOnRedeploy) {
+    public void getNewComponentGraph(Injector discInjector, boolean isInitializing) {
         currentGraph = container.getNewComponentGraph(currentGraph,
                                                       createFallbackInjector(vespaContainer, discInjector),
-                                                      restartOnRedeploy);
+                                                      isInitializing);
     }
 
     private Injector createFallbackInjector(com.yahoo.container.Container vespaContainer, Injector discInjector) {
         return discInjector.createChildInjector(new AbstractModule() {
             @Override
             protected void configure() {
+                // Provide a singleton instance for all component fallbacks,
+                // otherwise fallback injection may lead to a cascade of components requiring reconstruction.
                 bind(com.yahoo.container.Container.class).toInstance(vespaContainer);
                 bind(com.yahoo.statistics.Statistics.class).toInstance(Statistics.nullImplementation);
-                bind(AccessLog.class).toInstance(new AccessLog(new ComponentRegistry<>()));
-                bind(Executor.class).toInstance(Executors.newCachedThreadPool(ThreadFactoryFactory.getThreadFactory("HandlersConfigurerDI")));
-
+                bind(AccessLog.class).toInstance(AccessLog.NONE_INSTANCE);
+                bind(Executor.class).toInstance(fallbackExecutor);
                 if (vespaContainer.getFileAcquirer() != null)
                     bind(com.yahoo.filedistribution.fileacquirer.FileAcquirer.class).toInstance(vespaContainer.getFileAcquirer());
             }

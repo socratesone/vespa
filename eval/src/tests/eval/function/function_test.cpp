@@ -418,6 +418,7 @@ struct MyTraverser : public NodeTraverser {
     std::vector<std::pair<bool, const nodes::Node &> > history;
     explicit MyTraverser(size_t open_true_cnt_in)
         : open_true_cnt(open_true_cnt_in), history() {}
+    ~MyTraverser() override;
     virtual bool open(const nodes::Node &node) override {
         history.emplace_back(true, node);
         if (open_true_cnt == 0) {
@@ -447,6 +448,8 @@ struct MyTraverser : public NodeTraverser {
         ++offset;
     }
 };
+
+MyTraverser::~MyTraverser() = default;
 
 size_t verify_traversal(size_t open_true_cnt, const vespalib::string &expression) {
     auto function = Function::parse(expression);
@@ -1011,6 +1014,17 @@ TEST("require that nested tensor lambda using tensor peek can be parsed") {
 TEST("require that tensor concat can be parsed") {
     EXPECT_EQUAL("concat(a,b,d)", Function::parse({"a", "b"}, "concat(a,b,d)")->dump());
     EXPECT_EQUAL("concat(a,b,d)", Function::parse({"a", "b"}, " concat ( a , b , d ) ")->dump());
+}
+
+//-----------------------------------------------------------------------------
+
+TEST("require that tensor cell cast can be parsed") {
+    EXPECT_EQUAL("cell_cast(a,float)", Function::parse({"a"}, "cell_cast(a,float)")->dump());
+    EXPECT_EQUAL("cell_cast(a,double)", Function::parse({"a"}, " cell_cast ( a , double ) ")->dump());
+}
+
+TEST("require that tensor cell cast must have valid cell type") {
+    TEST_DO(verify_error("cell_cast(x,int7)", "[cell_cast(x,int7]...[unknown cell type: 'int7']...[)]"));
 }
 
 //-----------------------------------------------------------------------------

@@ -6,9 +6,9 @@
 #include "distributor_bucket_space_repo.h"
 #include "distributor_bucket_space.h"
 #include <vespa/storageframework/defaultimplementation/clock/realclock.h>
-#include <vespa/storage/common/bucketoperationlogger.h>
 #include <vespa/storage/common/global_bucket_space_distribution_converter.h>
 #include <vespa/document/bucket/fixed_bucket_spaces.h>
+#include <vespa/vdslib/distribution/distribution.h>
 #include <vespa/vespalib/util/xmlstream.hpp>
 #include <climits>
 
@@ -219,7 +219,7 @@ PendingClusterState::requestNode(BucketSpaceAndNode bucketSpaceAndNode)
         "and distribution hash '%s'",
         bucketSpaceAndNode.bucketSpace.getId(),
         bucketSpaceAndNode.node,
-        getNewClusterStateBundleString().c_str(),
+        _newClusterStateBundle.getDerivedClusterState(bucketSpaceAndNode.bucketSpace)->toString().c_str(),
         distributionHash.c_str());
 
     std::shared_ptr<api::RequestBucketInfoCommand> cmd(
@@ -357,6 +357,15 @@ PendingClusterState::getPendingBucketSpaceDbTransition(document::BucketSpace buc
     auto transitionIter = _pendingTransitions.find(bucketSpace);
     assert(transitionIter != _pendingTransitions.end());
     return *transitionIter->second;
+}
+
+std::string
+PendingClusterState::getNewClusterStateBundleString() const {
+    return _newClusterStateBundle.getBaselineClusterState()->toString();
+}
+std::string
+PendingClusterState::getPrevClusterStateBundleString() const {
+    return _prevClusterStateBundle.getBaselineClusterState()->toString();
 }
 
 }

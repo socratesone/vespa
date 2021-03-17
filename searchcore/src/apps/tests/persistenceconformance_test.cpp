@@ -9,9 +9,11 @@
 #include <vespa/document/base/testdocman.h>
 #include <vespa/fastos/file.h>
 #include <vespa/persistence/conformancetest/conformancetest.h>
+#include <vespa/persistence/dummyimpl/dummy_bucket_executor.h>
 #include <vespa/document/repo/documenttyperepo.h>
 #include <vespa/document/test/make_bucket_space.h>
 #include <vespa/searchcommon/common/schemaconfigurer.h>
+#include <vespa/searchcore/proton/common/alloc_config.h>
 #include <vespa/searchcore/proton/common/hw_info.h>
 #include <vespa/searchcore/proton/matching/querylimiter.h>
 #include <vespa/searchcore/proton/metrics/metricswireservice.h>
@@ -24,6 +26,8 @@
 #include <vespa/searchcore/proton/server/fileconfigmanager.h>
 #include <vespa/searchcore/proton/server/memoryconfigstore.h>
 #include <vespa/searchcore/proton/server/persistencehandlerproxy.h>
+#include <vespa/searchcore/proton/server/threading_service_config.h>
+#include <vespa/searchcore/proton/test/disk_mem_usage_notifier.h>
 #include <vespa/searchlib/index/dummyfileheadercontext.h>
 #include <vespa/searchlib/transactionlog/translogserver.h>
 #include <vespa/searchsummary/config/config-juniperrc.h>
@@ -32,6 +36,7 @@
 #include <vespa/config-indexschema.h>
 #include <vespa/config-summary.h>
 #include <vespa/vespalib/io/fileutil.h>
+#include <vespa/vespalib/util/size_literals.h>
 
 #include <vespa/log/log.h>
 LOG_SETUP("persistenceconformance_test");
@@ -106,12 +111,13 @@ public:
     DocumenttypesConfigSP getTypeCfg() const { return _typeCfg; }
     DocTypeVector getDocTypes() const {
         DocTypeVector types;
-        _repo->forEachDocumentType(*makeClosure(storeDocType, &types));
+        _repo->forEachDocumentType(*DocumentTypeRepo::makeLambda([&types](const DocumentType &type) {
+            types.push_back(DocTypeName(type.getName()));
+        }));
         return types;
     }
     DocumentDBConfig::SP create(const DocTypeName &docTypeName) const {
-        const DocumentType *docType =
-            _repo->getDocumentType(docTypeName.getName());
+        const DocumentType *docType = _repo->getDocumentType(docTypeName.getName());
         if (docType == nullptr) {
             return DocumentDBConfig::SP();
         }
@@ -140,6 +146,8 @@ public:
                         schema,
                         std::make_shared<DocumentDBMaintenanceConfig>(),
                         search::LogDocumentStore::Config(),
+                        std::make_shared<const ThreadingServiceConfig>(ThreadingServiceConfig::make(1)),
+                        std::make_shared<const AllocConfig>(),
                         "client",
                         docTypeName.getName());
     }
@@ -165,6 +173,7 @@ private:
     mutable DummyWireService  _metricsWireService;
     mutable MemoryConfigStores _config_stores;
     vespalib::ThreadStackExecutor _summaryExecutor;
+    storage::spi::dummy::DummyBucketExecutor _bucketExecutor;
 
 public:
     DocumentDBFactory(const vespalib::string &baseDir, int tlsListenPort);
@@ -203,12 +212,13 @@ public:
                                const_cast<DocumentDBFactory &>(*this),
                                _summaryExecutor,
                                _summaryExecutor,
+                               _bucketExecutor,
                                _tls,
                                _metricsWireService,
                                _fileHeaderContext,
                                _config_stores.getConfigStore(docType.toString()),
                                std::make_shared<vespalib::ThreadStackExecutor>
-                               (16, 128 * 1024),
+                               (16, 128_Ki),
                                HwInfo());
     }
 };
@@ -222,7 +232,8 @@ DocumentDBFactory::DocumentDBFactory(const vespalib::string &baseDir, int tlsLis
       _queryLimiter(),
       _clock(),
       _metricsWireService(),
-      _summaryExecutor(8, 128 * 1024)
+      _summaryExecutor(8, 128_Ki),
+      _bucketExecutor(2)
 {}
 DocumentDBFactory::~DocumentDBFactory()  = default;
 
@@ -293,10 +304,11 @@ class MyPersistenceEngine : public DocDBRepoHolder,
 public:
     MyPersistenceEngine(MyPersistenceEngineOwner &owner,
                         MyResourceWriteFilter &writeFilter,
+                        IDiskMemUsageNotifier& disk_mem_usage_notifier,
                         DocumentDBRepo::UP docDbRepo,
                         const vespalib::string &docType = "")
         : DocDBRepoHolder(std::move(docDbRepo)),
-          PersistenceEngine(owner, writeFilter, -1, false)
+          PersistenceEngine(owner, writeFilter, disk_mem_usage_notifier, -1, false)
     {
         addHandlers(docType);
     }
@@ -346,6 +358,7 @@ private:
     vespalib::string        _docType;
     MyPersistenceEngineOwner _engineOwner;
     MyResourceWriteFilter    _writeFilter;
+    test::DiskMemUsageNotifier   _disk_mem_usage_notifier;
 public:
     MyPersistenceFactory(const vespalib::string &baseDir, int tlsListenPort,
                          SchemaConfigFactory::SP schemaFactory,
@@ -356,7 +369,8 @@ public:
           _docDbRepo(),
           _docType(docType),
           _engineOwner(),
-          _writeFilter()
+          _writeFilter(),
+          _disk_mem_usage_notifier(DiskMemUsageState({ 0.8, 0.5 }, { 0.8, 0.4 }))
     {
         clear();
     }
@@ -367,7 +381,7 @@ public:
                                                          const DocumenttypesConfig &typesCfg) override {
         ConfigFactory cfgFactory(repo, std::make_shared<DocumenttypesConfig>(typesCfg), _schemaFactory);
         _docDbRepo = std::make_unique<DocumentDBRepo>(cfgFactory, _docDbFactory);
-        auto engine = std::make_unique<MyPersistenceEngine>(_engineOwner,_writeFilter,std::move(_docDbRepo), _docType);
+        auto engine = std::make_unique<MyPersistenceEngine>(_engineOwner,_writeFilter, _disk_mem_usage_notifier, std::move(_docDbRepo), _docType);
         assert( ! _docDbRepo); // Repo should be handed over
         return engine;
     }

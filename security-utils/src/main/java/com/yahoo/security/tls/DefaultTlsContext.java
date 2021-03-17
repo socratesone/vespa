@@ -10,6 +10,8 @@ import javax.net.ssl.SSLEngine;
 import javax.net.ssl.SSLParameters;
 import java.security.PrivateKey;
 import java.security.cert.X509Certificate;
+import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 import java.util.Set;
 import java.util.logging.Level;
@@ -40,18 +42,14 @@ public class DefaultTlsContext implements TlsContext {
     }
 
     public DefaultTlsContext(SSLContext sslContext, PeerAuthentication peerAuthentication) {
-        this(sslContext, TlsContext.ALLOWED_CIPHER_SUITES, peerAuthentication);
+        this(sslContext, TlsContext.ALLOWED_CIPHER_SUITES, TlsContext.ALLOWED_PROTOCOLS, peerAuthentication);
     }
 
-    public DefaultTlsContext(SSLContext sslContext) {
-        this(sslContext, TlsContext.ALLOWED_CIPHER_SUITES, PeerAuthentication.NEED);
-    }
-
-    DefaultTlsContext(SSLContext sslContext, Set<String> acceptedCiphers, PeerAuthentication peerAuthentication) {
+    DefaultTlsContext(SSLContext sslContext, Set<String> acceptedCiphers, Set<String> acceptedProtocols, PeerAuthentication peerAuthentication) {
         this.sslContext = sslContext;
         this.peerAuthentication = peerAuthentication;
         this.validCiphers = getAllowedCiphers(sslContext, acceptedCiphers);
-        this.validProtocols = getAllowedProtocols(sslContext);
+        this.validProtocols = getAllowedProtocols(sslContext, acceptedProtocols);
     }
 
     private static String[] getAllowedCiphers(SSLContext sslContext, Set<String> acceptedCiphers) {
@@ -64,14 +62,22 @@ public class DefaultTlsContext implements TlsContext {
                     String.format("None of the accepted ciphers are supported (supported=%s, accepted=%s)",
                                   supportedCiphers, acceptedCiphers));
         }
-        log.log(Level.FINE, () -> String.format("Allowed cipher suites that are supported: %s", com.yahoo.vespa.jdk8compat.List.of(allowedCiphers)));
+        log.log(Level.FINE, () -> String.format("Allowed cipher suites that are supported: %s", Arrays.asList(allowedCiphers)));
         return allowedCiphers;
     }
 
-    private static String[] getAllowedProtocols(SSLContext sslContext) {
-        Set<String> allowedProtocols = TlsContext.getAllowedProtocols(sslContext);
-        log.log(Level.FINE, () -> String.format("Allowed protocols that are supported: %s", com.yahoo.vespa.jdk8compat.List.of(allowedProtocols)));
-        return com.yahoo.vespa.jdk8compat.Collection.toArray(allowedProtocols, String[]::new);
+    private static String[] getAllowedProtocols(SSLContext sslContext, Set<String> acceptedProtocols) {
+        Set<String> supportedProtocols = TlsContext.getAllowedProtocols(sslContext);
+        String[] allowedProtocols = supportedProtocols.stream()
+                .filter(acceptedProtocols::contains)
+                .toArray(String[]::new);
+        if (allowedProtocols.length == 0) {
+            throw new IllegalStateException(
+                    String.format("None of the accepted protocols are supported (supported=%s, accepted=%s)",
+                            supportedProtocols, acceptedProtocols));
+        }
+        log.log(Level.FINE, () -> String.format("Allowed protocols that are supported: %s", Arrays.toString(allowedProtocols)));
+        return allowedProtocols;
     }
 
     @Override
@@ -134,7 +140,7 @@ public class DefaultTlsContext implements TlsContext {
             builder.withTrustManagerFactory(truststore -> new PeerAuthorizerTrustManager(authorizedPeers, mode, hostnameVerification, truststore));
         } else {
             builder.withTrustManagerFactory(truststore -> new PeerAuthorizerTrustManager(
-                    new AuthorizedPeers(com.yahoo.vespa.jdk8compat.Set.of()), AuthorizationMode.DISABLE, hostnameVerification, truststore));
+                    new AuthorizedPeers(Collections.emptySet()), AuthorizationMode.DISABLE, hostnameVerification, truststore));
         }
         return builder.build();
     }

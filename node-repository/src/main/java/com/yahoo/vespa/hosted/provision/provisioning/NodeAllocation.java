@@ -2,14 +2,12 @@
 package com.yahoo.vespa.hosted.provision.provisioning;
 
 import com.yahoo.config.provision.ApplicationId;
-import com.yahoo.config.provision.ApplicationName;
 import com.yahoo.config.provision.ClusterMembership;
 import com.yahoo.config.provision.ClusterSpec;
 import com.yahoo.config.provision.Flavor;
 import com.yahoo.config.provision.NodeResources;
+import com.yahoo.config.provision.NodeType;
 import com.yahoo.config.provision.SystemName;
-import com.yahoo.config.provision.TenantName;
-import com.yahoo.lang.MutableInteger;
 import com.yahoo.vespa.hosted.provision.Node;
 import com.yahoo.vespa.hosted.provision.NodeList;
 import com.yahoo.vespa.hosted.provision.NodeRepository;
@@ -27,6 +25,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.function.Predicate;
+import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
 /**
@@ -73,18 +72,18 @@ class NodeAllocation {
     private final Set<Integer> indexes = new HashSet<>();
 
     /** The next membership index to assign to a new node */
-    private final MutableInteger highestIndex;
+    private final Supplier<Integer> nextIndex;
 
     private final NodeRepository nodeRepository;
     private final NodeResourceLimits nodeResourceLimits;
 
     NodeAllocation(NodeList allNodes, ApplicationId application, ClusterSpec cluster, NodeSpec requestedNodes,
-                   MutableInteger highestIndex, NodeRepository nodeRepository) {
+                   Supplier<Integer> nextIndex, NodeRepository nodeRepository) {
         this.allNodes = allNodes;
         this.application = application;
         this.cluster = cluster;
         this.requestedNodes = requestedNodes;
-        this.highestIndex = highestIndex;
+        this.nextIndex = nextIndex;
         this.nodeRepository = nodeRepository;
         nodeResourceLimits = new NodeResourceLimits(nodeRepository);
     }
@@ -111,18 +110,17 @@ class NodeAllocation {
                 if ( candidate.state() == Node.State.active && allocation.isRemovable()) continue; // don't accept; causes removal
                 if ( indexes.contains(membership.index())) continue; // duplicate index (just to be sure)
 
-                boolean resizeable = false;
-                boolean acceptToRetire = false;
-                if (requestedNodes.considerRetiring()) {
-                    resizeable = candidate.isResizable;
-                    acceptToRetire = acceptToRetire(candidate);
-                }
+                boolean resizeable = requestedNodes.considerRetiring() && candidate.isResizable;
+                boolean acceptToRetire = acceptToRetire(candidate);
 
-                if ((! saturated() && hasCompatibleFlavor(candidate) && requestedNodes.acceptable(candidate)) || acceptToRetire)
-                    accepted.add(acceptNode(candidate, shouldRetire(candidate), resizeable));
+                if ((! saturated() && hasCompatibleFlavor(candidate) && requestedNodes.acceptable(candidate)) || acceptToRetire) {
+                    candidate = candidate.withNode();
+                    if (candidate.isValid())
+                        accepted.add(acceptNode(candidate, shouldRetire(candidate, nodesPrioritized), resizeable));
+                }
             }
             else if (! saturated() && hasCompatibleFlavor(candidate)) {
-                if ( ! nodeResourceLimits.isWithinRealLimits(candidate, cluster)) {
+                if (requestedNodes.type() == NodeType.tenant && ! nodeResourceLimits.isWithinRealLimits(candidate, cluster)) {
                     ++rejectedDueToInsufficientRealResources;
                     continue;
                 }
@@ -130,11 +128,7 @@ class NodeAllocation {
                     ++rejectedDueToClashingParentHost;
                     continue;
                 }
-                if ( ! exclusiveTo(application.tenant(), application.application(), candidate.parentHostname())) {
-                    ++rejectedDueToExclusivity;
-                    continue;
-                }
-                if ( requestedNodes.isExclusive() && ! hostsOnly(application, candidate.parentHostname())) {
+                if ( violatesExclusivity(candidate)) {
                     ++rejectedDueToExclusivity;
                     continue;
                 }
@@ -142,7 +136,7 @@ class NodeAllocation {
                     continue;
                 }
                 candidate = candidate.allocate(application,
-                                               ClusterMembership.from(cluster, highestIndex.add(1)),
+                                               ClusterMembership.from(cluster, nextIndex.get()),
                                                requestedNodes.resources().orElse(candidate.resources()),
                                                nodeRepository.clock().instant());
                 if (candidate.isValid())
@@ -153,13 +147,16 @@ class NodeAllocation {
         return accepted;
     }
 
-    private boolean shouldRetire(NodeCandidate candidate) {
-        if ( ! requestedNodes.considerRetiring()) return false;
+    private boolean shouldRetire(NodeCandidate candidate, List<NodeCandidate> candidates) {
+        if ( ! requestedNodes.considerRetiring())
+            return candidate.allocation().map(a -> a.membership().retired()).orElse(false); // don't second-guess if already retired
+
         if ( ! nodeResourceLimits.isWithinRealLimits(candidate, cluster)) return true;
         if (violatesParentHostPolicy(candidate)) return true;
         if ( ! hasCompatibleFlavor(candidate)) return true;
         if (candidate.wantToRetire()) return true;
-        if (requestedNodes.isExclusive() && ! hostsOnly(application, candidate.parentHostname())) return true;
+        if (candidate.preferToRetire() && candidate.replacableBy(candidates)) return true;
+        if (violatesExclusivity(candidate)) return true;
         return false;
     }
 
@@ -183,36 +180,23 @@ class NodeAllocation {
         return false;
     }
 
-    /**
-     * If a parent host is given, and it hosts another application which requires exclusive access
-     * to the physical host, then we cannot host this application on it.
-     */
-    private boolean exclusiveTo(TenantName tenant, ApplicationName application, Optional<String> parentHostname) {
-        if (parentHostname.isEmpty()) return true;
-        for (Node nodeOnHost : allNodes.childrenOf(parentHostname.get())) {
+    private boolean violatesExclusivity(NodeCandidate candidate) {
+        if (candidate.parentHostname().isEmpty()) return false;
+
+        // In dynamic provisioned zones a node requiring exclusivity must be on a host that has exclusiveTo equal to its owner
+        if (nodeRepository.zone().getCloud().dynamicProvisioning())
+            return requestedNodes.isExclusive() &&
+                    ! candidate.parent.flatMap(Node::exclusiveTo).map(application::equals).orElse(false);
+
+        // In non-dynamic provisioned zones we require that if either of the nodes on the host requires exclusivity,
+        // then all the nodes on the host must have the same owner
+        for (Node nodeOnHost : allNodes.childrenOf(candidate.parentHostname().get())) {
             if (nodeOnHost.allocation().isEmpty()) continue;
-            if ( nodeOnHost.allocation().get().membership().cluster().isExclusive() &&
-                 ! allocatedTo(tenant, application, nodeOnHost))
-                return false;
+            if (requestedNodes.isExclusive() || nodeOnHost.allocation().get().membership().cluster().isExclusive()) {
+                if ( ! nodeOnHost.allocation().get().owner().equals(application)) return true;
+            }
         }
-        return true;
-    }
-
-    /** Returns true if this host only hosts the given application (in any instance) */
-    private boolean hostsOnly(ApplicationId application, Optional<String> parentHostname) {
-        if (parentHostname.isEmpty()) return true; // yes, as host is exclusive
-
-        for (Node nodeOnHost : allNodes.childrenOf(parentHostname.get())) {
-            if (nodeOnHost.allocation().isEmpty()) continue;
-            if ( ! allocatedTo(application.tenant(), application.application(), nodeOnHost)) return false;
-        }
-        return true;
-    }
-
-    private boolean allocatedTo(TenantName tenant, ApplicationName application, Node node) {
-        if (node.allocation().isEmpty()) return false;
-        ApplicationId owner = node.allocation().get().owner();
-        return owner.tenant().equals(tenant) && owner.application().equals(application);
+        return false;
     }
 
     /**
@@ -221,7 +205,7 @@ class NodeAllocation {
      * Such nodes will be marked retired during finalization of the list of accepted nodes.
      * The conditions for this are:
      *
-     * This is a content or combined node. These must always be retired before being removed to allow the cluster to
+     * This is a stateful node. These must always be retired before being removed to allow the cluster to
      * migrate away data.
      *
      * This is a container node and it is not desired due to having the wrong flavor. In this case this
@@ -234,8 +218,9 @@ class NodeAllocation {
         if (candidate.state() != Node.State.active) return false;
         if (! candidate.allocation().get().membership().cluster().group().equals(cluster.group())) return false;
         if (candidate.allocation().get().membership().retired()) return true; // don't second-guess if already retired
+        if (! requestedNodes.considerRetiring()) return false;
 
-        return cluster.type().isContent() ||
+        return cluster.isStateful() ||
                (cluster.type() == ClusterSpec.Type.container && !hasCompatibleFlavor(candidate));
     }
 
@@ -243,14 +228,13 @@ class NodeAllocation {
         return requestedNodes.isCompatible(candidate.flavor(), nodeRepository.flavors()) || candidate.isResizable;
     }
 
-    private Node acceptNode(NodeCandidate candidate, boolean wantToRetire, boolean resizeable) {
-        candidate = candidate.withNode();
+    private Node acceptNode(NodeCandidate candidate, boolean shouldRetire, boolean resizeable) {
         Node node = candidate.toNode();
 
         if (node.allocation().isPresent()) // Record the currently requested resources
             node = node.with(node.allocation().get().withRequestedResources(requestedNodes.resources().orElse(node.resources())));
 
-        if (! wantToRetire) {
+        if (! shouldRetire) {
             accepted++;
 
             // We want to allocate new nodes rather than unretiring with resize, so count without those
@@ -274,7 +258,6 @@ class NodeAllocation {
         }
         candidate = candidate.withNode(node);
         indexes.add(node.allocation().get().membership().index());
-        highestIndex.set(Math.max(highestIndex.get(), node.allocation().get().membership().index()));
         nodes.put(node.hostname(), candidate);
         return node;
     }
@@ -298,26 +281,66 @@ class NodeAllocation {
 
     /** Returns true if the content of this list is sufficient to meet the request */
     boolean fulfilled() {
-        return requestedNodes.fulfilledBy(accepted);
+        return requestedNodes.fulfilledBy(accepted());
     }
 
-    /** Returns true this allocation was already fulfilled and resulted in no new changes */
+    /** Returns true if this allocation was already fulfilled and resulted in no new changes */
     public boolean fulfilledAndNoChanges() {
         return fulfilled() && reservableNodes().isEmpty() && newNodes().isEmpty();
     }
 
     /**
-     * Returns {@link FlavorCount} describing the docker node deficit for the given {@link NodeSpec}.
+     * Returns {@link HostDeficit} describing the host deficit for the given {@link NodeSpec}.
      *
-     * @return empty if the requested spec is not count based or the requested flavor type is not docker or
-     *         the request is already fulfilled. Otherwise returns {@link FlavorCount} containing the required flavor
-     *         and node count to cover the deficit.
+     * @return empty if the requested spec is already fulfilled. Otherwise returns {@link HostDeficit} containing the
+     * flavor and host count required to cover the deficit.
      */
-    Optional<FlavorCount> getFulfilledDockerDeficit() {
-        return Optional.of(requestedNodes)
-                .filter(NodeSpec.CountNodeSpec.class::isInstance)
-                .map(spec -> new FlavorCount(spec.resources().get(), spec.fulfilledDeficitCount(accepted)))
-                .filter(flavorCount -> flavorCount.getCount() > 0);
+    Optional<HostDeficit> hostDeficit() {
+        if (nodeType().isHost()) {
+            return Optional.empty(); // Hosts are provisioned as required by the child application
+        }
+        return Optional.of(new HostDeficit(requestedNodes.resources().orElseGet(NodeResources::unspecified),
+                                           requestedNodes.fulfilledDeficitCount(accepted())))
+                       .filter(hostDeficit -> hostDeficit.count() > 0);
+    }
+
+    /** Returns the indices to use when provisioning hosts for this */
+    List<Integer> provisionIndices(int count) {
+        if (count < 1) throw new IllegalArgumentException("Count must be positive");
+        NodeType hostType = requestedNodes.type().hostType();
+
+        // Tenant hosts have a continuously increasing index
+        if (hostType == NodeType.host) return nodeRepository.database().readProvisionIndices(count);
+
+        // Infrastructure hosts have fixed indices, starting at 1
+        Set<Integer> currentIndices = allNodes.nodeType(hostType)
+                                              .stream()
+                                              .map(Node::hostname)
+                                              // TODO(mpolden): Use cluster index instead of parsing hostname, once all
+                                              //                config servers have been replaced once and have switched
+                                              //                to compact indices
+                                              .map(NodeAllocation::parseIndex)
+                                              .collect(Collectors.toSet());
+        List<Integer> indices = new ArrayList<>(count);
+        for (int i = 1; indices.size() < count; i++) {
+            if (!currentIndices.contains(i)) {
+                indices.add(i);
+            }
+        }
+        // Ignore our own index as we should never try to provision ourself. This can happen in the following scenario:
+        // - cfg1 has been deprovisioned
+        // - cfg2 has triggered provisioning of a new cfg1
+        // - cfg1 is starting and redeploys its infrastructure application during bootstrap. A deficit is detected
+        //   (itself, because cfg1 is only added to the repository *after* it is up)
+        // - cfg1 tries to provision a new host for itself
+        Integer myIndex = parseIndex(com.yahoo.net.HostName.getLocalhost());
+        indices.remove(myIndex);
+        return indices;
+    }
+
+    /** The node type this is allocating */
+    NodeType nodeType() {
+        return requestedNodes.type();
     }
 
     /**
@@ -360,7 +383,7 @@ class NodeAllocation {
             candidate = candidate.withNode();
             Allocation allocation = candidate.allocation().get();
             candidate = candidate.withNode(candidate.toNode().with(allocation.with(allocation.membership()
-                                .with(allocation.membership().cluster().exclusive(requestedNodes.isExclusive())))));
+                                 .with(allocation.membership().cluster().exclusive(requestedNodes.isExclusive())))));
             nodes.put(candidate.toNode().hostname(), candidate);
         }
 
@@ -384,6 +407,14 @@ class NodeAllocation {
                 .collect(Collectors.toList());
     }
 
+    /** Returns the number of nodes accepted this far */
+    private int accepted() {
+        if (nodeType() == NodeType.tenant) return accepted;
+        // Infrastructure nodes are always allocated by type. Count all nodes as accepted so that we never exceed
+        // the wanted number of nodes for the type.
+        return allNodes.nodeType(nodeType()).size();
+    }
+
     /** Prefer to retire nodes we want the least */
     private List<NodeCandidate> byRetiringPriority(Collection<NodeCandidate> candidates) {
         return candidates.stream().sorted(Comparator.reverseOrder()).collect(Collectors.toList());
@@ -392,7 +423,7 @@ class NodeAllocation {
     /** Prefer to unretire nodes we don't want to retire, and otherwise those with lower index */
     private List<NodeCandidate> byUnretiringPriority(Collection<NodeCandidate> candidates) {
         return candidates.stream()
-                         .sorted(Comparator.comparing((NodeCandidate n) -> n.wantToRetire())
+                         .sorted(Comparator.comparing(NodeCandidate::wantToRetire)
                                            .thenComparing(n -> n.allocation().get().membership().index()))
                          .collect(Collectors.toList());
     }
@@ -409,26 +440,37 @@ class NodeAllocation {
             reasons.add("insufficient real resources on hosts");
 
         if (reasons.isEmpty()) return "";
-        return ": Not enough nodes available due to " + reasons.stream().collect(Collectors.joining(", "));
+        return ": Not enough nodes available due to " + String.join(", ", reasons);
     }
 
-    static class FlavorCount {
+    private static Integer parseIndex(String hostname) {
+        // Node index is the first number appearing in the hostname, before the first dot
+        try {
+            return Integer.parseInt(hostname.replaceFirst("^\\D+(\\d+)\\..*", "$1"));
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException("Could not parse index from hostname '" + hostname + "'", e);
+        }
+    }
 
-        private final NodeResources flavor;
+    /** A host deficit, the number of missing hosts, for a deployment */
+    static class HostDeficit {
+
+        private final NodeResources resources;
         private final int count;
 
-        private FlavorCount(NodeResources flavor, int count) {
-            this.flavor = flavor;
+        private HostDeficit(NodeResources resources, int count) {
+            this.resources = resources;
             this.count = count;
         }
 
-        NodeResources getFlavor() {
-            return flavor;
+        NodeResources resources() {
+            return resources;
         }
 
-        int getCount() {
+        int count() {
             return count;
         }
+
     }
 
 }

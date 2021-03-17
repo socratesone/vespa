@@ -29,6 +29,7 @@ protected:
     using FrozenDictionary = Dictionary::FrozenView;
     using EnumIndex = IEnumStore::Index;
 
+    const IEnumStoreDictionary& _dictionary;
     const FrozenDictionary _frozenDictionary;
     DictionaryConstIterator _lowerDictItr;
     DictionaryConstIterator _upperDictItr;
@@ -42,14 +43,13 @@ protected:
     vespalib::datastore::EntryRef     _frozenRoot; // Posting list in tree form
     float _FSTC;  // Filtering Search Time Constant
     float _PLSTC; // Posting List Search Time Constant
-    const IEnumStore       &_esb;
     uint32_t                _minBvDocFreq;
     const GrowableBitVector *_gbv; // bitvector if _useBitVector has been set
     const ISearchContext    &_baseSearchCtx;
 
 
-    PostingListSearchContext(const Dictionary &dictionary, uint32_t docIdLimit, uint64_t numValues, bool hasWeight,
-                             const IEnumStore &esb, uint32_t minBvDocFreq, bool useBitVector, const ISearchContext &baseSearchCtx);
+    PostingListSearchContext(const IEnumStoreDictionary& dictionary, uint32_t docIdLimit, uint64_t numValues, bool hasWeight,
+                             uint32_t minBvDocFreq, bool useBitVector, const ISearchContext &baseSearchCtx);
 
     ~PostingListSearchContext();
 
@@ -98,7 +98,6 @@ protected:
     using Traits = PostingListTraits<DataType>;
     using PostingList = typename Traits::PostingList;
     using Posting = typename Traits::Posting;
-    using PostingVector = std::vector<Posting>;
     using EntryRef = vespalib::datastore::EntryRef;
     using FrozenView = typename PostingList::BTreeType::FrozenView;
 
@@ -112,9 +111,9 @@ protected:
     static const long MIN_UNIQUE_VALUES_TO_NUMDOCS_RATIO_BEFORE_APPROXIMATION = 20;
     static const long MIN_APPROXHITS_TO_NUMDOCS_RATIO_BEFORE_APPROXIMATION = 10;
 
-    PostingListSearchContextT(const Dictionary &dictionary, uint32_t docIdLimit, uint64_t numValues,
-                              bool hasWeight, const PostingList &postingList, const IEnumStore &esb,
-                              uint32_t minBvCocFreq, bool useBitVector, const ISearchContext &baseSearchCtx);
+    PostingListSearchContextT(const IEnumStoreDictionary& dictionary, uint32_t docIdLimit, uint64_t numValues,
+                              bool hasWeight, const PostingList &postingList, uint32_t minBvDocFreq,
+                              bool useBitVector, const ISearchContext &baseSearchCtx);
     ~PostingListSearchContextT() override;
 
     void lookupSingle();
@@ -150,9 +149,9 @@ protected:
     using Parent::countHits;
     using Parent::singleHits;
 
-    PostingListFoldedSearchContextT(const Dictionary &dictionary, uint32_t docIdLimit, uint64_t numValues,
-                                    bool hasWeight, const PostingList &postingList, const IEnumStore &esb,
-                                    uint32_t minBvCocFreq, bool useBitVector, const ISearchContext &baseSearchCtx);
+    PostingListFoldedSearchContextT(const IEnumStoreDictionary& dictionary, uint32_t docIdLimit, uint64_t numValues,
+                                    bool hasWeight, const PostingList &postingList, uint32_t minBvDocFreq,
+                                    bool useBitVector, const ISearchContext &baseSearchCtx);
 
     unsigned int approximateHits() const override;
 };
@@ -181,7 +180,6 @@ private:
     using AggregationTraits = PostingListTraits<DataT>;
     using PostingList = typename AggregationTraits::PostingList;
     using Parent = PostingSearchContext<BaseSC, PostingListFoldedSearchContextT<DataT>, AttrT>;
-    using FoldedComparatorType = typename Parent::EnumStore::FoldedComparatorType;
     using RegexpUtil = vespalib::RegexpUtil;
     using QueryTermSimpleUP = typename Parent::QueryTermSimpleUP;
     using Parent::_toBeSearched;
@@ -189,7 +187,7 @@ private:
     using Parent::isRegex;
     using Parent::getRegex;
     bool useThis(const PostingListSearchContext::DictionaryConstIterator & it) const override {
-        return isRegex() ? (getRegex() ? getRegex()->partial_match(_enumStore.get_value(it.getKey())) : false ) : true;
+        return isRegex() ? (getRegex().valid() ? getRegex().partial_match(_enumStore.get_value(it.getKey())) : false ) : true;
     }
 public:
     StringPostingSearchContext(QueryTermSimpleUP qTerm, bool useBitVector, const AttrT &toBeSearched);
@@ -250,13 +248,12 @@ template <typename BaseSC, typename BaseSC2, typename AttrT>
 PostingSearchContext<BaseSC, BaseSC2, AttrT>::
 PostingSearchContext(QueryTermSimpleUP qTerm, bool useBitVector, const AttrT &toBeSearched)
     : BaseSC(std::move(qTerm), toBeSearched),
-      BaseSC2(toBeSearched.getEnumStore().get_posting_dictionary(),
+      BaseSC2(toBeSearched.getEnumStore().get_dictionary(),
               toBeSearched.getCommittedDocIdLimit(),
               toBeSearched.getStatus().getNumValues(),
               toBeSearched.hasWeightedSetType(),
               toBeSearched.getPostingList(),
-              toBeSearched.getEnumStore(),
-              toBeSearched._postingList._minBvDocFreq,
+              toBeSearched.getPostingList()._minBvDocFreq,
               useBitVector,
               *this),
       _toBeSearched(toBeSearched),

@@ -7,8 +7,9 @@
 #include "tensor_store.h"
 #include <vespa/searchlib/attribute/not_implemented_attribute.h>
 #include <vespa/vespalib/util/rcuvector.h>
+#include <vespa/document/update/tensor_update.h>
 
-namespace vespalib::eval { struct Value; }
+namespace vespalib::eval { struct Value; struct ValueBuilderFactory; }
 
 namespace search::tensor {
 
@@ -47,18 +48,20 @@ public:
     void onGenerationChange(generation_t generation) override;
     bool addDoc(DocId &docId) override;
     std::unique_ptr<vespalib::eval::Value> getEmptyTensor() const override;
-    void extract_dense_view(uint32_t docid, vespalib::tensor::MutableDenseTensorView& tensor) const override;
+    vespalib::eval::TypedCells extract_cells_ref(uint32_t docid) const override;
     const vespalib::eval::Value& get_tensor_ref(uint32_t docid) const override;
-    bool supports_extract_dense_view() const override { return false; }
+    bool supports_extract_cells_ref() const override { return false; }
     bool supports_get_tensor_ref() const override { return false; }
-    vespalib::eval::ValueType getTensorType() const override;
+    const vespalib::eval::ValueType & getTensorType() const override;
     void get_state(const vespalib::slime::Inserter& inserter) const override;
     void clearDocs(DocId lidLow, DocId lidLimit) override;
     void onShrinkLidSpace() override;
     uint32_t getVersion() const override;
     RefCopyVector getRefCopy() const;
     virtual void setTensor(DocId docId, const vespalib::eval::Value &tensor) = 0;
-
+    virtual void update_tensor(DocId docId,
+                               const document::TensorUpdate &update,
+                               bool create_empty_if_non_existing);
     /**
      * Performs the prepare step in a two-phase operation to set a tensor for a document.
      *

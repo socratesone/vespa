@@ -79,9 +79,11 @@ public interface ContainerEngine {
      * @param image Docker image to pull
      * @return true iff image being pulled, false otherwise
      */
-    boolean pullImageAsyncIfNeeded(DockerImage image);
+    boolean pullImageAsyncIfNeeded(DockerImage image, RegistryCredentials registryCredentials);
 
     boolean noManagedContainersRunning(String manager);
+
+    List<ContainerName> listManagedContainers(String manager);
 
     boolean deleteUnusedDockerImages(List<DockerImage> excludes, Duration minImageAgeToDelete);
 

@@ -16,13 +16,15 @@ public class QueryProfileVariant implements Cloneable, Comparable<QueryProfileVa
 
     private List<QueryProfile> inherited = null;
 
-    private DimensionValues dimensionValues;
+    private final DimensionValues dimensionValues;
 
     private Map<String, Object> values;
 
+    private final Map<String, Boolean> overridable = new HashMap<>();
+
     private boolean frozen = false;
 
-    private QueryProfile owner;
+    private final QueryProfile owner;
 
     public QueryProfileVariant(DimensionValues dimensionValues, QueryProfile owner) {
         this.dimensionValues = dimensionValues;
@@ -59,20 +61,24 @@ public class QueryProfileVariant implements Cloneable, Comparable<QueryProfileVa
         return inherited;
     }
 
-    public void set(String key, Object newValue) {
+    public Object set(String key, Object newValue) {
         if (values == null)
             values = new HashMap<>();
 
         Object oldValue = values.get(key);
 
-        if (oldValue == null) {
-            values.put(key, newValue);
-        } else {
-            Object combinedOrNull = QueryProfile.combineValues(newValue, oldValue);
-            if (combinedOrNull != null) {
-                values.put(key, combinedOrNull);
-            }
-        }
+        Object combinedOrNull = QueryProfile.combineValues(newValue, oldValue);
+        if (combinedOrNull != null)
+            values.put(key, combinedOrNull);
+        return combinedOrNull;
+    }
+
+    public void setOverridable(String key, boolean overridable) {
+        this.overridable.put(key, overridable);
+    }
+
+    public Boolean isOverridable(String key) {
+        return overridable.get(key);
     }
 
     public void inherit(QueryProfile profile) {
@@ -138,6 +144,7 @@ public class QueryProfileVariant implements Cloneable, Comparable<QueryProfileVa
         frozen=true;
     }
 
+    @Override
     public QueryProfileVariant clone() {
         if (frozen) return this;
        try {
@@ -156,7 +163,7 @@ public class QueryProfileVariant implements Cloneable, Comparable<QueryProfileVa
 
     @Override
     public String toString() {
-        return "query profile variant for " + dimensionValues;
+        return "query profile variant of " + owner + " for " + dimensionValues;
     }
 
 }

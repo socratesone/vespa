@@ -13,9 +13,11 @@ import com.yahoo.config.provision.TenantName;
 import com.yahoo.container.jdisc.HttpRequest;
 import com.yahoo.slime.SlimeUtils;
 import com.yahoo.vespa.config.server.TimeoutBudget;
+import com.yahoo.config.model.api.TenantSecretStore;
 import com.yahoo.vespa.config.server.http.SessionHandler;
 import com.yahoo.vespa.config.server.tenant.ContainerEndpointSerializer;
 import com.yahoo.vespa.config.server.tenant.EndpointCertificateMetadataSerializer;
+import com.yahoo.vespa.config.server.tenant.TenantSecretStoreSerializer;
 
 import java.time.Clock;
 import java.time.Duration;
@@ -37,14 +39,15 @@ public final class PrepareParams {
     static final String VERBOSE_PARAM_NAME = "verbose";
     static final String VESPA_VERSION_PARAM_NAME = "vespaVersion";
     static final String CONTAINER_ENDPOINTS_PARAM_NAME = "containerEndpoints";
-    static final String TLS_SECRETS_KEY_NAME_PARAM_NAME = "tlsSecretsKeyName";
     static final String ENDPOINT_CERTIFICATE_METADATA_PARAM_NAME = "endpointCertificateMetadata";
     static final String DOCKER_IMAGE_REPOSITORY = "dockerImageRepository";
     static final String ATHENZ_DOMAIN = "athenzDomain";
     static final String APPLICATION_HOST_ROLE = "applicationHostRole";
     static final String APPLICATION_CONTAINER_ROLE = "applicationContainerRole";
     static final String QUOTA_PARAM_NAME = "quota";
+    static final String TENANT_SECRET_STORES_PARAM_NAME = "tenantSecretStores";
     static final String FORCE_PARAM_NAME = "force";
+    static final String WAIT_FOR_RESOURCES_IN_PREPARE = "waitForResourcesInPrepare";
 
     private final ApplicationId applicationId;
     private final TimeoutBudget timeoutBudget;
@@ -53,21 +56,23 @@ public final class PrepareParams {
     private final boolean verbose;
     private final boolean isBootstrap;
     private final boolean force;
+    private final boolean waitForResourcesInPrepare;
     private final Optional<Version> vespaVersion;
     private final List<ContainerEndpoint> containerEndpoints;
-    private final Optional<String> tlsSecretsKeyName;
     private final Optional<EndpointCertificateMetadata> endpointCertificateMetadata;
     private final Optional<DockerImage> dockerImageRepository;
     private final Optional<AthenzDomain> athenzDomain;
     private final Optional<ApplicationRoles> applicationRoles;
     private final Optional<Quota> quota;
+    private final List<TenantSecretStore> tenantSecretStores;
 
     private PrepareParams(ApplicationId applicationId, TimeoutBudget timeoutBudget, boolean ignoreValidationErrors,
                           boolean dryRun, boolean verbose, boolean isBootstrap, Optional<Version> vespaVersion,
-                          List<ContainerEndpoint> containerEndpoints, Optional<String> tlsSecretsKeyName,
+                          List<ContainerEndpoint> containerEndpoints,
                           Optional<EndpointCertificateMetadata> endpointCertificateMetadata,
                           Optional<DockerImage> dockerImageRepository, Optional<AthenzDomain> athenzDomain,
-                          Optional<ApplicationRoles> applicationRoles, Optional<Quota> quota, boolean force) {
+                          Optional<ApplicationRoles> applicationRoles, Optional<Quota> quota, List<TenantSecretStore> tenantSecretStores,
+                          boolean force, boolean waitForResourcesInPrepare) {
         this.timeoutBudget = timeoutBudget;
         this.applicationId = Objects.requireNonNull(applicationId);
         this.ignoreValidationErrors = ignoreValidationErrors;
@@ -76,13 +81,14 @@ public final class PrepareParams {
         this.isBootstrap = isBootstrap;
         this.vespaVersion = vespaVersion;
         this.containerEndpoints = containerEndpoints;
-        this.tlsSecretsKeyName = tlsSecretsKeyName;
         this.endpointCertificateMetadata = endpointCertificateMetadata;
         this.dockerImageRepository = dockerImageRepository;
         this.athenzDomain = athenzDomain;
         this.applicationRoles = applicationRoles;
         this.quota = quota;
+        this.tenantSecretStores = tenantSecretStores;
         this.force = force;
+        this.waitForResourcesInPrepare = waitForResourcesInPrepare;
     }
 
     public static class Builder {
@@ -92,16 +98,17 @@ public final class PrepareParams {
         private boolean verbose = false;
         private boolean isBootstrap = false;
         private boolean force = false;
+        private boolean waitForResourcesInPrepare = false;
         private ApplicationId applicationId = null;
         private TimeoutBudget timeoutBudget = new TimeoutBudget(Clock.systemUTC(), Duration.ofSeconds(60));
         private Optional<Version> vespaVersion = Optional.empty();
         private List<ContainerEndpoint> containerEndpoints = null;
-        private Optional<String> tlsSecretsKeyName = Optional.empty();
         private Optional<EndpointCertificateMetadata> endpointCertificateMetadata = Optional.empty();
         private Optional<DockerImage> dockerImageRepository = Optional.empty();
         private Optional<AthenzDomain> athenzDomain = Optional.empty();
         private Optional<ApplicationRoles> applicationRoles = Optional.empty();
         private Optional<Quota> quota = Optional.empty();
+        private List<TenantSecretStore> tenantSecretStores = List.of();
 
         public Builder() { }
 
@@ -156,12 +163,6 @@ public final class PrepareParams {
             return this;
         }
 
-        public Builder tlsSecretsKeyName(String tlsSecretsKeyName) {
-            this.tlsSecretsKeyName = Optional.ofNullable(tlsSecretsKeyName)
-                                           .filter(s -> ! s.isEmpty());
-            return this;
-        }
-
         public Builder endpointCertificateMetadata(String serialized) {
             this.endpointCertificateMetadata = (serialized == null)
                     ? Optional.empty()
@@ -203,6 +204,23 @@ public final class PrepareParams {
             return this;
         }
 
+        public Builder tenantSecretStores(String serialized) {
+            List<TenantSecretStore> secretStores = (serialized == null)
+                    ? List.of()
+                    : TenantSecretStoreSerializer.listFromSlime(SlimeUtils.jsonToSlime(serialized).get());
+            return tenantSecretStores(secretStores);
+        }
+
+        public Builder tenantSecretStores(List<TenantSecretStore> tenantSecretStores) {
+            this.tenantSecretStores = tenantSecretStores;
+            return this;
+        }
+
+        public Builder waitForResourcesInPrepare(boolean waitForResourcesInPrepare) {
+            this.waitForResourcesInPrepare = waitForResourcesInPrepare;
+            return this;
+        }
+
         public Builder force(boolean force) {
             this.force = force;
             return this;
@@ -210,9 +228,9 @@ public final class PrepareParams {
 
         public PrepareParams build() {
             return new PrepareParams(applicationId, timeoutBudget, ignoreValidationErrors, dryRun,
-                                     verbose, isBootstrap, vespaVersion, containerEndpoints, tlsSecretsKeyName,
+                                     verbose, isBootstrap, vespaVersion, containerEndpoints,
                                      endpointCertificateMetadata, dockerImageRepository, athenzDomain,
-                                     applicationRoles, quota, force);
+                                     applicationRoles, quota, tenantSecretStores, force, waitForResourcesInPrepare);
         }
     }
 
@@ -224,13 +242,14 @@ public final class PrepareParams {
                             .applicationId(createApplicationId(request, tenant))
                             .vespaVersion(request.getProperty(VESPA_VERSION_PARAM_NAME))
                             .containerEndpoints(request.getProperty(CONTAINER_ENDPOINTS_PARAM_NAME))
-                            .tlsSecretsKeyName(request.getProperty(TLS_SECRETS_KEY_NAME_PARAM_NAME))
                             .endpointCertificateMetadata(request.getProperty(ENDPOINT_CERTIFICATE_METADATA_PARAM_NAME))
                             .dockerImageRepository(request.getProperty(DOCKER_IMAGE_REPOSITORY))
                             .athenzDomain(request.getProperty(ATHENZ_DOMAIN))
                             .applicationRoles(ApplicationRoles.fromString(request.getProperty(APPLICATION_HOST_ROLE), request.getProperty(APPLICATION_CONTAINER_ROLE)))
                             .quota(request.getProperty(QUOTA_PARAM_NAME))
+                            .tenantSecretStores(request.getProperty(TENANT_SECRET_STORES_PARAM_NAME))
                             .force(request.getBooleanProperty(FORCE_PARAM_NAME))
+                            .waitForResourcesInPrepare(request.getBooleanProperty(WAIT_FOR_RESOURCES_IN_PREPARE))
                             .build();
     }
 
@@ -280,12 +299,10 @@ public final class PrepareParams {
 
     public boolean force() { return force; }
 
+    public boolean waitForResourcesInPrepare() { return waitForResourcesInPrepare; }
+
     public TimeoutBudget getTimeoutBudget() {
         return timeoutBudget;
-    }
-
-    public Optional<String> tlsSecretsKeyName() {
-        return tlsSecretsKeyName;
     }
 
     public Optional<EndpointCertificateMetadata> endpointCertificateMetadata() {
@@ -304,5 +321,9 @@ public final class PrepareParams {
 
     public Optional<Quota> quota() {
         return quota;
+    }
+
+    public List<TenantSecretStore> tenantSecretStores() {
+        return tenantSecretStores;
     }
 }

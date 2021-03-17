@@ -6,6 +6,7 @@ vespa_add_library(searchcore_server STATIC
     bootstrapconfigmanager.cpp
     buckethandler.cpp
     bucketmovejob.cpp
+    bucketmovejobv2.cpp
     clusterstatehandler.cpp
     combiningfeedview.cpp
     ddbstate.cpp
@@ -27,7 +28,6 @@ vespa_add_library(searchcore_server STATIC
     document_subdb_initializer_result.cpp
     documentbucketmover.cpp
     documentdb.cpp
-    documentdb_commit_job.cpp
     documentdb_metrics_updater.cpp
     documentdbconfig.cpp
     documentdbconfigmanager.cpp
@@ -36,7 +36,9 @@ vespa_add_library(searchcore_server STATIC
     documentretrieverbase.cpp
     documentsubdbcollection.cpp
     emptysearchview.cpp
+    executor_explorer_utils.cpp
     executor_thread_service.cpp
+    executor_threading_service_explorer.cpp
     executorthreadingservice.cpp
     fast_access_document_retriever.cpp
     fast_access_doc_subdb.cpp
@@ -57,6 +59,8 @@ vespa_add_library(searchcore_server STATIC
     job_tracked_maintenance_job.cpp
     lid_space_compaction_handler.cpp
     lid_space_compaction_job.cpp
+    lid_space_compaction_job_base.cpp
+    lid_space_compaction_job_take2.cpp
     maintenance_controller_explorer.cpp
     maintenance_jobs_injector.cpp
     maintenancecontroller.cpp
@@ -77,11 +81,11 @@ vespa_add_library(searchcore_server STATIC
     proton_config_snapshot.cpp
     proton_configurer.cpp
     proton_disk_layout.cpp
+    proton_thread_pools_explorer.cpp
     prune_session_cache_job.cpp
     pruneremoveddocumentsjob.cpp
     putdonecontext.cpp
     reconfig_params.cpp
-    remove_batch_done_context.cpp
     remove_operations_rate_tracker.cpp
     removedonecontext.cpp
     removedonetask.cpp
@@ -104,7 +108,6 @@ vespa_add_library(searchcore_server STATIC
     transactionlogmanager.cpp
     transactionlogmanagerbase.cpp
     updatedonecontext.cpp
-    visibilityhandler.cpp
     DEPENDS
     searchcore_attribute
     searchcore_bucketdb

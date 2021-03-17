@@ -3,6 +3,7 @@
 #include "processallhandler.h"
 #include "bucketprocessor.h"
 #include "persistenceutil.h"
+#include <vespa/document/fieldset/fieldsets.h>
 #include <vespa/persistence/spi/persistenceprovider.h>
 #include <vespa/vespalib/util/stringfmt.h>
 #include <vespa/vespalib/stllike/hash_map.hpp>
@@ -74,9 +75,9 @@ public:
 }
 
 MessageTracker::UP
-ProcessAllHandler::handleRemoveLocation(api::RemoveLocationCommand& cmd, MessageTracker::UP tracker)
+ProcessAllHandler::handleRemoveLocation(api::RemoveLocationCommand& cmd, MessageTracker::UP tracker) const
 {
-    tracker->setMetric(_env._metrics.removeLocation[cmd.getLoadType()]);
+    tracker->setMetric(_env._metrics.removeLocation);
 
     LOG(debug, "RemoveLocation(%s): using selection '%s'",
         cmd.getBucketId().toString().c_str(),
@@ -85,6 +86,7 @@ ProcessAllHandler::handleRemoveLocation(api::RemoveLocationCommand& cmd, Message
     spi::Bucket bucket(cmd.getBucket());
     UnrevertableRemoveEntryProcessor processor(_spi, bucket, tracker->context());
     BucketProcessor::iterateAll(_spi, bucket, cmd.getDocumentSelection(),
+                                std::make_shared<document::AllFields>(),
                                 processor, spi::NEWEST_DOCUMENT_ONLY,tracker->context());
 
     tracker->setReply(std::make_shared<api::RemoveLocationReply>(cmd, processor._n_removed));
@@ -93,15 +95,16 @@ ProcessAllHandler::handleRemoveLocation(api::RemoveLocationCommand& cmd, Message
 }
 
 MessageTracker::UP
-ProcessAllHandler::handleStatBucket(api::StatBucketCommand& cmd, MessageTracker::UP tracker)
+ProcessAllHandler::handleStatBucket(api::StatBucketCommand& cmd, MessageTracker::UP tracker) const
 {
-    tracker->setMetric(_env._metrics.statBucket[cmd.getLoadType()]);
+    tracker->setMetric(_env._metrics.statBucket);
     std::ostringstream ost;
     ost << "Persistence bucket " << cmd.getBucketId() << "\n";
 
     spi::Bucket bucket(cmd.getBucket());
     StatEntryProcessor processor(ost);
     BucketProcessor::iterateAll(_spi, bucket, cmd.getDocumentSelection(),
+                                std::make_shared<document::AllFields>(),
                                 processor, spi::ALL_VERSIONS,tracker->context());
 
     tracker->setReply(std::make_shared<api::StatBucketReply>(cmd, ost.str()));

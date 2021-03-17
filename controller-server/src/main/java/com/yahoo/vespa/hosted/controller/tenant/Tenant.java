@@ -4,6 +4,7 @@ package com.yahoo.vespa.hosted.controller.tenant;
 import com.yahoo.config.provision.TenantName;
 import com.yahoo.vespa.hosted.controller.api.integration.organization.Contact;
 
+import java.time.Instant;
 import java.util.Objects;
 import java.util.Optional;
 
@@ -14,19 +15,31 @@ import java.util.Optional;
  */
 public abstract class Tenant {
 
-    public static final String userPrefix = "by-";
-
     private final TenantName name;
+    private final Instant createdAt;
+    private final LastLoginInfo lastLoginInfo;
     private final Optional<Contact> contact;
 
-    Tenant(TenantName name, Optional<Contact> contact) {
+    Tenant(TenantName name, Instant createdAt, LastLoginInfo lastLoginInfo, Optional<Contact> contact) {
         this.name = name;
+        this.createdAt = createdAt;
+        this.lastLoginInfo = lastLoginInfo;
         this.contact = contact;
     }
 
     /** Name of this tenant */
     public TenantName name() {
         return name;
+    }
+
+    /** Instant when the tenant was created */
+    public Instant createdAt() {
+        return createdAt;
+    }
+
+    /** Returns login information for this tenant */
+    public LastLoginInfo lastLoginInfo() {
+        return lastLoginInfo;
     }
 
     /** Contact information for this tenant */

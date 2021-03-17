@@ -37,7 +37,8 @@ public:
           _writeDocSize(writeDocSize)
     { }
 
-    void operator()(uint32_t lid) {
+    void operator()(documentmetastore::GidToLidMapKey key) {
+        auto lid = key.get_lid();
         assert(lid < _metaDataStoreSize);
         const RawDocumentMetaData &metaData = _metaDataStore[lid];
         const GlobalId &gid = metaData.getGid();
@@ -82,7 +83,7 @@ DocumentMetaStoreSaver(vespalib::GenerationHandler::Guard &&guard,
 }
 
 
-DocumentMetaStoreSaver::~DocumentMetaStoreSaver() { }
+DocumentMetaStoreSaver::~DocumentMetaStoreSaver() = default;
 
 
 bool

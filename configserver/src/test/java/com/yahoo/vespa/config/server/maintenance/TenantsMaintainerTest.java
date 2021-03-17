@@ -47,7 +47,6 @@ public class TenantsMaintainerTest {
 
         clock.advance(TenantsMaintainer.defaultTtlForUnusedTenant.plus(Duration.ofDays(1)));
         new TenantsMaintainer(applicationRepository, tester.curator(), new InMemoryFlagSource(), Duration.ofDays(1), clock).run();
-        tenantRepository.updateTenants();
 
         // One tenant should now have been deleted
         assertNull(tenantRepository.getTenant(shouldBeDeleted));
@@ -57,7 +56,8 @@ public class TenantsMaintainerTest {
         assertNotNull(tenantRepository.getTenant(TenantName.defaultName()));
         assertNotNull(tenantRepository.getTenant(TenantRepository.HOSTED_VESPA_TENANT));
 
-        // Add tenant again and deploy
+        // Delete app, add tenant again and deploy
+        tester.applicationRepository().delete(applicationId(shouldNotBeDeleted));
         tenantRepository.addTenant(shouldBeDeleted);
         tester.deployApp(applicationPackage, prepareParams(shouldBeDeleted));
     }

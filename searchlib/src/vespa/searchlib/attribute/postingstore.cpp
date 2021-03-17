@@ -6,6 +6,7 @@
 #include <vespa/searchcommon/attribute/status.h>
 #include <vespa/vespalib/btree/btreeiterator.hpp>
 #include <vespa/vespalib/datastore/datastore.hpp>
+#include <vespa/vespalib/datastore/buffer_type.hpp>
 
 namespace search::attribute {
 
@@ -14,7 +15,7 @@ using vespalib::btree::BTreeNoLeafData;
 // #define FORCE_BITVECTORS
 
 
-PostingStoreBase2::PostingStoreBase2(EnumPostingTree &dict, Status &status, const Config &config)
+PostingStoreBase2::PostingStoreBase2(IEnumStoreDictionary& dictionary, Status &status, const Config &config)
     :
 #ifdef FORCE_BITVECTORS
       _enableBitVectors(true),
@@ -28,7 +29,7 @@ PostingStoreBase2::PostingStoreBase2(EnumPostingTree &dict, Status &status, cons
       _minBvDocFreq(64),
       _maxBvDocFreq(std::numeric_limits<uint32_t>::max()),
       _bvs(),
-      _dict(dict),
+      _dictionary(dictionary),
       _status(status),
       _bvExtraBytes(0)
 {
@@ -61,15 +62,15 @@ PostingStoreBase2::resizeBitVectors(uint32_t newSize, uint32_t newCapacity)
 
 
 template <typename DataT>
-PostingStore<DataT>::PostingStore(EnumPostingTree &dict, Status &status,
+PostingStore<DataT>::PostingStore(IEnumStoreDictionary& dictionary, Status &status,
                                   const Config &config)
     : Parent(false),
-      PostingStoreBase2(dict, status, config),
+      PostingStoreBase2(dictionary, status, config),
       _bvType(1, 1024u, RefType::offsetSize())
 {
     // TODO: Add type for bitvector
     _store.addType(&_bvType);
-    _store.initActiveBuffers();
+    _store.init_primary_buffers();
     _store.enableFreeLists();
 }
 
@@ -124,7 +125,8 @@ PostingStore<DataT>::removeSparseBitVectors()
     }
     if (needscan) {
         typedef EnumPostingTree::Iterator EnumIterator;
-        for (EnumIterator dictItr = _dict.begin(); dictItr.valid(); ++dictItr) {
+        auto& dict = _dictionary.get_posting_dictionary();
+        for (EnumIterator dictItr = dict.begin(); dictItr.valid(); ++dictItr) {
             if (!isBitVector(getTypeId(EntryRef(dictItr.getData()))))
                 continue;
             EntryRef ref(dictItr.getData());
@@ -152,7 +154,7 @@ PostingStore<DataT>::removeSparseBitVectors()
                         normalizeTree(ref, tree, false);
                     }
                 }
-                _dict.thaw(dictItr);
+                dict.thaw(dictItr);
                 dictItr.writeData(ref.ref());
                 res = true;
             }
@@ -255,7 +257,7 @@ PostingStore<DataT>::makeBitVector(EntryRef &ref)
     uint32_t expDocFreq = it.size();
     (void) expDocFreq;
     for (; it.valid(); ++it) {
-        uint32_t docId = it.getKey(); 
+        uint32_t docId = it.getKey();
         assert(docId < docIdLimit);
         bv.setBit(docId);
     }
@@ -278,7 +280,7 @@ PostingStore<DataT>::makeBitVector(EntryRef &ref)
     ref = bPair.ref;
 }
 
-    
+
 template <typename DataT>
 void
 PostingStore<DataT>::applyNewBitVector(EntryRef &ref,
@@ -314,7 +316,7 @@ PostingStore<DataT>::applyNewBitVector(EntryRef &ref,
     ref = bPair.ref;
 }
 
-    
+
 template <typename DataT>
 void
 PostingStore<DataT>::apply(BitVector &bv,

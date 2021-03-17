@@ -3,7 +3,6 @@ package com.yahoo.vespa.hosted.controller.maintenance;
 
 import com.yahoo.component.Version;
 import com.yahoo.config.provision.ApplicationId;
-import com.yahoo.config.provision.Environment;
 import com.yahoo.vespa.hosted.controller.LockedTenant;
 import com.yahoo.vespa.hosted.controller.api.integration.organization.Contact;
 import com.yahoo.vespa.hosted.controller.api.integration.organization.IssueId;
@@ -38,11 +37,9 @@ import static org.junit.Assert.assertTrue;
 public class DeploymentIssueReporterTest {
 
     private final static ApplicationPackage applicationPackage = new ApplicationPackageBuilder()
-            .environment(Environment.prod)
             .region("us-west-1")
             .build();
     private final static ApplicationPackage canaryPackage = new ApplicationPackageBuilder()
-            .environment(Environment.prod)
             .region("us-west-1")
             .upgradePolicy("canary")
             .build();
@@ -147,11 +144,11 @@ public class DeploymentIssueReporterTest {
         Version version = Version.fromString("6.3");
         tester.controllerTester().upgradeSystem(version);
         tester.upgrader().maintain();
-        assertEquals(version, tester.controller().versionStatus().systemVersion().get().versionNumber());
+        assertEquals(version, tester.controller().readSystemVersion());
 
         app2.timeOutUpgrade(systemTest);
         tester.controllerTester().upgradeSystem(version);
-        assertEquals(VespaVersion.Confidence.broken, tester.controller().versionStatus().systemVersion().get().confidence());
+        assertEquals(VespaVersion.Confidence.broken, tester.controller().readVersionStatus().systemVersion().get().confidence());
 
         assertFalse("We have no platform issues initially.", issues.platformIssue());
         reporter.maintain();
@@ -165,7 +162,7 @@ public class DeploymentIssueReporterTest {
 
         app2.runJob(systemTest);
         tester.controllerTester().upgradeSystem(version);
-        assertEquals(VespaVersion.Confidence.low, tester.controller().versionStatus().systemVersion().get().confidence());
+        assertEquals(VespaVersion.Confidence.low, tester.controller().readVersionStatus().systemVersion().get().confidence());
     }
 
 

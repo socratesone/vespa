@@ -1,8 +1,8 @@
 // Copyright 2017 Yahoo Holdings. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
 #include "persistenceutil.h"
-#include <vespa/config/config.h>
-#include <vespa/config/helper/configgetter.hpp>
+#include <vespa/persistence/spi/persistenceprovider.h>
+#include <vespa/storageapi/messageapi/bucketinforeply.h>
 #include <vespa/vespalib/util/exceptions.h>
 
 #include <vespa/log/bufferedlogger.h>
@@ -27,13 +27,15 @@ namespace {
     const vespalib::duration WARN_ON_SLOW_OPERATIONS = 5s;
 }
 
-MessageTracker::MessageTracker(PersistenceUtil & env,
+MessageTracker::MessageTracker(const framework::MilliSecTimer & timer,
+                               const PersistenceUtil & env,
                                MessageSender & replySender,
                                FileStorHandler::BucketLockInterface::SP bucketLock,
                                api::StorageMessage::SP msg)
-    : MessageTracker(env, replySender, true, std::move(bucketLock), std::move(msg))
+    : MessageTracker(timer, env, replySender, true, std::move(bucketLock), std::move(msg))
 {}
-MessageTracker::MessageTracker(PersistenceUtil & env,
+MessageTracker::MessageTracker(const framework::MilliSecTimer & timer,
+                               const PersistenceUtil & env,
                                MessageSender & replySender,
                                bool updateBucketInfo,
                                FileStorHandler::BucketLockInterface::SP bucketLock,
@@ -42,17 +44,19 @@ MessageTracker::MessageTracker(PersistenceUtil & env,
       _updateBucketInfo(updateBucketInfo && hasBucketInfo(msg->getType().getId())),
       _bucketLock(std::move(bucketLock)),
       _msg(std::move(msg)),
-      _context(_msg->getLoadType(), _msg->getPriority(), _msg->getTrace().getLevel()),
+      _context(_msg->getPriority(), _msg->getTrace().getLevel()),
       _env(env),
       _replySender(replySender),
       _metric(nullptr),
       _result(api::ReturnCode::OK),
-      _timer(_env._component.getClock())
+      _timer(timer)
 { }
 
 MessageTracker::UP
-MessageTracker::createForTesting(PersistenceUtil &env, MessageSender &replySender, FileStorHandler::BucketLockInterface::SP bucketLock, api::StorageMessage::SP msg) {
-    return MessageTracker::UP(new MessageTracker(env, replySender, false, std::move(bucketLock), std::move(msg)));
+MessageTracker::createForTesting(const framework::MilliSecTimer & timer, PersistenceUtil &env, MessageSender &replySender,
+                                 FileStorHandler::BucketLockInterface::SP bucketLock, api::StorageMessage::SP msg)
+{
+    return MessageTracker::UP(new MessageTracker(timer, env, replySender, false, std::move(bucketLock), std::move(msg)));
 }
 
 void
@@ -91,9 +95,7 @@ MessageTracker::sendReply() {
               _msg->toString(true).c_str(), vespalib::to_s(duration));
     }
     if (hasReply()) {
-        if ( ! _context.getTrace().getRoot().isEmpty()) {
-            getReply().getTrace().getRoot().addChild(_context.getTrace().getRoot());
-        }
+        getReply().getTrace().addChild(_context.steal_trace());
         if (_updateBucketInfo) {
             if (getReply().getResult().success()) {
                 _env.setBucketInfo(*this, _bucketLock->getBucket());
@@ -102,13 +104,10 @@ MessageTracker::sendReply() {
         if (getReply().getResult().success()) {
             _metric->latency.addValue(_timer.getElapsedTimeAsDouble());
         }
-        LOG(spam, "Sending reply up: %s %" PRIu64,
-            getReply().toString().c_str(), getReply().getMsgId());
+        LOG(spam, "Sending reply up: %s %" PRIu64, getReply().toString().c_str(), getReply().getMsgId());
         _replySender.sendReplyDirectly(std::move(_reply));
     } else {
-        if ( ! _context.getTrace().getRoot().isEmpty()) {
-            _msg->getTrace().getRoot().addChild(_context.getTrace().getRoot());
-        }
+        _msg->getTrace().addChild(_context.steal_trace());
     }
 }
 
@@ -126,7 +125,7 @@ MessageTracker::checkForError(const spi::Result& response)
 }
 
 void
-MessageTracker::fail(const ReturnCode& result)
+MessageTracker::fail(const api::ReturnCode& result)
 {
     _result = result;
     LOG(debug, "Failing operation with error: %s", _result.toString().c_str());
@@ -156,27 +155,23 @@ MessageTracker::generateReply(api::StorageCommand& cmd)
     }
 }
 
-PersistenceUtil::PersistenceUtil(
-        const config::ConfigUri & configUri,
-        ServiceLayerComponent& component,
-        FileStorHandler& fileStorHandler,
-        FileStorThreadMetrics& metrics,
-        spi::PersistenceProvider& provider)
-    : _config(*config::ConfigGetter<vespa::config::content::StorFilestorConfig>::getConfig(configUri.getConfigId(), configUri.getContext())),
-      _component(component),
+PersistenceUtil::PersistenceUtil(const ServiceLayerComponent& component, FileStorHandler& fileStorHandler,
+                                 FileStorThreadMetrics& metrics, spi::PersistenceProvider& provider)
+    : _component(component),
       _fileStorHandler(fileStorHandler),
-      _nodeIndex(component.getIndex()),
       _metrics(metrics),
-      _bucketFactory(component.getBucketIdFactory()),
-      _repo(component.getTypeRepo()->documentTypeRepo),
-      _spi(provider)
+      _nodeIndex(component.getIndex()),
+      _bucketIdFactory(component.getBucketIdFactory()),
+      _spi(provider),
+      _lastGeneration(0),
+      _repos()
 {
 }
 
 PersistenceUtil::~PersistenceUtil() = default;
 
 void
-PersistenceUtil::updateBucketDatabase(const document::Bucket &bucket, const api::BucketInfo& i)
+PersistenceUtil::updateBucketDatabase(const document::Bucket &bucket, const api::BucketInfo& i) const
 {
     // Update bucket database
     StorBucketDatabase::WrappedEntry entry(getBucketDatabase(bucket.getBucketSpace()).get(bucket.getBucketId(),
@@ -196,15 +191,8 @@ PersistenceUtil::updateBucketDatabase(const document::Bucket &bucket, const api:
     }
 }
 
-uint16_t
-PersistenceUtil::getPreferredAvailableDisk(const document::Bucket &bucket) const
-{
-    return _component.getPreferredAvailablePartition(bucket);
-}
-
 PersistenceUtil::LockResult
-PersistenceUtil::lockAndGetDisk(const document::Bucket &bucket,
-                                StorBucketDatabase::Flag flags)
+PersistenceUtil::lockAndGetDisk(const document::Bucket &bucket, StorBucketDatabase::Flag flags)
 {
     // To lock the bucket, we need to ensure that we don't conflict with
     // bucket disk move command. First we fetch current disk index from
@@ -230,7 +218,7 @@ PersistenceUtil::lockAndGetDisk(const document::Bucket &bucket,
 }
 
 void
-PersistenceUtil::setBucketInfo(MessageTracker& tracker, const document::Bucket &bucket)
+PersistenceUtil::setBucketInfo(MessageTracker& tracker, const document::Bucket &bucket) const
 {
     api::BucketInfo info = getBucketInfo(bucket);
 
@@ -280,25 +268,28 @@ PersistenceUtil::convertErrorCode(const spi::Result& response)
     return 0;
 }
 
-void
-PersistenceUtil::shutdown(const std::string& reason)
-{
-    _component.requestShutdown(reason);
-}
-
 spi::Bucket
 PersistenceUtil::getBucket(const document::DocumentId& id, const document::Bucket &bucket) const
 {
-    document::BucketId docBucket(_bucketFactory.getBucketId(id));
+    document::BucketId docBucket(_bucketIdFactory.getBucketId(id));
     docBucket.setUsedBits(bucket.getBucketId().getUsedBits());
     if (bucket.getBucketId() != docBucket) {
-        docBucket = _bucketFactory.getBucketId(id);
+        docBucket = _bucketIdFactory.getBucketId(id);
         throw vespalib::IllegalStateException("Document " + id.toString()
                                               + " (bucket " + docBucket.toString() + ") does not belong in "
                                               + "bucket " + bucket.getBucketId().toString() + ".", VESPA_STRLOC);
     }
 
     return spi::Bucket(bucket);
+}
+
+void
+PersistenceUtil::reloadComponent() const {
+    // Thread safe as it is only called from the same thread
+    while (componentHasChanged()) {
+        _lastGeneration = _component.getGeneration();
+        _repos = _component.getTypeRepo();
+    }
 }
 
 } // storage

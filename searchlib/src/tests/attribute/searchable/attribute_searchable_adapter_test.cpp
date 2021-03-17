@@ -8,12 +8,10 @@
 #include <vespa/searchlib/attribute/attributeguard.h>
 #include <vespa/searchlib/attribute/attributevector.h>
 #include <vespa/searchlib/attribute/attribute_read_guard.h>
-#include <vespa/searchlib/attribute/extendableattributes.h>
+#include <vespa/searchlib/attribute/singlestringattribute.h>
 #include <vespa/searchlib/attribute/iattributemanager.h>
 #include <vespa/searchlib/attribute/predicate_attribute.h>
 #include <vespa/searchlib/attribute/singlenumericattribute.h>
-#include <vespa/searchlib/attribute/singlenumericattribute.hpp>
-#include <vespa/searchlib/attribute/singlenumericpostattribute.hpp>
 #include <vespa/searchlib/predicate/predicate_index.h>
 #include <vespa/searchlib/fef/fef.h>
 #include <vespa/searchlib/query/tree/location.h>
@@ -27,7 +25,7 @@
 #include <vespa/searchlib/queryeval/field_spec.h>
 #include <vespa/searchlib/queryeval/searchiterator.h>
 #include <vespa/searchlib/queryeval/wand/parallel_weak_and_search.h>
-#include <memory>
+#include <vespa/searchlib/attribute/singlenumericpostattribute.hpp>
 
 #include <vespa/log/log.h>
 LOG_SETUP("attribute_searchable_adapter_test");
@@ -37,7 +35,6 @@ using search::AttributeGuard;
 using search::AttributeVector;
 using search::IAttributeManager;
 using search::IntegerAttribute;
-using search::SingleStringExtAttribute;
 using search::attribute::IAttributeContext;
 using search::fef::MatchData;
 using search::fef::MatchDataLayout;
@@ -76,7 +73,6 @@ namespace {
 
 const string field = "field";
 const string other = "other";
-const int32_t weight = 1;
 const uint32_t num_docs = 1000;
 
 class MyAttributeManager : public IAttributeManager {
@@ -268,9 +264,11 @@ bool search(const string &term, IAttributeManager &attribute_manager,
 }
 
 template <typename T> struct AttributeVectorTypeFinder {
-    //typedef search::SingleValueStringAttribute Type;
-    typedef SingleStringExtAttribute Type;
-    static void add(Type & a, const T & v) { a.add(v, weight); }
+    typedef search::SingleValueStringAttribute Type;
+    static void add(Type & a, const T & v) {
+        a.update(a.getNumDocs()-1, v);
+        a.commit();
+    }
 };
 template <> struct AttributeVectorTypeFinder<int64_t> {
     typedef search::SingleValueNumericAttribute<search::IntegerAttributeTemplate<int64_t> > Type;

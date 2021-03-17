@@ -6,7 +6,8 @@
 #include <vespa/searchcore/proton/common/monitored_refcount.h>
 #include <vespa/searchcore/proton/reference/gid_to_lid_change_listener.h>
 #include <vespa/searchlib/common/i_gid_to_lid_mapper_factory.h>
-#include <vespa/searchlib/common/gatecallback.h>
+#include <vespa/vespalib/util/destructor_callbacks.h>
+#include <vespa/vespalib/util/gate.h>
 #include <vespa/searchlib/test/mock_gid_to_lid_mapping.h>
 #include <map>
 #include <vespa/log/log.h>
@@ -33,6 +34,7 @@ GlobalId toGid(vespalib::stringref docId) {
 vespalib::string doc1("id:test:music::1");
 vespalib::string doc2("id:test:music::2");
 vespalib::string doc3("id:test:music::3");
+VESPA_THREAD_STACK_TAG(test_executor)
 
 struct MyGidToLidMapperFactory : public MockGidToLidMapperFactory
 {
@@ -55,7 +57,7 @@ struct Fixture
 
     Fixture()
         : _attr(std::make_shared<ReferenceAttribute>("test", Config(BasicType::REFERENCE))),
-          _writer(vespalib::SequencedTaskExecutor::create(1)),
+          _writer(vespalib::SequencedTaskExecutor::create(test_executor, 1)),
           _refCount(),
           _listener()
     {
@@ -96,7 +98,7 @@ struct Fixture
 
     void notifyPutDone(const GlobalId &gid, uint32_t referencedDoc) {
         vespalib::Gate gate;
-        _listener->notifyPutDone(std::make_shared<search::GateCallback>(gate), gid, referencedDoc);
+        _listener->notifyPutDone(std::make_shared<vespalib::GateCallback>(gate), gid, referencedDoc);
         gate.await();
     }
 

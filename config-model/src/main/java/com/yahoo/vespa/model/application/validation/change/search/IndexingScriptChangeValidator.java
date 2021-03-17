@@ -1,6 +1,8 @@
 // Copyright 2017 Yahoo Holdings. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.model.application.validation.change.search;
 
+import com.yahoo.config.application.api.ValidationId;
+import com.yahoo.config.application.api.ValidationOverrides;
 import com.yahoo.config.provision.ClusterSpec;
 import com.yahoo.searchdefinition.Search;
 import com.yahoo.searchdefinition.document.ImmutableSDField;
@@ -8,10 +10,8 @@ import com.yahoo.vespa.indexinglanguage.ExpressionConverter;
 import com.yahoo.vespa.indexinglanguage.expressions.Expression;
 import com.yahoo.vespa.indexinglanguage.expressions.OutputExpression;
 import com.yahoo.vespa.indexinglanguage.expressions.ScriptExpression;
-import com.yahoo.config.application.api.ValidationId;
-import com.yahoo.config.application.api.ValidationOverrides;
 import com.yahoo.vespa.model.application.validation.change.VespaConfigChangeAction;
-import com.yahoo.vespa.model.application.validation.change.VespaRefeedAction;
+import com.yahoo.vespa.model.application.validation.change.VespaReindexAction;
 
 import java.time.Instant;
 import java.util.ArrayList;
@@ -35,27 +35,26 @@ public class IndexingScriptChangeValidator {
         this.nextSearch = nextSearch;
     }
 
-    public List<VespaConfigChangeAction> validate(ValidationOverrides overrides, Instant now) {
+    public List<VespaConfigChangeAction> validate() {
         List<VespaConfigChangeAction> result = new ArrayList<>();
         for (ImmutableSDField nextField : nextSearch.allConcreteFields()) {
             String fieldName = nextField.getName();
             ImmutableSDField currentField = currentSearch.getConcreteField(fieldName);
             if (currentField != null) {
-                validateScripts(currentField, nextField, overrides, now).ifPresent(r -> result.add(r));
+                validateScripts(currentField, nextField).ifPresent(r -> result.add(r));
             }
         }
         return result;
     }
 
-    private Optional<VespaConfigChangeAction> validateScripts(ImmutableSDField currentField, ImmutableSDField nextField,
-                                                              ValidationOverrides overrides, Instant now) {
+    private Optional<VespaConfigChangeAction> validateScripts(ImmutableSDField currentField, ImmutableSDField nextField) {
         ScriptExpression currentScript = currentField.getIndexingScript();
         ScriptExpression nextScript = nextField.getIndexingScript();
         if ( ! equalScripts(currentScript, nextScript)) {
             ChangeMessageBuilder messageBuilder = new ChangeMessageBuilder(nextField.getName());
             new IndexingScriptChangeMessageBuilder(currentSearch, currentField, nextSearch, nextField).populate(messageBuilder);
             messageBuilder.addChange("indexing script", currentScript.toString(), nextScript.toString());
-            return Optional.of(VespaRefeedAction.of(id, ValidationId.indexingChange.value(), overrides, messageBuilder.build(), now));
+            return Optional.of(VespaReindexAction.of(id, ValidationId.indexingChange, messageBuilder.build()));
         }
         return Optional.empty();
     }
@@ -69,8 +68,8 @@ public class IndexingScriptChangeValidator {
         return removeOutputExpressions(currentScript).equals(removeOutputExpressions(nextScript));
     }
 
-    private static ScriptExpression removeOutputExpressions(ScriptExpression script) {
-        return (ScriptExpression) new OutputExpressionRemover().convert(script);
+    private static Expression removeOutputExpressions(ScriptExpression script) {
+        return new OutputExpressionRemover().convert(script);
     }
 
     private static class OutputExpressionRemover extends ExpressionConverter {

@@ -5,7 +5,6 @@ import com.yahoo.config.application.api.DeploymentInstanceSpec;
 import com.yahoo.config.application.api.DeploymentSpec;
 import com.yahoo.config.provision.ApplicationId;
 import com.yahoo.config.provision.InstanceName;
-import java.util.logging.Level;
 import com.yahoo.vespa.hosted.controller.Application;
 import com.yahoo.vespa.hosted.controller.ApplicationController;
 import com.yahoo.vespa.hosted.controller.Controller;
@@ -31,6 +30,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.function.Supplier;
+import java.util.logging.Level;
 import java.util.logging.Logger;
 
 import static java.util.Comparator.comparing;
@@ -189,8 +189,7 @@ public class DeploymentTrigger {
         Instance instance = application.require(applicationId.instance());
         DeploymentStatus status = jobs.deploymentStatus(application);
         JobId job = new JobId(instance.id(), jobType);
-        Versions versions = Versions.from(instance.change(), application, status.deploymentFor(job), controller.systemVersion());
-        String reason = "Job triggered manually by " + user;
+        Versions versions = Versions.from(instance.change(), application, status.deploymentFor(job), controller.readSystemVersion());
         Map<JobId, List<Versions>> jobs = status.testJobs(Map.of(job, versions));
         if (jobs.isEmpty() || ! requireTests)
             jobs = Map.of(job, List.of(versions));
@@ -286,7 +285,7 @@ public class DeploymentTrigger {
                     status.jobSteps().get(job).readyAt(status.application().require(job.application().instance()).change())
                           .filter(readyAt -> ! clock.instant().isBefore(readyAt))
                           .filter(__ -> ! status.jobs().get(job).get().isRunning())
-                          .filter(__ -> ! (job.type().isProduction() && isSuspendedInAnotherZone(status.application(), job)))
+                          .filter(__ -> ! (job.type().isProduction() && isUnhealthyInAnotherZone(status.application(), job)))
                           .ifPresent(readyAt -> {
                               jobs.add(deploymentJob(status.application().require(job.application().instance()),
                                                      versions,
@@ -298,11 +297,11 @@ public class DeploymentTrigger {
         return Collections.unmodifiableList(jobs);
     }
 
-    /** Returns whether given job should be triggered */
-    private boolean isSuspendedInAnotherZone(Application application, JobId job) {
+    /** Returns whether the application is healthy in all other production zones. */
+    private boolean isUnhealthyInAnotherZone(Application application, JobId job) {
         for (Deployment deployment : application.require(job.application().instance()).productionDeployments().values()) {
             if (   ! deployment.zone().equals(job.type().zone(controller.system()))
-                &&   controller.applications().isSuspended(new DeploymentId(job.application(), deployment.zone())))
+                && ! controller.applications().isHealthy(new DeploymentId(job.application(), deployment.zone())))
                 return true;
         }
         return false;

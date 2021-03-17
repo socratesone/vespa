@@ -10,11 +10,14 @@ namespace vespalib::eval { struct ValueBuilderFactory; }
 
 namespace vespalib::eval::instruction {
 
-using map_fun_t = vespalib::eval::operation::op1_t;
+using map_fun_t = operation::op1_t;
 
 struct GenericMap {
     static InterpretedFunction::Instruction
-    make_instruction(const ValueType &input_type, map_fun_t function);
+    make_instruction(const ValueType &result_type,
+                     const ValueType &input_type,
+                     map_fun_t function,
+                     Stash &stash);
 };
 
 } // namespace

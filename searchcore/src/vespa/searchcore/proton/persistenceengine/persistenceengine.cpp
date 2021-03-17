@@ -3,13 +3,14 @@
 #include "persistenceengine.h"
 #include "ipersistenceengineowner.h"
 #include "transport_latch.h"
-#include <vespa/metrics/loadmetric.h>
+#include <vespa/persistence/spi/bucketexecutor.h>
 #include <vespa/vespalib/stllike/hash_set.h>
 #include <vespa/document/fieldvalue/document.h>
 #include <vespa/document/datatype/documenttype.h>
 #include <vespa/document/update/documentupdate.h>
+#include <vespa/document/util/feed_reject_helper.h>
 #include <vespa/document/base/exceptions.h>
-
+#include <thread>
 
 #include <vespa/log/log.h>
 LOG_SETUP(".proton.persistenceengine.persistenceengine");
@@ -17,6 +18,8 @@ LOG_SETUP(".proton.persistenceengine.persistenceengine");
 using document::Document;
 using document::DocumentId;
 using storage::spi::BucketChecksum;
+using storage::spi::BucketExecutor;
+using storage::spi::BucketTask;
 using storage::spi::BucketIdListResult;
 using storage::spi::BucketInfo;
 using storage::spi::BucketInfoResult;
@@ -77,7 +80,7 @@ GenericResultHandler::~GenericResultHandler() = default;
 class BucketIdListResultHandler : public IBucketIdListResultHandler
 {
 private:
-    typedef vespalib::hash_set<document::BucketId, document::BucketId::hash> BucketIdSet;
+    using BucketIdSet = vespalib::hash_set<document::BucketId, document::BucketId::hash>;
     BucketIdSet _bucketSet;
 public:
     BucketIdListResultHandler()
@@ -179,7 +182,7 @@ PersistenceEngine::getHandlerSnapshot(const WriteGuard &, document::BucketSpace 
     return _handlers.getHandlerSnapshot(bucketSpace);
 }
 
-PersistenceEngine::PersistenceEngine(IPersistenceEngineOwner &owner, const IResourceWriteFilter &writeFilter,
+PersistenceEngine::PersistenceEngine(IPersistenceEngineOwner &owner, const IResourceWriteFilter &writeFilter, IDiskMemUsageNotifier& disk_mem_usage_notifier,
                                      ssize_t defaultSerializedSize, bool ignoreMaxBytes)
     : AbstractPersistenceProvider(),
       _defaultSerializedSize(defaultSerializedSize),
@@ -192,7 +195,8 @@ PersistenceEngine::PersistenceEngine(IPersistenceEngineOwner &owner, const IReso
       _writeFilter(writeFilter),
       _clusterStates(),
       _extraModifiedBuckets(),
-      _rwMutex()
+      _rwMutex(),
+      _resource_usage_tracker(std::make_shared<ResourceUsageTracker>(disk_mem_usage_notifier))
 {
 }
 
@@ -359,7 +363,7 @@ PersistenceEngine::updateAsync(const Bucket& b, Timestamp t, DocumentUpdate::SP 
 {
     if (!_writeFilter.acceptWriteOperation()) {
         IResourceWriteFilter::State state = _writeFilter.getAcceptState();
-        if (!state.acceptWriteOperation()) {
+        if (!state.acceptWriteOperation() && document::FeedRejectHelper::mustReject(*upd)) {
             return onComplete->onComplete(std::make_unique<UpdateResult>(Result::ErrorType::RESOURCE_EXHAUSTED,
                                 make_string("Update operation rejected for document '%s': '%s'",
                                             upd->getId().toString().c_str(), state.message().c_str())));
@@ -607,13 +611,16 @@ PersistenceEngine::join(const Bucket& source1, const Bucket& source2, const Buck
     return latch.getResult();
 }
 
+std::unique_ptr<vespalib::IDestructorCallback>
+PersistenceEngine::register_resource_usage_listener(IResourceUsageListener& listener)
+{
+    return _resource_usage_tracker->set_listener(listener);
+}
 
 void
 PersistenceEngine::destroyIterators()
 {
-    Context context(storage::spi::LoadType(0, "default"),
-                    storage::spi::Priority(0x80),
-                    storage::spi::Trace::TraceLevel(0));
+    Context context(storage::spi::Priority(0x80), 0);
     for (;;) {
         IteratorId id;
         {
@@ -730,6 +737,36 @@ std::unique_lock<std::shared_mutex>
 PersistenceEngine::getWLock() const
 {
     return WriteGuard(_rwMutex);
+}
+
+namespace {
+
+class ExecutorRegistration : public vespalib::IDestructorCallback {
+public:
+    explicit ExecutorRegistration(std::shared_ptr<BucketExecutor> executor) : _executor(std::move(executor)) { }
+    ~ExecutorRegistration() override = default;
+private:
+    std::shared_ptr<BucketExecutor> _executor;
+};
+
+}
+
+std::unique_ptr<vespalib::IDestructorCallback>
+PersistenceEngine::register_executor(std::shared_ptr<BucketExecutor> executor)
+{
+    assert(_bucket_executor.expired());
+    _bucket_executor = executor;
+    return std::make_unique<ExecutorRegistration>(executor);
+}
+
+void
+PersistenceEngine::execute(const storage::spi::Bucket &bucket, std::unique_ptr<BucketTask> task) {
+    auto bucketExecutor = get_bucket_executor();
+    if (bucketExecutor) {
+        bucketExecutor->execute(bucket, std::move(task));
+    } else {
+        return task->fail(bucket);
+    }
 }
 
 } // storage

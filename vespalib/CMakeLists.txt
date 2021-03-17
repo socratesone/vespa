@@ -27,7 +27,6 @@ vespa_define_module(
     src/tests/box
     src/tests/btree
     src/tests/child_process
-    src/tests/closure
     src/tests/component
     src/tests/compress
     src/tests/compression
@@ -43,6 +42,8 @@ vespa_define_module(
     src/tests/datastore/array_store_config
     src/tests/datastore/buffer_type
     src/tests/datastore/datastore
+    src/tests/datastore/fixed_size_hash_map
+    src/tests/datastore/simple_hash_map
     src/tests/datastore/unique_store
     src/tests/datastore/unique_store_dictionary
     src/tests/datastore/unique_store_string_allocator
@@ -94,12 +95,15 @@ vespa_define_module(
     src/tests/rendezvous
     src/tests/runnable_pair
     src/tests/sha1
+    src/tests/shared_string_repo
     src/tests/sharedptr
     src/tests/signalhandler
     src/tests/simple_thread_bundle
     src/tests/slime
     src/tests/slime/external_data_value
     src/tests/slime/summary-feature-benchmark
+    src/tests/small_vector
+    src/tests/spin_lock
     src/tests/stash
     src/tests/stllike
     src/tests/stringfmt
@@ -128,11 +132,16 @@ vespa_define_module(
     src/tests/tutorial/simple
     src/tests/tutorial/threads
     src/tests/typify
+    src/tests/util/bfloat16
+    src/tests/util/file_area_freelist
     src/tests/util/generationhandler
     src/tests/util/generationhandler_stress
     src/tests/util/md5
+    src/tests/util/mmap_file_allocator
+    src/tests/util/mmap_file_allocator_factory
     src/tests/util/rcuvector
     src/tests/util/reusable_set
+    src/tests/util/size_literals
     src/tests/valgrind
     src/tests/visit_ranges
     src/tests/websocket

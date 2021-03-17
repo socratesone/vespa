@@ -14,39 +14,35 @@ namespace vespalib::eval::instruction {
 
 //-----------------------------------------------------------------------------
 
-struct GenericReduce {
-    static InterpretedFunction::Instruction
-    make_instruction(const ValueType &type, Aggr aggr, const std::vector<vespalib::string> &dimensions,
-                     const ValueBuilderFactory &factory, Stash &stash);
-};
-
-//-----------------------------------------------------------------------------
-
 struct DenseReducePlan {
     size_t in_size;
     size_t out_size;
-    std::vector<size_t> keep_loop;
-    std::vector<size_t> keep_stride;
-    std::vector<size_t> reduce_loop;
-    std::vector<size_t> reduce_stride;
+    SmallVector<size_t> loop_cnt;
+    SmallVector<size_t> in_stride;
+    SmallVector<size_t> out_stride;
     DenseReducePlan(const ValueType &type, const ValueType &res_type);
     ~DenseReducePlan();
-    template <typename F> void execute_keep(const F &f) const {
-        run_nested_loop(0, keep_loop, keep_stride, f);
-    }
-    template <typename F> void execute_reduce(size_t offset, const F &f) const {
-        run_nested_loop(offset, reduce_loop, reduce_stride, f);
-    }
-    template <typename FIRST, typename NEXT> void execute_reduce(size_t offset, const FIRST &first, const NEXT &next) const {
-        run_nested_loop(offset, reduce_loop, reduce_stride, first, next);
+    template <typename F> void execute(size_t in_idx, const F &f) const {
+        run_nested_loop(in_idx, 0, loop_cnt, in_stride, out_stride, f);
     }
 };
 
 struct SparseReducePlan {
     size_t num_reduce_dims;
-    std::vector<size_t> keep_dims;
+    SmallVector<size_t> keep_dims;
+    bool should_forward_index() const;
     SparseReducePlan(const ValueType &type, const ValueType &res_type);
     ~SparseReducePlan();
+};
+
+//-----------------------------------------------------------------------------
+
+struct GenericReduce {
+    static InterpretedFunction::Instruction
+    make_instruction(const ValueType &result_type,
+                     const ValueType &input_type, Aggr aggr,
+                     const std::vector<vespalib::string> &dimensions,
+                     const ValueBuilderFactory &factory, Stash &stash);
 };
 
 //-----------------------------------------------------------------------------

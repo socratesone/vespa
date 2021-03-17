@@ -4,6 +4,7 @@ package com.yahoo.vespa.hosted.provision.provisioning;
 import com.yahoo.component.Version;
 import com.yahoo.config.provision.ApplicationId;
 import com.yahoo.config.provision.ApplicationName;
+import com.yahoo.config.provision.ApplicationTransaction;
 import com.yahoo.config.provision.Capacity;
 import com.yahoo.config.provision.ClusterResources;
 import com.yahoo.config.provision.ClusterSpec;
@@ -14,12 +15,14 @@ import com.yahoo.config.provision.InstanceName;
 import com.yahoo.config.provision.NodeResources;
 import com.yahoo.config.provision.NodeType;
 import com.yahoo.config.provision.OutOfCapacityException;
-import com.yahoo.config.provision.ParentHostUnavailableException;
+import com.yahoo.config.provision.ProvisionLock;
 import com.yahoo.config.provision.RegionName;
 import com.yahoo.config.provision.TenantName;
 import com.yahoo.config.provision.Zone;
+import com.yahoo.transaction.NestedTransaction;
 import com.yahoo.vespa.hosted.provision.Node;
 import com.yahoo.vespa.hosted.provision.NodeList;
+import com.yahoo.vespa.hosted.provision.node.Agent;
 import org.junit.Test;
 
 import java.util.HashSet;
@@ -47,7 +50,7 @@ public class DockerProvisioningTest {
     public void docker_application_deployment() {
         ProvisioningTester tester = new ProvisioningTester.Builder().zone(new Zone(Environment.prod, RegionName.from("us-east"))).build();
         tester.makeReadyHosts(10, dockerResources).activateTenantHosts();
-        ApplicationId application1 = ProvisioningTester.makeApplicationId("app1");
+        ApplicationId application1 = ProvisioningTester.applicationId("app1");
 
         Version wantedVespaVersion = Version.fromString("6.39");
         int nodeCount = 7;
@@ -76,12 +79,11 @@ public class DockerProvisioningTest {
     public void refuses_to_activate_on_non_active_host() {
         ProvisioningTester tester = new ProvisioningTester.Builder().zone(new Zone(Environment.prod, RegionName.from("us-east"))).build();
 
-        ApplicationId zoneApplication = ProvisioningTester.makeApplicationId();
         List<Node> parents = tester.makeReadyNodes(10, new NodeResources(2, 4, 20, 2), NodeType.host, 1);
         for (Node parent : parents)
-            tester.makeReadyVirtualDockerNodes(1, dockerResources, parent.hostname());
+            tester.makeReadyChildren(1, dockerResources, parent.hostname());
 
-        ApplicationId application1 = ProvisioningTester.makeApplicationId();
+        ApplicationId application1 = ProvisioningTester.applicationId();
         Version wantedVespaVersion = Version.fromString("6.39");
         int nodeCount = 7;
         try {
@@ -91,11 +93,8 @@ public class DockerProvisioningTest {
             fail("Expected the allocation to fail due to parent hosts not being active yet");
         } catch (OutOfCapacityException expected) { }
 
-        // Activate the zone-app, thereby allocating the parents
-        List<HostSpec> hosts = tester.prepare(zoneApplication,
-                ClusterSpec.request(ClusterSpec.Type.container, ClusterSpec.Id.from("zone-app")).vespaVersion(wantedVespaVersion).build(),
-                Capacity.fromRequiredNodeType(NodeType.host));
-        tester.activate(zoneApplication, hosts);
+        // Activate the hosts, thereby allocating the parents
+        tester.activateTenantHosts();
 
         // Try allocating tenants again
         List<HostSpec> nodes = tester.prepare(application1,
@@ -153,12 +152,12 @@ public class DockerProvisioningTest {
         NodeResources nodeResources = new NodeResources(1, 4, 100, 1);
         ProvisioningTester tester = new ProvisioningTester.Builder().zone(new Zone(Environment.prod, RegionName.from("us-east"))).build();
         tester.makeReadyHosts(4, hostResources).activateTenantHosts();
-        ApplicationId application1 = ProvisioningTester.makeApplicationId("app1");
+        ApplicationId application1 = ProvisioningTester.applicationId("app1");
         prepareAndActivate(application1, 2, true, nodeResources, tester);
         assertEquals(Set.of("host-1.yahoo.com", "host-2.yahoo.com"),
                      hostsOf(tester.getNodes(application1, Node.State.active)));
 
-        ApplicationId application2 = ProvisioningTester.makeApplicationId("app2");
+        ApplicationId application2 = ProvisioningTester.applicationId("app2");
         prepareAndActivate(application2, 2, false, nodeResources, tester);
         assertEquals("Application is assigned to separate hosts",
                      Set.of("host-3.yahoo.com", "host-4.yahoo.com"),
@@ -172,12 +171,12 @@ public class DockerProvisioningTest {
         NodeResources nodeResources = new NodeResources(1, 4, 100, 1);
         ProvisioningTester tester = new ProvisioningTester.Builder().zone(new Zone(Environment.prod, RegionName.from("us-east"))).build();
         tester.makeReadyHosts(4, hostResources).activateTenantHosts();
-        ApplicationId application1 = ProvisioningTester.makeApplicationId("app1");
+        ApplicationId application1 = ProvisioningTester.applicationId("app1");
         prepareAndActivate(application1, 2, false, nodeResources, tester);
         assertEquals(Set.of("host-1.yahoo.com", "host-2.yahoo.com"),
                      hostsOf(tester.getNodes(application1, Node.State.active)));
 
-        ApplicationId application2 = ProvisioningTester.makeApplicationId("app2");
+        ApplicationId application2 = ProvisioningTester.applicationId("app2");
         prepareAndActivate(application2, 2, true, nodeResources, tester);
         assertEquals("Application is assigned to separate hosts",
                      Set.of("host-3.yahoo.com", "host-4.yahoo.com"),
@@ -202,7 +201,7 @@ public class DockerProvisioningTest {
             tester.makeReadyVirtualDockerNode(i, dockerResources, "host4");
          */
 
-        ApplicationId application1 = ProvisioningTester.makeApplicationId();
+        ApplicationId application1 = ProvisioningTester.applicationId();
         prepareAndActivate(application1, 2, false, nodeResources, tester);
         for (Node node : tester.getNodes(application1, Node.State.active))
             assertFalse(node.allocation().get().membership().cluster().isExclusive());
@@ -256,9 +255,9 @@ public class DockerProvisioningTest {
         try {
             ProvisioningTester tester = new ProvisioningTester.Builder()
                                                 .zone(new Zone(Environment.prod, RegionName.from("us-east-1"))).build();
-            ApplicationId application1 = ProvisioningTester.makeApplicationId("app1");
-            tester.makeReadyVirtualDockerNodes(1, dockerResources, "dockerHost1");
-            tester.makeReadyVirtualDockerNodes(1, dockerResources, "dockerHost2");
+            ApplicationId application1 = ProvisioningTester.applicationId("app1");
+            tester.makeReadyChildren(1, dockerResources, "dockerHost1");
+            tester.makeReadyChildren(1, dockerResources, "dockerHost2");
 
             tester.prepare(application1,
                            ClusterSpec.request(ClusterSpec.Type.content, ClusterSpec.Id.from("myContent")).vespaVersion("6.42").build(),
@@ -283,8 +282,8 @@ public class DockerProvisioningTest {
                                                                     .build();
         tester.makeReadyHosts(2, hostFlavor.resources()).activateTenantHosts();
 
-        ApplicationId app1 = ProvisioningTester.makeApplicationId("app1");
-        ClusterSpec cluster1 = ClusterSpec.request(ClusterSpec.Type.content, new ClusterSpec.Id("cluster1")).vespaVersion("7").build();
+        ApplicationId app1 = ProvisioningTester.applicationId("app1");
+        ClusterSpec cluster1 = ClusterSpec.request(ClusterSpec.Type.container, new ClusterSpec.Id("cluster1")).vespaVersion("7").build();
 
         var resources = new NodeResources(1, 8, 10, 1);
         tester.activate(app1, cluster1, Capacity.from(new ClusterResources(2, 1, resources),
@@ -303,7 +302,7 @@ public class DockerProvisioningTest {
                                                                     .build();
         tester.makeReadyHosts(9, hostFlavor.resources()).activateTenantHosts();
 
-        ApplicationId app1 = ProvisioningTester.makeApplicationId("app1");
+        ApplicationId app1 = ProvisioningTester.applicationId("app1");
         ClusterSpec cluster1 = ClusterSpec.request(ClusterSpec.Type.content, new ClusterSpec.Id("cluster1")).vespaVersion("7").build();
 
         var initialResources = new NodeResources(2, 16, 50, 1);
@@ -338,7 +337,7 @@ public class DockerProvisioningTest {
                                                                         .build();
             tester.makeReadyHosts(2, hostFlavor.resources()).activateTenantHosts();
 
-            ApplicationId app1 = ProvisioningTester.makeApplicationId("app1");
+            ApplicationId app1 = ProvisioningTester.applicationId("app1");
             ClusterSpec cluster1 = ClusterSpec.request(ClusterSpec.Type.content, new ClusterSpec.Id("cluster1")).vespaVersion("7").build();
 
             // 5 Gb requested memory becomes 5-3=2 Gb real memory, which is an illegally small amount
@@ -360,11 +359,15 @@ public class DockerProvisioningTest {
                                                                     .build();
         tester.makeReadyHosts(5, r).activateTenantHosts();
 
-        ApplicationId app1 = ProvisioningTester.makeApplicationId("app1");
-        ClusterSpec cluster1 = ClusterSpec.request(ClusterSpec.Type.container, new ClusterSpec.Id("cluster1")).vespaVersion("7").build();
+        ApplicationId app1 = ProvisioningTester.applicationId("app1");
+        ClusterSpec cluster1 = ClusterSpec.request(ClusterSpec.Type.content, new ClusterSpec.Id("cluster1")).vespaVersion("7").build();
 
         tester.activate(app1, cluster1, Capacity.from(new ClusterResources(5, 1, r)));
         tester.activate(app1, cluster1, Capacity.from(new ClusterResources(2, 1, r)));
+
+        var tx = new ApplicationTransaction(new ProvisionLock(app1, tester.nodeRepository().nodes().lock(app1)), new NestedTransaction());
+        tester.nodeRepository().nodes().deactivate(tester.nodeRepository().nodes().list(Node.State.active).owner(app1).retired().asList(), tx);
+        tx.nested().commit();
 
         assertEquals(2, tester.getNodes(app1, Node.State.active).size());
         assertEquals(3, tester.getNodes(app1, Node.State.inactive).size());
@@ -377,44 +380,49 @@ public class DockerProvisioningTest {
     }
 
     @Test
-    public void inactive_container_nodes_are_reused() {
-        assertInactiveReuse(ClusterSpec.Type.container);
+    public void inactive_container_nodes_are_not_reused() {
+        assertInactiveReuse(ClusterSpec.Type.container, false);
     }
 
     @Test
     public void inactive_content_nodes_are_reused() {
-        assertInactiveReuse(ClusterSpec.Type.content);
+        assertInactiveReuse(ClusterSpec.Type.content, true);
     }
 
-    private void assertInactiveReuse(ClusterSpec.Type clusterType) {
+    private void assertInactiveReuse(ClusterSpec.Type clusterType, boolean expectedReuse) {
         NodeResources r = new NodeResources(20, 40, 100, 4);
         ProvisioningTester tester = new ProvisioningTester.Builder().zone(new Zone(Environment.prod, RegionName.from("us-east")))
                                                                     .flavors(List.of(new Flavor(r)))
                                                                     .build();
         tester.makeReadyHosts(4, r).activateTenantHosts();
 
-        ApplicationId app1 = ProvisioningTester.makeApplicationId("app1");
+        ApplicationId app1 = ProvisioningTester.applicationId("app1");
         ClusterSpec cluster1 = ClusterSpec.request(clusterType, new ClusterSpec.Id("cluster1")).vespaVersion("7").build();
 
         tester.activate(app1, cluster1, Capacity.from(new ClusterResources(4, 1, r)));
         tester.activate(app1, cluster1, Capacity.from(new ClusterResources(2, 1, r)));
 
         // Deactivate any retired nodes - usually done by the RetiredExpirer
-        tester.nodeRepository().setRemovable(app1, tester.getNodes(app1).retired().asList());
+        tester.nodeRepository().nodes().setRemovable(app1, tester.getNodes(app1).retired().asList());
         tester.activate(app1, cluster1, Capacity.from(new ClusterResources(2, 1, r)));
 
-        assertEquals(2, tester.getNodes(app1, Node.State.inactive).size());
-        tester.activate(app1, cluster1, Capacity.from(new ClusterResources(4, 1, r)));
-        assertEquals(0, tester.getNodes(app1, Node.State.inactive).size());
+        if (expectedReuse) {
+            assertEquals(2, tester.getNodes(app1, Node.State.inactive).size());
+            tester.activate(app1, cluster1, Capacity.from(new ClusterResources(4, 1, r)));
+            assertEquals(0, tester.getNodes(app1, Node.State.inactive).size());
+        }
+        else {
+            assertEquals(0, tester.getNodes(app1, Node.State.inactive).size());
+            assertEquals(2, tester.nodeRepository().nodes().list(Node.State.dirty).size());
+            tester.nodeRepository().nodes().setReady(tester.nodeRepository().nodes().list(Node.State.dirty).asList(), Agent.system, "test");
+            tester.activate(app1, cluster1, Capacity.from(new ClusterResources(4, 1, r)));
+        }
+
     }
 
 
     private Set<String> hostsOf(NodeList nodes) {
         return nodes.asList().stream().map(Node::parentHostname).map(Optional::get).collect(Collectors.toSet());
-    }
-
-    private void prepareAndActivate(ApplicationId application, int nodeCount, boolean exclusive, ProvisioningTester tester) {
-        prepareAndActivate(application, nodeCount, exclusive, dockerResources, tester);
     }
 
     private void prepareAndActivate(ApplicationId application, int nodeCount, boolean exclusive, NodeResources resources, ProvisioningTester tester) {
@@ -426,13 +434,13 @@ public class DockerProvisioningTest {
 
     private void assertNodeParentReservation(List<Node> nodes, Optional<TenantName> reservation, ProvisioningTester tester) {
         for (Node node : nodes)
-            assertEquals(reservation, tester.nodeRepository().getNode(node.parentHostname().get()).get().reservedTo());
+            assertEquals(reservation, tester.nodeRepository().nodes().node(node.parentHostname().get()).get().reservedTo());
     }
 
     private void assertHostSpecParentReservation(List<HostSpec> hostSpecs, Optional<TenantName> reservation, ProvisioningTester tester) {
         for (HostSpec hostSpec : hostSpecs) {
-            Node node = tester.nodeRepository().getNode(hostSpec.hostname()).get();
-            assertEquals(reservation, tester.nodeRepository().getNode(node.parentHostname().get()).get().reservedTo());
+            Node node = tester.nodeRepository().nodes().node(hostSpec.hostname()).get();
+            assertEquals(reservation, tester.nodeRepository().nodes().node(node.parentHostname().get()).get().reservedTo());
         }
     }
 

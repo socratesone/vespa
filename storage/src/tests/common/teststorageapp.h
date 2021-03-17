@@ -18,25 +18,26 @@
 #pragma once
 
 #include "testnodestateupdater.h"
+#include <vespa/document/base/testdocman.h>
+#include <vespa/document/bucket/fixed_bucket_spaces.h>
+#include <persistence/spi/types.h>
 #include <vespa/storage/bucketdb/storbucketdb.h>
 #include <vespa/storage/common/doneinitializehandler.h>
+#include <vespa/storage/common/hostreporter/hostinfo.h>
+#include <vespa/storage/common/node_identity.h>
 #include <vespa/storage/common/nodestateupdater.h>
-#include <vespa/storage/storageserver/framework.h>
 #include <vespa/storage/frameworkimpl/component/distributorcomponentregisterimpl.h>
 #include <vespa/storage/frameworkimpl/component/servicelayercomponentregisterimpl.h>
 #include <vespa/storageframework/defaultimplementation/clock/realclock.h>
 #include <vespa/storageframework/defaultimplementation/component/testcomponentregister.h>
-#include <vespa/persistence/spi/persistenceprovider.h>
-#include <vespa/document/bucket/fixed_bucket_spaces.h>
-#include <vespa/document/base/testdocman.h>
 #include <vespa/vespalib/util/sequencedtaskexecutor.h>
 #include <atomic>
 
 namespace storage {
 
+namespace spi { struct PersistenceProvider; }
 class StorageBucketDBInitializer;
 
-DEFINE_PRIMITIVE_WRAPPER(uint16_t, DiskCount);
 DEFINE_PRIMITIVE_WRAPPER(uint16_t, NodeIndex);
 DEFINE_PRIMITIVE_WRAPPER(uint16_t, NodeCount);
 DEFINE_PRIMITIVE_WRAPPER(uint16_t, Redundancy);
@@ -51,6 +52,7 @@ protected:
     document::TestDocMan _docMan;
     TestNodeStateUpdater _nodeStateUpdater;
     vespalib::string _configId;
+    NodeIdentity _node_identity;
     std::atomic<bool> _initialized;
 
 public:
@@ -82,12 +84,11 @@ public:
     const document::BucketIdFactory& getBucketIdFactory()
         { return _compReg.getBucketIdFactory(); }
     TestNodeStateUpdater& getStateUpdater() { return _nodeStateUpdater; }
-    documentapi::LoadTypeSet::SP getLoadTypes()
-        { return _compReg.getLoadTypes(); }
-    lib::Distribution::SP getDistribution()
+    std::shared_ptr<lib::Distribution> & getDistribution()
         { return _compReg.getDistribution(); }
     TestNodeStateUpdater& getNodeStateUpdater() { return _nodeStateUpdater; }
     uint16_t getIndex() const { return _compReg.getIndex(); }
+    const NodeIdentity& node_identity() const noexcept { return _node_identity; }
 
     // The storage app also implements the done initializer interface, so it can
     // be sent to components needing this.
@@ -104,7 +105,6 @@ private:
     [[nodiscard]] virtual StorBucketDatabase& content_bucket_db(document::BucketSpace) { abort(); }
     virtual StorBucketDatabase& getStorageBucketDatabase() { abort(); }
     virtual BucketDatabase& getBucketDatabase() { abort(); }
-    virtual uint16_t getDiskCount() const { abort(); }
 };
 
 class TestServiceLayerApp : public TestStorageApp
@@ -113,6 +113,7 @@ class TestServiceLayerApp : public TestStorageApp
     ServiceLayerComponentRegisterImpl& _compReg;
     PersistenceProviderUP _persistenceProvider;
     std::unique_ptr<vespalib::ISequencedTaskExecutor> _executor;
+    HostInfo _host_info;
 
 public:
     TestServiceLayerApp(vespalib::stringref configId);
@@ -123,6 +124,7 @@ public:
     void setPersistenceProvider(PersistenceProviderUP);
 
     ServiceLayerComponentRegisterImpl& getComponentRegister() { return _compReg; }
+    HostInfo &get_host_info() noexcept { return _host_info; }
 
     spi::PersistenceProvider& getPersistenceProvider();
 
@@ -134,11 +136,6 @@ public:
         return _compReg.getBucketSpaceRepo().get(document::FixedBucketSpaces::default_space()).bucketDatabase();
     }
     vespalib::ISequencedTaskExecutor & executor() { return *_executor; }
-
-private:
-    // For storage server interface implementation we'll get rid of soon.
-    // Use getPartitions().size() instead.
-    uint16_t getDiskCount() const override { return _compReg.getDiskCount(); }
 };
 
 class TestDistributorApp : public TestStorageApp,

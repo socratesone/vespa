@@ -1,22 +1,23 @@
 // Copyright Verizon Media. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
-#include "storage_api_rpc_service.h"
 #include "caching_rpc_target_resolver.h"
 #include "message_codec_provider.h"
-#include "shared_rpc_resources.h"
 #include "rpc_envelope_proto.h"
+#include "shared_rpc_resources.h"
+#include "storage_api_rpc_service.h"
 #include <vespa/fnet/frt/supervisor.h>
 #include <vespa/fnet/frt/target.h>
 #include <vespa/slobrok/sbmirror.h>
+#include <vespa/storage/common/bucket_utils.h>
 #include <vespa/storage/storageserver/communicationmanager.h>
 #include <vespa/storage/storageserver/message_dispatcher.h>
 #include <vespa/storage/storageserver/rpcrequestwrapper.h>
 #include <vespa/storageapi/mbusprot/protocolserialization7.h>
 #include <vespa/storageapi/messageapi/storagecommand.h>
 #include <vespa/vespalib/data/databuffer.h>
+#include <vespa/vespalib/trace/tracelevel.h>
 #include <vespa/vespalib/util/compressor.h>
 #include <vespa/vespalib/util/stringfmt.h>
-#include <vespa/vespalib/trace/tracelevel.h>
 #include <cassert>
 
 #include <vespa/log/log.h>
@@ -208,7 +209,7 @@ void StorageApiRpcService::encode_rpc_v1_response(FRT_RPCRequest& request, api::
     // TODO skip encoding header altogether if no relevant fields set?
     protobuf::ResponseHeader hdr;
     if (reply.getTrace().getLevel() > 0) {
-        hdr.set_trace_payload(reply.getTrace().getRoot().encode());
+        hdr.set_trace_payload(reply.getTrace().encode());
     }
     // TODO consistent naming...
     encode_header_into_rpc_params(hdr, *ret);
@@ -220,7 +221,8 @@ void StorageApiRpcService::send_rpc_v1_request(std::shared_ptr<api::StorageComma
         cmd->getType().getName().c_str(), cmd->getAddress()->toString().c_str());
 
     assert(cmd->getAddress() != nullptr);
-    auto target = _target_resolver->resolve_rpc_target(*cmd->getAddress(), cmd->getBucketId().getId());
+    auto target = _target_resolver->resolve_rpc_target(*cmd->getAddress(),
+                                                       get_super_bucket_key(cmd->getBucketId()));
     if (!target) {
         auto reply = cmd->makeReply();
         reply->setResult(make_no_address_for_service_error(*cmd->getAddress()));
@@ -289,7 +291,7 @@ void StorageApiRpcService::RequestDone(FRT_RPCRequest* raw_req) {
     assert(reply);
 
     if (!hdr.trace_payload().empty()) {
-        cmd.getTrace().getRoot().addChild(mbus::TraceNode::decode(hdr.trace_payload()));
+        cmd.getTrace().addChild(mbus::TraceNode::decode(hdr.trace_payload()));
     }
     if (cmd.getTrace().shouldTrace(TraceLevel::SEND_RECEIVE)) {
         cmd.getTrace().trace(TraceLevel::SEND_RECEIVE,

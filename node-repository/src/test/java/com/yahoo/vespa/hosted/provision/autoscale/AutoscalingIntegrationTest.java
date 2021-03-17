@@ -4,18 +4,17 @@ package com.yahoo.vespa.hosted.provision.autoscale;
 import com.yahoo.config.provision.ApplicationId;
 import com.yahoo.config.provision.ClusterResources;
 import com.yahoo.config.provision.ClusterSpec;
-import com.yahoo.config.provision.Flavor;
 import com.yahoo.config.provision.HostSpec;
 import com.yahoo.config.provision.NodeResources;
 import com.yahoo.test.ManualClock;
-import com.yahoo.vespa.hosted.provision.Node;
+import com.yahoo.transaction.Mutex;
 import com.yahoo.vespa.hosted.provision.applications.Application;
-import com.yahoo.vespa.hosted.provision.provisioning.HostResourcesCalculator;
 import com.yahoo.vespa.hosted.provision.testutils.OrchestratorMock;
 import org.junit.Test;
 
 import java.time.Duration;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 import java.util.stream.Collectors;
 
 import static org.junit.Assert.assertEquals;
@@ -32,9 +31,9 @@ public class AutoscalingIntegrationTest {
         NodeResources hosts = new NodeResources(3, 20, 200, 1);
 
         AutoscalingTester tester = new AutoscalingTester(hosts);
-        NodeMetricsFetcher fetcher = new NodeMetricsFetcher(tester.nodeRepository(),
-                                                            new OrchestratorMock(),
-                                                            new MockHttpClient(tester.clock()));
+        MetricsV2MetricsFetcher fetcher = new MetricsV2MetricsFetcher(tester.nodeRepository(),
+                                                                      new OrchestratorMock(),
+                                                                      new MockHttpClient(tester.clock()));
         Autoscaler autoscaler = new Autoscaler(tester.nodeMetricsDb(), tester.nodeRepository());
 
         ApplicationId application1 = tester.applicationId("test1");
@@ -47,23 +46,25 @@ public class AutoscalingIntegrationTest {
 
         for (int i = 0; i < 1000; i++) {
             tester.clock().advance(Duration.ofSeconds(10));
-            tester.nodeMetricsDb().add(fetcher.fetchMetrics(application1));
+            fetcher.fetchMetrics(application1).whenComplete((r, e) -> tester.nodeMetricsDb().addNodeMetrics(r.nodeMetrics()));
             tester.clock().advance(Duration.ofSeconds(10));
-            tester.nodeMetricsDb().gc(tester.clock());
+            tester.nodeMetricsDb().gc();
         }
 
         ClusterResources min = new ClusterResources(2, 1, nodes);
         ClusterResources max = new ClusterResources(2, 1, nodes);
 
-        Application application = tester.nodeRepository().applications().get(application1).orElse(new Application(application1))
+        Application application = tester.nodeRepository().applications().get(application1).orElse(Application.empty(application1))
                                         .withCluster(cluster1.id(), false, min, max);
-        tester.nodeRepository().applications().put(application, tester.nodeRepository().lock(application1));
-        var scaledResources = autoscaler.suggest(application.clusters().get(cluster1.id()),
-                                                 tester.nodeRepository().getNodes(application1));
+        try (Mutex lock = tester.nodeRepository().nodes().lock(application1)) {
+            tester.nodeRepository().applications().put(application, lock);
+        }
+        var scaledResources = autoscaler.suggest(application, application.clusters().get(cluster1.id()),
+                                                 tester.nodeRepository().nodes().list().owner(application1));
         assertTrue(scaledResources.isPresent());
     }
 
-    private static class MockHttpClient implements NodeMetricsFetcher.HttpClient {
+    private static class MockHttpClient implements MetricsV2MetricsFetcher.AsyncHttpClient {
 
         private final ManualClock clock;
 
@@ -116,7 +117,9 @@ public class AutoscalingIntegrationTest {
                 "}\n";
 
         @Override
-        public String get(String url) { return cannedResponse.replace("[now]", String.valueOf(clock.millis())); }
+        public CompletableFuture<String> get(String url) {
+            return CompletableFuture.completedFuture(cannedResponse.replace("[now]",
+                                                                            String.valueOf(clock.millis()))); }
 
         @Override
         public void close() { }

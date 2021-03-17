@@ -1,11 +1,13 @@
 // Copyright 2017 Yahoo Holdings. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.model.container.xml;
 
+import com.yahoo.cloud.config.ZookeeperServerConfig;
 import com.yahoo.component.ComponentId;
 import com.yahoo.config.application.api.ApplicationPackage;
 import com.yahoo.config.model.NullConfigModelRegistry;
 import com.yahoo.config.model.api.ContainerEndpoint;
 import com.yahoo.config.model.api.EndpointCertificateSecrets;
+import com.yahoo.config.model.api.TenantSecretStore;
 import com.yahoo.config.model.builder.xml.test.DomBuilderTest;
 import com.yahoo.config.model.deploy.DeployState;
 import com.yahoo.config.model.deploy.TestProperties;
@@ -14,6 +16,7 @@ import com.yahoo.config.model.provision.InMemoryProvisioner;
 import com.yahoo.config.model.provision.SingleNodeProvisioner;
 import com.yahoo.config.model.test.MockApplicationPackage;
 import com.yahoo.config.model.test.MockRoot;
+import com.yahoo.config.provision.Cloud;
 import com.yahoo.config.provision.Environment;
 import com.yahoo.config.provision.Flavor;
 import com.yahoo.config.provision.RegionName;
@@ -28,6 +31,7 @@ import com.yahoo.container.handler.VipStatusHandler;
 import com.yahoo.container.handler.metrics.MetricsV2Handler;
 import com.yahoo.container.handler.observability.ApplicationStatusHandler;
 import com.yahoo.container.jdisc.JdiscBindingsConfig;
+import com.yahoo.container.jdisc.secretstore.SecretStoreConfig;
 import com.yahoo.container.servlet.ServletConfigConfig;
 import com.yahoo.container.usability.BindingsOverviewHandler;
 import com.yahoo.jdisc.http.ConnectorConfig;
@@ -40,11 +44,13 @@ import com.yahoo.vespa.defaults.Defaults;
 import com.yahoo.vespa.model.AbstractService;
 import com.yahoo.vespa.model.VespaModel;
 import com.yahoo.vespa.model.container.ApplicationContainer;
+import com.yahoo.vespa.model.container.ApplicationContainerCluster;
 import com.yahoo.vespa.model.container.ContainerCluster;
 import com.yahoo.vespa.model.container.SecretStore;
 import com.yahoo.vespa.model.container.component.Component;
 import com.yahoo.vespa.model.container.http.ConnectorFactory;
 import com.yahoo.vespa.model.content.utils.ContentClusterUtils;
+import com.yahoo.vespa.model.test.VespaModelTester;
 import com.yahoo.vespa.model.test.utils.VespaModelCreatorWithFilePkg;
 import org.hamcrest.Matchers;
 import org.junit.Rule;
@@ -59,6 +65,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.function.Function;
 import java.util.logging.Level;
 import java.util.stream.Collectors;
 
@@ -700,7 +707,7 @@ public class ContainerModelBuilderTest extends ContainerModelBuilderTestBase {
     public void secret_store_can_be_set_up() {
         Element clusterElem = DomBuilderTest.parse(
                 "<container version='1.0'>",
-                "  <secret-store>",
+                "  <secret-store type='oath-ckms'>",
                 "    <group name='group1' environment='env1'/>",
                 "  </secret-store>",
                 "</container>");
@@ -708,6 +715,54 @@ public class ContainerModelBuilderTest extends ContainerModelBuilderTestBase {
         SecretStore secretStore = getContainerCluster("container").getSecretStore().get();
         assertEquals("group1", secretStore.getGroups().get(0).name);
         assertEquals("env1", secretStore.getGroups().get(0).environment);
+    }
+
+    @Test
+    public void cloud_secret_store_requires_configured_secret_store() {
+        Element clusterElem = DomBuilderTest.parse(
+                "<container version='1.0'>",
+                "  <secret-store type='cloud'>",
+                "    <aws-parameter-store name='store1' region='eu-north-1'/>",
+                "  </secret-store>",
+                "</container>");
+        try {
+            createModel(root, clusterElem);
+            fail("secret store not defined");
+        } catch (RuntimeException e) {
+            assertEquals("No configured secret store named store1", e.getMessage());
+        }
+    }
+
+
+    @Test
+    public void cloud_secret_store_can_be_set_up() {
+        Element clusterElem = DomBuilderTest.parse(
+                "<container version='1.0'>",
+                "  <secret-store type='cloud'>",
+                "    <aws-parameter-store name='store1' region='eu-north-1'/>",
+                "  </secret-store>",
+                "</container>");
+
+        DeployState state = new DeployState.Builder()
+                .properties(
+                        new TestProperties()
+                                .setHostedVespa(true)
+                                .setTenantSecretStores(List.of(new TenantSecretStore("store1", "1234", "role", Optional.of("externalid")))))
+                .zone(new Zone(SystemName.Public, Environment.prod, RegionName.defaultName()))
+                .build();
+        createModel(root, state, null, clusterElem);
+
+        ApplicationContainerCluster container = getContainerCluster("container");
+        assertComponentConfigured(container, "com.yahoo.jdisc.cloud.aws.AwsParameterStore");
+        CloudSecretStore secretStore = (CloudSecretStore) container.getComponentsMap().get(ComponentId.fromString("com.yahoo.jdisc.cloud.aws.AwsParameterStore"));
+
+
+        SecretStoreConfig.Builder configBuilder = new SecretStoreConfig.Builder();
+        secretStore.getConfig(configBuilder);
+        SecretStoreConfig secretStoreConfig = configBuilder.build();
+
+        assertEquals(1, secretStoreConfig.awsParameterStores().size());
+        assertEquals("store1", secretStoreConfig.awsParameterStores().get(0).name());
     }
 
     @Test
@@ -724,7 +779,8 @@ public class ContainerModelBuilderTest extends ContainerModelBuilderTestBase {
                     .build();
             createModel(root, state, null, clusterElem);
         } catch (RuntimeException e) {
-            assertEquals(e.getMessage(), "Client certificate authority security/clients.pem is missing - see: https://cloud.vespa.ai/security-model#data-plane");
+            assertEquals("Client certificate authority security/clients.pem is missing - see: https://cloud.vespa.ai/en/security-model#data-plane",
+                         e.getMessage());
             return;
         }
         fail();
@@ -871,6 +927,62 @@ public class ContainerModelBuilderTest extends ContainerModelBuilderTestBase {
         assertThat(connectorConfig.ssl().caCertificate(), isEmptyString());
     }
 
+    @Test
+    public void cluster_with_zookeeper() {
+        Function<Integer, String> servicesXml = (nodeCount) -> "<container version='1.0' id='default'>" +
+                                                               "<nodes count='" + nodeCount + "'/>" +
+                                                               "<zookeeper/>" +
+                                                               "</container>";
+        VespaModelTester tester = new VespaModelTester();
+        tester.addHosts(3);
+        {
+            VespaModel model = tester.createModel(servicesXml.apply(3), true);
+            ApplicationContainerCluster cluster = model.getContainerClusters().get("default");
+            assertNotNull(cluster);
+            assertComponentConfigured(cluster,"com.yahoo.vespa.curator.Curator");
+            cluster.getContainers().forEach(container -> {
+                assertComponentConfigured(container, "com.yahoo.vespa.zookeeper.ReconfigurableVespaZooKeeperServer");
+                assertComponentConfigured(container, "com.yahoo.vespa.zookeeper.Reconfigurer");
+                assertComponentConfigured(container, "com.yahoo.vespa.zookeeper.VespaZooKeeperAdminImpl");
+
+                ZookeeperServerConfig config = model.getConfig(ZookeeperServerConfig.class, container.getConfigId());
+                assertEquals(container.index(), config.myid());
+                assertEquals(3, config.server().size());
+            });
+        }
+        {
+            try {
+                tester.createModel(servicesXml.apply(2), true);
+                fail("Expected exception");
+            } catch (IllegalArgumentException ignored) {}
+        }
+        {
+            String xmlWithNodes =
+                    "<?xml version='1.0' encoding='utf-8' ?>" +
+                    "<services>" +
+                    "  <container version='1.0' id='container1'>" +
+                    "     <zookeeper/>" +
+                    "     <nodes of='content1'/>" +
+                    "  </container>" +
+                    "  <content version='1.0' id='content1'>" +
+                    "     <nodes count='3'/>" +
+                    "   </content>" +
+                    "</services>";
+            try {
+                tester.createModel(xmlWithNodes, true);
+                fail("Expected exception");
+            } catch (IllegalArgumentException ignored) {}
+        }
+    }
+
+    private void assertComponentConfigured(ApplicationContainerCluster cluster, String componentId) {
+        Component<?, ?> component = cluster.getComponentsMap().get(ComponentId.fromString(componentId));
+        assertNotNull(component);
+    }
+
+    private void assertComponentConfigured(ApplicationContainer container, String id) {
+        assertTrue(container.getComponents().getComponents().stream().anyMatch(component -> id.equals(component.getComponentId().getName())));
+    }
 
     private Element generateContainerElementWithRenderer(String rendererId) {
         return DomBuilderTest.parse(
@@ -880,4 +992,5 @@ public class ContainerModelBuilderTest extends ContainerModelBuilderTestBase {
                 "  </search>",
                 "</container>");
     }
+
 }

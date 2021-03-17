@@ -7,6 +7,7 @@ import com.yahoo.config.provision.NodeResources;
 import com.yahoo.config.provision.NodeType;
 import com.yahoo.vespa.hosted.provision.Node;
 
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 
@@ -62,6 +63,9 @@ public interface NodeSpec {
 
     /** Returns true if there exist some circumstance where we may accept to have this node allocated */
     boolean acceptable(NodeCandidate node);
+
+    /** Returns true if nodes with non-active parent hosts should be rejected */
+    boolean rejectNonActiveParent();
 
     /**
      * Returns true if a node with given current resources and current spare host resources can be resized
@@ -163,12 +167,21 @@ public interface NodeSpec {
         public boolean acceptable(NodeCandidate node) { return true; }
 
         @Override
+        public boolean rejectNonActiveParent() {
+            return false;
+        }
+
+        @Override
         public String toString() { return "request for " + count + " nodes with " + requestedNodeResources; }
 
     }
 
     /** A node spec specifying a node type. This will accept all nodes of this type. */
     class TypeNodeSpec implements NodeSpec {
+
+        private static final Map<NodeType, Integer> WANTED_NODE_COUNT = Map.of(
+                NodeType.config, 3,
+                NodeType.controller, 3);
 
         private final NodeType type;
 
@@ -196,22 +209,23 @@ public interface NodeSpec {
 
         @Override
         public int idealRetiredCount(int acceptedCount, int currentRetiredCount) {
-             // All nodes marked with wantToRetire get marked as retired just before this function is called,
-             // the job of this function is to throttle the retired count. If no nodes are marked as retired
-             // then continue this way, otherwise allow only 1 node to be retired
-            return Math.min(1, currentRetiredCount);
+            // All nodes marked with wantToRetire get marked as retired just before this function is called
+            return currentRetiredCount;
         }
 
         @Override
         public int fulfilledDeficitCount(int count) {
-            return 0;
+            // If no wanted count is specified for this node type, then any count fulfills the deficit
+            return Math.max(0, WANTED_NODE_COUNT.getOrDefault(type, 0) - count);
         }
 
         @Override
         public NodeSpec fraction(int divisor) { return this; }
 
         @Override
-        public Optional<NodeResources> resources() { return Optional.empty(); }
+        public Optional<NodeResources> resources() {
+            return Optional.empty();
+        }
 
         @Override
         public boolean needsResize(Node node) { return false; }
@@ -220,6 +234,11 @@ public interface NodeSpec {
         public boolean acceptable(NodeCandidate node) {
             // Since we consume all offered nodes we should not accept previously deactivated nodes
             return node.state() != Node.State.inactive;
+        }
+
+        @Override
+        public boolean rejectNonActiveParent() {
+            return true;
         }
 
         @Override

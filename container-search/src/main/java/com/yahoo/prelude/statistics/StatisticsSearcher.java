@@ -55,28 +55,29 @@ public class StatisticsSearcher extends Searcher {
     private static final String FAILED_QUERIES_METRIC = "failed_queries";
     private static final String MEAN_QUERY_LATENCY_METRIC = "mean_query_latency";
     private static final String QUERY_LATENCY_METRIC = "query_latency";
-    private static final String QUERY_OFFSET_METRIC = "query_hit_offset";
+    private static final String QUERY_HIT_OFFSET_METRIC = "query_hit_offset";
     private static final String QUERIES_METRIC = "queries";
     private static final String ACTIVE_QUERIES_METRIC = "active_queries";
     private static final String PEAK_QPS_METRIC = "peak_qps";
     private static final String DOCS_COVERED_METRIC = "documents_covered";
     private static final String DOCS_TOTAL_METRIC = "documents_total";
-    private static final String DEGRADED_METRIC = "degraded_queries";
+    private static final String DEGRADED_QUERIES_METRIC = "degraded_queries";
     private static final String RELEVANCE_AT_1_METRIC = "relevance.at_1";
     private static final String RELEVANCE_AT_3_METRIC = "relevance.at_3";
     private static final String RELEVANCE_AT_10_METRIC = "relevance.at_10";
 
-    private final Counter queries; // basic counter
-    private final Counter failedQueries; // basic counter
-    private final Counter nullQueries; // basic counter
-    private final Counter illegalQueries; // basic counter
-    private final Value queryLatency; // mean pr 5 min
+    private final Counter queriesCounter; // basic counter
+    private final Counter failedQueriesCounter; // basic counter
+    private final Counter nullQueriesCounter; // basic counter
+    private final Counter illegalQueriesCounter; // basic counter
+    private final Value meanQueryLatency; // mean pr 5 min
     private final Value queryLatencyBuckets;
     private final Value maxQueryLatency; // separate to avoid name mangling
     @SuppressWarnings("unused") // all the work is done by the callback
     private final Value peakQPS; // peak 1s QPS
-    private final Counter emptyResults; // number of results containing no concrete hits
+    private final Counter emptyResultsCounter; // number of results containing no concrete hits
     private final Value hitsPerQuery; // mean number of hits per query
+    private final Value totalHitsPerQuery;
 
     private final PeakQpsReporter peakQpsReporter;
 
@@ -128,17 +129,21 @@ public class StatisticsSearcher extends Searcher {
         this.peakQpsReporter = new PeakQpsReporter();
         this.metric = metric;
 
-        queries = new Counter(QUERIES_METRIC, manager, false);
-        failedQueries = new Counter(FAILED_QUERIES_METRIC, manager, false);
-        nullQueries = new Counter("null_queries", manager, false);
-        illegalQueries = new Counter("illegal_queries", manager, false);
-        queryLatency = new Value(MEAN_QUERY_LATENCY_METRIC, manager, new Value.Parameters().setLogRaw(false).setLogMean(true).setNameExtension(false));
+        queriesCounter = new Counter(QUERIES_METRIC, manager, false);
+        failedQueriesCounter = new Counter(FAILED_QUERIES_METRIC, manager, false);
+        nullQueriesCounter = new Counter("null_queries", manager, false);
+        illegalQueriesCounter = new Counter("illegal_queries", manager, false);
+        meanQueryLatency = new Value(MEAN_QUERY_LATENCY_METRIC, manager, new Value.Parameters().setLogRaw(false).setLogMean(true).setNameExtension(false));
         maxQueryLatency = new Value(MAX_QUERY_LATENCY_METRIC, manager, new Value.Parameters().setLogRaw(false).setLogMax(true).setNameExtension(false));
         queryLatencyBuckets = Value.buildValue(QUERY_LATENCY_METRIC, manager, null);
         peakQPS = new Value(PEAK_QPS_METRIC, manager, new Value.Parameters().setLogRaw(false).setLogMax(true).setNameExtension(false));
         hitsPerQuery = new Value(HITS_PER_QUERY_METRIC, manager, new Value.Parameters().setLogRaw(false).setLogMean(true).setNameExtension(false));
-        emptyResults = new Counter(EMPTY_RESULTS_METRIC, manager, false);
+        totalHitsPerQuery = new Value(TOTALHITS_PER_QUERY_METRIC, manager, new Value.Parameters().setLogRaw(false).setLogMean(true).setNameExtension(false));
+
+        emptyResultsCounter = new Counter(EMPTY_RESULTS_METRIC, manager, false);
         metricReceiver.declareGauge(QUERY_LATENCY_METRIC, Optional.empty(), new MetricSettings.Builder().histogram(true).build());
+        metricReceiver.declareGauge(HITS_PER_QUERY_METRIC, Optional.empty(), new MetricSettings.Builder().histogram(true).build());
+        metricReceiver.declareGauge(TOTALHITS_PER_QUERY_METRIC, Optional.empty(), new MetricSettings.Builder().histogram(true).build());
 
         scheduler.schedule(peakQpsReporter, 1000, 1000);
     }
@@ -232,7 +237,7 @@ public class StatisticsSearcher extends Searcher {
 
         incrQueryCount(metricContext);
         logQuery(query);
-        long start = System.currentTimeMillis(); // Start time, in millisecs.
+        long start_ns = System.nanoTime(); // Start time, in nanoseconds.
         qps(metricContext);
         Result result;
         //handle exceptions thrown below in searchers
@@ -243,14 +248,14 @@ public class StatisticsSearcher extends Searcher {
             throw e;
         }
 
-        long end = System.currentTimeMillis(); // Start time, in millisecs.
-        long latency = end - start;
-        if (latency >= 0) {
-            addLatency(latency, metricContext);
+        long end_ns = System.nanoTime(); // End time, in nanoseconds
+        long latency_ns = end_ns - start_ns;
+        if (latency_ns >= 0) {
+            addLatency(latency_ns, metricContext);
         } else {
             getLogger().log(Level.WARNING,
-                            "Apparently negative latency measure, start: " + start
-                            + ", end: " + end + ", for query: " + query.toString());
+                            "Apparently negative latency measure, start: " + start_ns
+                            + ", end: " + end_ns + ", for query: " + query.toString());
         }
         if (result.hits().getError() != null) {
             incrErrorCount(result, metricContext);
@@ -260,18 +265,22 @@ public class StatisticsSearcher extends Searcher {
         if (queryCoverage != null) {
             if (queryCoverage.isDegraded()) {
                 Metric.Context degradedContext = getDegradedMetricContext(execution.chain().getId().stringValue(), queryCoverage);
-                metric.add(DEGRADED_METRIC, 1, degradedContext);
+                metric.add(DEGRADED_QUERIES_METRIC, 1, degradedContext);
             }
             metric.add(DOCS_COVERED_METRIC, queryCoverage.getDocs(), metricContext);
             metric.add(DOCS_TOTAL_METRIC, queryCoverage.getActive(), metricContext);
         }
         int hitCount = result.getConcreteHitCount();
-        hitsPerQuery.put((double) hitCount);
+        hitsPerQuery.put(hitCount);
         metric.set(HITS_PER_QUERY_METRIC, (double) hitCount, metricContext);
-        metric.set(TOTALHITS_PER_QUERY_METRIC, (double) result.getTotalHitCount(), metricContext);
-        metric.set(QUERY_OFFSET_METRIC, (double) (query.getHits() + query.getOffset()), metricContext);
+
+        long totalHitCount = result.getTotalHitCount();
+        totalHitsPerQuery.put(totalHitCount);
+        metric.set(TOTALHITS_PER_QUERY_METRIC, (double) totalHitCount, metricContext);
+
+        metric.set(QUERY_HIT_OFFSET_METRIC, (double) (query.getHits() + query.getOffset()), metricContext);
         if (hitCount == 0) {
-            emptyResults.increment();
+            emptyResultsCounter.increment();
             metric.add(EMPTY_RESULTS_METRIC, 1, metricContext);
         }
 
@@ -288,9 +297,10 @@ public class StatisticsSearcher extends Searcher {
         }
     }
 
-    private void addLatency(long latency, Metric.Context metricContext) {
+    private void addLatency(long latency_ns, Metric.Context metricContext) {
+        double latency = 0.000001 * latency_ns;
         //myStats.addLatency(latency);
-        queryLatency.put(latency);
+        meanQueryLatency.put(latency);
         metric.set(QUERY_LATENCY_METRIC, latency, metricContext);
         metric.set(MEAN_QUERY_LATENCY_METRIC, latency, metricContext);
         maxQueryLatency.put(latency);
@@ -300,20 +310,20 @@ public class StatisticsSearcher extends Searcher {
 
     private void incrQueryCount(Metric.Context metricContext) {
         //myStats.incrQueryCnt();
-        queries.increment();
+        queriesCounter.increment();
         metric.add(QUERIES_METRIC, 1, metricContext);
     }
 
     private void incrErrorCount(Result result, Metric.Context metricContext) {
-        failedQueries.increment();
+        failedQueriesCounter.increment();
         metric.add(FAILED_QUERIES_METRIC, 1, metricContext);
 
         if (result == null) // the chain threw an exception
             metric.add("error.unhandled_exception", 1, metricContext);
         else if (result.hits().getErrorHit().hasOnlyErrorCode(Error.NULL_QUERY.code))
-            nullQueries.increment();
+            nullQueriesCounter.increment();
         else if (result.hits().getErrorHit().hasOnlyErrorCode(Error.ILLEGAL_QUERY.code))
-            illegalQueries.increment();
+            illegalQueriesCounter.increment();
     }
 
     /**

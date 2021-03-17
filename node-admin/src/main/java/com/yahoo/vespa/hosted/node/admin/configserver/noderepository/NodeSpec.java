@@ -9,6 +9,7 @@ import com.yahoo.config.provision.NodeResources;
 import com.yahoo.config.provision.NodeType;
 import com.yahoo.vespa.hosted.node.admin.task.util.file.DiskSize;
 
+import java.net.URI;
 import java.time.Instant;
 import java.util.EnumSet;
 import java.util.Objects;
@@ -24,6 +25,7 @@ import static com.yahoo.config.provision.NodeResources.DiskSpeed.slow;
 public class NodeSpec {
 
     private final String hostname;
+    private final Optional<String> id;
     private final NodeState state;
     private final NodeType type;
     private final String flavor;
@@ -48,7 +50,7 @@ public class NodeSpec {
 
     private final Optional<String> modelName;
 
-    private final Optional<Boolean> allowedToBeDown;
+    private final OrchestratorStatus orchestratorStatus;
     private final Optional<ApplicationId> owner;
     private final Optional<NodeMembership> membership;
 
@@ -59,9 +61,13 @@ public class NodeSpec {
     private final NodeReports reports;
 
     private final Optional<String> parentHostname;
+    private final Optional<URI> archiveUri;
+
+    private final Optional<ApplicationId> exclusiveTo;
 
     public NodeSpec(
             String hostname,
+            Optional<String> id,
             Optional<DockerImage> wantedDockerImage,
             Optional<DockerImage> currentDockerImage,
             NodeState state,
@@ -71,7 +77,7 @@ public class NodeSpec {
             Optional<Version> currentVespaVersion,
             Optional<Version> wantedOsVersion,
             Optional<Version> currentOsVersion,
-            Optional<Boolean> allowedToBeDown,
+            OrchestratorStatus orchestratorStatus,
             Optional<ApplicationId> owner,
             Optional<NodeMembership> membership,
             Optional<Long> wantedRestartGeneration,
@@ -85,7 +91,9 @@ public class NodeSpec {
             Set<String> ipAddresses,
             Set<String> additionalIpAddresses,
             NodeReports reports,
-            Optional<String> parentHostname) {
+            Optional<String> parentHostname,
+            Optional<URI> archiveUri,
+            Optional<ApplicationId> exclusiveTo) {
         if (state == NodeState.active) {
             requireOptional(owner, "owner");
             requireOptional(membership, "membership");
@@ -96,6 +104,7 @@ public class NodeSpec {
         }
 
         this.hostname = Objects.requireNonNull(hostname);
+        this.id = Objects.requireNonNull(id);
         this.wantedDockerImage = Objects.requireNonNull(wantedDockerImage);
         this.currentDockerImage = Objects.requireNonNull(currentDockerImage);
         this.state = Objects.requireNonNull(state);
@@ -106,7 +115,7 @@ public class NodeSpec {
         this.currentVespaVersion = Objects.requireNonNull(currentVespaVersion);
         this.wantedOsVersion = Objects.requireNonNull(wantedOsVersion);
         this.currentOsVersion = Objects.requireNonNull(currentOsVersion);
-        this.allowedToBeDown = Objects.requireNonNull(allowedToBeDown);
+        this.orchestratorStatus = Objects.requireNonNull(orchestratorStatus);
         this.owner = Objects.requireNonNull(owner);
         this.membership = Objects.requireNonNull(membership);
         this.wantedRestartGeneration = wantedRestartGeneration;
@@ -120,10 +129,17 @@ public class NodeSpec {
         this.additionalIpAddresses = Objects.requireNonNull(additionalIpAddresses);
         this.reports = Objects.requireNonNull(reports);
         this.parentHostname = Objects.requireNonNull(parentHostname);
+        this.archiveUri = Objects.requireNonNull(archiveUri);
+        this.exclusiveTo = Objects.requireNonNull(exclusiveTo);
     }
 
     public String hostname() {
         return hostname;
+    }
+
+    /** Returns the cloud-specific ID of the host. */
+    public Optional<String> id() {
+        return id;
     }
 
     public NodeState state() {
@@ -190,8 +206,8 @@ public class NodeSpec {
         return modelName;
     }
 
-    public Optional<Boolean> allowedToBeDown() {
-        return allowedToBeDown;
+    public OrchestratorStatus orchestratorStatus() {
+        return orchestratorStatus;
     }
 
     public Optional<ApplicationId> owner() {
@@ -244,6 +260,14 @@ public class NodeSpec {
         return parentHostname;
     }
 
+    public Optional<URI> archiveUri() {
+        return archiveUri;
+    }
+
+    public Optional<ApplicationId> exclusiveTo() {
+        return exclusiveTo;
+    }
+
     @Override
     public boolean equals(Object o) {
         if (this == o) return true;
@@ -252,16 +276,18 @@ public class NodeSpec {
         NodeSpec that = (NodeSpec) o;
 
         return Objects.equals(hostname, that.hostname) &&
+                Objects.equals(id, that.id) &&
                 Objects.equals(wantedDockerImage, that.wantedDockerImage) &&
                 Objects.equals(currentDockerImage, that.currentDockerImage) &&
                 Objects.equals(state, that.state) &&
                 Objects.equals(type, that.type) &&
                 Objects.equals(flavor, that.flavor) &&
+                Objects.equals(modelName, that.modelName) &&
                 Objects.equals(wantedVespaVersion, that.wantedVespaVersion) &&
                 Objects.equals(currentVespaVersion, that.currentVespaVersion) &&
                 Objects.equals(wantedOsVersion, that.wantedOsVersion) &&
                 Objects.equals(currentOsVersion, that.currentOsVersion) &&
-                Objects.equals(allowedToBeDown, that.allowedToBeDown) &&
+                Objects.equals(orchestratorStatus, that.orchestratorStatus) &&
                 Objects.equals(owner, that.owner) &&
                 Objects.equals(membership, that.membership) &&
                 Objects.equals(wantedRestartGeneration, that.wantedRestartGeneration) &&
@@ -274,23 +300,27 @@ public class NodeSpec {
                 Objects.equals(ipAddresses, that.ipAddresses) &&
                 Objects.equals(additionalIpAddresses, that.additionalIpAddresses) &&
                 Objects.equals(reports, that.reports) &&
-                Objects.equals(parentHostname, that.parentHostname);
+                Objects.equals(parentHostname, that.parentHostname) &&
+                Objects.equals(archiveUri, that.archiveUri) &&
+                Objects.equals(exclusiveTo, that.exclusiveTo);
     }
 
     @Override
     public int hashCode() {
         return Objects.hash(
                 hostname,
+                id,
                 wantedDockerImage,
                 currentDockerImage,
                 state,
                 type,
                 flavor,
+                modelName,
                 wantedVespaVersion,
                 currentVespaVersion,
                 wantedOsVersion,
                 currentOsVersion,
-                allowedToBeDown,
+                orchestratorStatus,
                 owner,
                 membership,
                 wantedRestartGeneration,
@@ -303,23 +333,27 @@ public class NodeSpec {
                 ipAddresses,
                 additionalIpAddresses,
                 reports,
-                parentHostname);
+                parentHostname,
+                archiveUri,
+                exclusiveTo);
     }
 
     @Override
     public String toString() {
         return getClass().getSimpleName() + " {"
                 + " hostname=" + hostname
+                + " id=" + id
                 + " wantedDockerImage=" + wantedDockerImage
                 + " currentDockerImage=" + currentDockerImage
                 + " state=" + state
                 + " type=" + type
                 + " flavor=" + flavor
+                + " modelName=" + modelName
                 + " wantedVespaVersion=" + wantedVespaVersion
                 + " currentVespaVersion=" + currentVespaVersion
                 + " wantedOsVersion=" + wantedOsVersion
                 + " currentOsVersion=" + currentOsVersion
-                + " allowedToBeDown=" + allowedToBeDown
+                + " orchestratorStatus=" + orchestratorStatus
                 + " owner=" + owner
                 + " membership=" + membership
                 + " wantedRestartGeneration=" + wantedRestartGeneration
@@ -333,11 +367,14 @@ public class NodeSpec {
                 + " additionalIpAddresses=" + additionalIpAddresses
                 + " reports=" + reports
                 + " parentHostname=" + parentHostname
+                + " archiveUri=" + archiveUri
+                + " exclusiveTo=" + exclusiveTo
                 + " }";
     }
 
     public static class Builder {
         private String hostname;
+        private Optional<String> id = Optional.empty();
         private NodeState state;
         private NodeType type;
         private String flavor;
@@ -347,7 +384,7 @@ public class NodeSpec {
         private Optional<Version> currentVespaVersion = Optional.empty();
         private Optional<Version> wantedOsVersion = Optional.empty();
         private Optional<Version> currentOsVersion = Optional.empty();
-        private Optional<Boolean> allowedToBeDown = Optional.empty();
+        private OrchestratorStatus orchestratorStatus = OrchestratorStatus.NO_REMARKS;
         private Optional<ApplicationId> owner = Optional.empty();
         private Optional<NodeMembership> membership = Optional.empty();
         private Optional<Long> wantedRestartGeneration = Optional.empty();
@@ -362,6 +399,8 @@ public class NodeSpec {
         private Set<String> additionalIpAddresses = Set.of();
         private NodeReports reports = new NodeReports();
         private Optional<String> parentHostname = Optional.empty();
+        private Optional<URI> archiveUri = Optional.empty();
+        private Optional<ApplicationId> exclusiveTo = Optional.empty();
 
         public Builder() {}
 
@@ -375,6 +414,7 @@ public class NodeSpec {
             additionalIpAddresses(node.additionalIpAddresses);
             wantedRebootGeneration(node.wantedRebootGeneration);
             currentRebootGeneration(node.currentRebootGeneration);
+            orchestratorStatus(node.orchestratorStatus);
             reports(new NodeReports(node.reports));
             node.wantedDockerImage.ifPresent(this::wantedDockerImage);
             node.currentDockerImage.ifPresent(this::currentDockerImage);
@@ -382,7 +422,6 @@ public class NodeSpec {
             node.currentVespaVersion.ifPresent(this::currentVespaVersion);
             node.wantedOsVersion.ifPresent(this::wantedOsVersion);
             node.currentOsVersion.ifPresent(this::currentOsVersion);
-            node.allowedToBeDown.ifPresent(this::allowedToBeDown);
             node.owner.ifPresent(this::owner);
             node.membership.ifPresent(this::membership);
             node.wantedRestartGeneration.ifPresent(this::wantedRestartGeneration);
@@ -390,10 +429,17 @@ public class NodeSpec {
             node.wantedFirmwareCheck.ifPresent(this::wantedFirmwareCheck);
             node.currentFirmwareCheck.ifPresent(this::currentFirmwareCheck);
             node.parentHostname.ifPresent(this::parentHostname);
+            node.archiveUri.ifPresent(this::archiveUri);
+            node.exclusiveTo.ifPresent(this::exclusiveTo);
         }
 
         public Builder hostname(String hostname) {
             this.hostname = hostname;
+            return this;
+        }
+
+        public Builder id(String id) {
+            this.id = Optional.of(id);
             return this;
         }
 
@@ -442,8 +488,8 @@ public class NodeSpec {
             return this;
         }
 
-        public Builder allowedToBeDown(boolean allowedToBeDown) {
-            this.allowedToBeDown = Optional.of(allowedToBeDown);
+        public Builder orchestratorStatus(OrchestratorStatus orchestratorStatus) {
+            this.orchestratorStatus = orchestratorStatus;
             return this;
         }
 
@@ -542,7 +588,18 @@ public class NodeSpec {
             return this;
         }
 
+        public Builder archiveUri(URI archiveUri) {
+            this.archiveUri = Optional.of(archiveUri);
+            return this;
+        }
+
+        public Builder exclusiveTo(ApplicationId applicationId) {
+            this.exclusiveTo = Optional.of(applicationId);
+            return this;
+        }
+
         public Builder updateFromNodeAttributes(NodeAttributes attributes) {
+            attributes.getHostId().ifPresent(this::id);
             attributes.getDockerImage().ifPresent(this::currentDockerImage);
             attributes.getCurrentOsVersion().ifPresent(this::currentOsVersion);
             attributes.getRebootGeneration().ifPresent(this::currentRebootGeneration);
@@ -592,8 +649,8 @@ public class NodeSpec {
             return currentOsVersion;
         }
 
-        public Optional<Boolean> allowedToBeDown() {
-            return allowedToBeDown;
+        public OrchestratorStatus orchestratorStatus() {
+            return orchestratorStatus;
         }
 
         public Optional<ApplicationId> owner() {
@@ -640,15 +697,19 @@ public class NodeSpec {
             return parentHostname;
         }
 
+        public Optional<URI> archiveUri() {
+            return archiveUri;
+        }
+
         public NodeSpec build() {
-            return new NodeSpec(hostname, wantedDockerImage, currentDockerImage, state, type, flavor,
-                    wantedVespaVersion, currentVespaVersion, wantedOsVersion, currentOsVersion, allowedToBeDown,
+            return new NodeSpec(hostname, id, wantedDockerImage, currentDockerImage, state, type, flavor,
+                    wantedVespaVersion, currentVespaVersion, wantedOsVersion, currentOsVersion, orchestratorStatus,
                     owner, membership,
                     wantedRestartGeneration, currentRestartGeneration,
                     wantedRebootGeneration, currentRebootGeneration,
                     wantedFirmwareCheck, currentFirmwareCheck, modelName,
                     resources, ipAddresses, additionalIpAddresses,
-                    reports, parentHostname);
+                    reports, parentHostname, archiveUri, exclusiveTo);
         }
 
 

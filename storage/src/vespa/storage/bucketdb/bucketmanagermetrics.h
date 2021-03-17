@@ -3,8 +3,8 @@
 #pragma once
 
 #include <vespa/document/bucket/bucketspace.h>
-#include <vespa/metrics/metrics.h>
 #include <vespa/metrics/common/memory_usage_metrics.h>
+#include <vespa/metrics/summetric.h>
 
 #include <unordered_map>
 #include <memory>
@@ -48,7 +48,7 @@ class ContentBucketSpaceRepo;
 
 class BucketManagerMetrics : public metrics::MetricSet {
 public:
-    std::vector<std::shared_ptr<DataStoredMetrics>> disks;
+    std::shared_ptr<DataStoredMetrics> disk;
     using BucketSpaceMap = std::unordered_map<document::BucketSpace, std::unique_ptr<BucketSpaceMetrics>, document::BucketSpace::hash>;
     BucketSpaceMap bucket_spaces;
     metrics::SumMetric<metrics::MetricSet> total;
@@ -58,7 +58,6 @@ public:
 
     explicit BucketManagerMetrics(const ContentBucketSpaceRepo& repo);
     ~BucketManagerMetrics() override;
-    void setDisks(uint16_t numDisks);
 };
 
 }

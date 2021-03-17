@@ -1,15 +1,15 @@
 // Copyright 2017 Yahoo Holdings. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
 #include "dense_tensor_store.h"
-#include <vespa/eval/tensor/dense/dense_tensor_view.h>
-#include <vespa/eval/tensor/dense/mutable_dense_tensor_view.h>
+#include <vespa/eval/eval/value.h>
 #include <vespa/vespalib/datastore/datastore.hpp>
+#include <vespa/vespalib/util/memory_allocator.h>
 
 using vespalib::datastore::Handle;
-using vespalib::tensor::MutableDenseTensorView;
+using vespalib::eval::CellType;
+using vespalib::eval::CellTypeUtils;
 using vespalib::eval::Value;
 using vespalib::eval::ValueType;
-using CellType = vespalib::eval::ValueType::CellType;
 
 namespace search::tensor {
 
@@ -17,14 +17,6 @@ namespace {
 
 constexpr size_t MIN_BUFFER_ARRAYS = 1024;
 constexpr size_t DENSE_TENSOR_ALIGNMENT = 32;
-
-size_t size_of(CellType type) {
-    switch (type) {
-    case CellType::DOUBLE: return sizeof(double);
-    case CellType::FLOAT: return sizeof(float);
-    }
-    abort();
-}
 
 size_t my_align(size_t size, size_t alignment) {
     size += alignment - 1;
@@ -35,7 +27,7 @@ size_t my_align(size_t size, size_t alignment) {
 
 DenseTensorStore::TensorSizeCalc::TensorSizeCalc(const ValueType &type)
     : _numCells(1u),
-      _cellSize(size_of(type.cell_type()))
+      _cell_type(type.cell_type())
 {
     for (const auto &dim: type.dimensions()) {
         _numCells *= dim.size;
@@ -48,30 +40,37 @@ DenseTensorStore::TensorSizeCalc::alignedSize() const
     return my_align(bufSize(), DENSE_TENSOR_ALIGNMENT);
 }
 
-DenseTensorStore::BufferType::BufferType(const TensorSizeCalc &tensorSizeCalc)
-    : vespalib::datastore::BufferType<char>(tensorSizeCalc.alignedSize(), MIN_BUFFER_ARRAYS, RefType::offsetSize())
+DenseTensorStore::BufferType::BufferType(const TensorSizeCalc &tensorSizeCalc, std::unique_ptr<vespalib::alloc::MemoryAllocator> allocator)
+    : vespalib::datastore::BufferType<char>(tensorSizeCalc.alignedSize(), MIN_BUFFER_ARRAYS, RefType::offsetSize()),
+      _allocator(std::move(allocator))
 {}
 
 DenseTensorStore::BufferType::~BufferType() = default;
 
 void
 DenseTensorStore::BufferType::cleanHold(void *buffer, size_t offset,
-                                        size_t numElems, CleanContext)
+                                        ElemCount numElems, CleanContext)
 {
     memset(static_cast<char *>(buffer) + offset, 0, numElems);
 }
 
-DenseTensorStore::DenseTensorStore(const ValueType &type)
+const vespalib::alloc::MemoryAllocator*
+DenseTensorStore::BufferType::get_memory_allocator() const
+{
+    return _allocator.get();
+}
+
+DenseTensorStore::DenseTensorStore(const ValueType &type, std::unique_ptr<vespalib::alloc::MemoryAllocator> allocator)
     : TensorStore(_concreteStore),
       _concreteStore(),
       _tensorSizeCalc(type),
-      _bufferType(_tensorSizeCalc),
+      _bufferType(_tensorSizeCalc, std::move(allocator)),
       _type(type),
       _emptySpace()
 {
     _emptySpace.resize(getBufSize(), 0);
     _store.addType(&_bufferType);
-    _store.initActiveBuffers();
+    _store.init_primary_buffers();
     _store.enableFreeLists();
 }
 
@@ -134,19 +133,7 @@ DenseTensorStore::getTensor(EntryRef ref) const
         return {};
     }
     vespalib::eval::TypedCells cells_ref(getRawBuffer(ref), _type.cell_type(), getNumCells());
-    return std::make_unique<vespalib::tensor::DenseTensorView>(_type, cells_ref);
-}
-
-void
-DenseTensorStore::getTensor(EntryRef ref, MutableDenseTensorView &tensor) const
-{
-    if (!ref.valid()) {
-        vespalib::eval::TypedCells cells_ref(&_emptySpace[0], _type.cell_type(), getNumCells());
-        tensor.setCells(cells_ref);
-    } else {
-        vespalib::eval::TypedCells cells_ref(getRawBuffer(ref), _type.cell_type(), getNumCells());
-        tensor.setCells(cells_ref);
-    }
+    return std::make_unique<vespalib::eval::DenseValueView>(_type, cells_ref);
 }
 
 vespalib::eval::TypedCells

@@ -122,11 +122,65 @@ EnumStoreDictionary<DictionaryT>::find_matching_enums(const vespalib::datastore:
 {
     std::vector<IEnumStore::EnumHandle> result;
     auto itr = this->_dict.getFrozenView().find(Index(), cmp);
-    while (itr.valid() && !cmp(Index(), itr.getKey())) {
+    while (itr.valid() && !cmp.less(Index(), itr.getKey())) {
         result.push_back(itr.getKey().ref());
         ++itr;
     }
     return result;
+}
+
+template <typename DictionaryT>
+IEnumStore::Index
+EnumStoreDictionary<DictionaryT>::remap_index(Index idx)
+{
+    return idx;
+}
+
+template <>
+void
+EnumStoreDictionary<EnumTree>::clear_all_posting_lists(std::function<void(EntryRef)>)
+{
+    LOG_ABORT("should not be reached");
+}
+
+template <>
+void
+EnumStoreDictionary<EnumPostingTree>::clear_all_posting_lists(std::function<void(EntryRef)> clearer)
+{
+    auto& dict = this->_dict;
+    auto itr = dict.begin();
+    EntryRef prev;
+    while (itr.valid()) {
+        EntryRef ref(itr.getData());
+        if (ref.ref() != prev.ref()) {
+            if (ref.valid()) {
+                clearer(ref);
+            }
+            prev = ref;
+        }
+        itr.writeData(EntryRef().ref());
+        ++itr;
+    }
+}
+
+template <>
+void
+EnumStoreDictionary<EnumTree>::update_posting_list(Index, const vespalib::datastore::EntryComparator&, std::function<EntryRef(EntryRef)>)
+{
+    LOG_ABORT("should not be reached");
+}
+
+template <>
+void
+EnumStoreDictionary<EnumPostingTree>::update_posting_list(Index idx, const vespalib::datastore::EntryComparator& cmp, std::function<EntryRef(EntryRef)> updater)
+{
+    auto& dict = this->_dict;
+    auto itr = dict.lowerBound(idx, cmp);
+    assert(itr.valid() && itr.getKey() == idx);
+    EntryRef old_posting_idx(itr.getData());
+    EntryRef new_posting_idx = updater(old_posting_idx);
+    dict.thaw(itr);
+    itr.writeData(new_posting_idx.ref());
 }
 
 template <>
@@ -169,7 +223,7 @@ UniqueStoreAddResult
 EnumStoreFoldedDictionary::add(const EntryComparator& comp, std::function<EntryRef(void)> insertEntry)
 {
     auto it = _dict.lowerBound(EntryRef(), comp);
-    if (it.valid() && !comp(EntryRef(), it.getKey())) {
+    if (it.valid() && !comp.less(EntryRef(), it.getKey())) {
         // Entry already exists
         return UniqueStoreAddResult(it.getKey(), false);
     }
@@ -177,7 +231,7 @@ EnumStoreFoldedDictionary::add(const EntryComparator& comp, std::function<EntryR
     _dict.insert(it, newRef, EntryRef().ref());
     // Maybe move posting list reference from next entry
     ++it;
-    if (it.valid() && EntryRef(it.getData()).valid() && !(*_folded_compare)(newRef, it.getKey())) {
+    if (it.valid() && EntryRef(it.getData()).valid() && !_folded_compare->less(newRef, it.getKey())) {
         EntryRef posting_list_ref(it.getData());
         _dict.thaw(it);
         it.writeData(EntryRef().ref());
@@ -198,13 +252,21 @@ EnumStoreFoldedDictionary::remove(const EntryComparator& comp, EntryRef ref)
     _dict.remove(it);
     // Maybe copy posting list reference to next entry
     if (posting_list_ref.valid()) {
-        if (it.valid() && !EntryRef(it.getData()).valid() && !(*_folded_compare)(ref, it.getKey())) {
+        if (it.valid() && !EntryRef(it.getData()).valid() && !_folded_compare->less(ref, it.getKey())) {
             this->_dict.thaw(it);
             it.writeData(posting_list_ref.ref());
         } else {
             LOG_ABORT("Posting list not cleared for removed unique value");
         }
     }
+}
+
+IEnumStore::Index
+EnumStoreFoldedDictionary::remap_index(Index idx)
+{
+    auto itr = _dict.find(idx, *_folded_compare);
+    assert(itr.valid());
+    return itr.getKey();
 }
 
 template class EnumStoreDictionary<EnumTree>;

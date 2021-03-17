@@ -2,23 +2,26 @@
 package com.yahoo.vespa.hosted.provision.provisioning;
 
 import com.yahoo.config.provision.ApplicationId;
+import com.yahoo.config.provision.ApplicationTransaction;
 import com.yahoo.config.provision.ClusterMembership;
 import com.yahoo.config.provision.ClusterSpec;
 import com.yahoo.config.provision.Flavor;
 import com.yahoo.config.provision.HostSpec;
 import com.yahoo.config.provision.ParentHostUnavailableException;
-import com.yahoo.config.provision.ProvisionLock;
-import com.yahoo.transaction.Mutex;
-import com.yahoo.transaction.NestedTransaction;
 import com.yahoo.vespa.hosted.provision.Node;
 import com.yahoo.vespa.hosted.provision.NodeList;
+import com.yahoo.vespa.hosted.provision.NodeMutex;
 import com.yahoo.vespa.hosted.provision.NodeRepository;
+import com.yahoo.vespa.hosted.provision.applications.Application;
+import com.yahoo.vespa.hosted.provision.applications.ScalingEvent;
 import com.yahoo.vespa.hosted.provision.node.Allocation;
 
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
@@ -39,9 +42,9 @@ class Activator {
     }
 
     /** Activate required resources for application guarded by given lock */
-    public void activate(Collection<HostSpec> hosts, NestedTransaction transaction, ProvisionLock lock) {
-        activateNodes(hosts, transaction, lock);
-        activateLoadBalancers(hosts, transaction, lock);
+    public void activate(Collection<HostSpec> hosts, long generation, ApplicationTransaction transaction) {
+        activateNodes(hosts, generation, transaction);
+        activateLoadBalancers(hosts, transaction);
     }
 
     /**
@@ -53,59 +56,93 @@ class Activator {
      * Post condition: Nodes in reserved which are present in <code>hosts</code> are moved to active.
      * Nodes in active which are not present in <code>hosts</code> are moved to inactive.
      *
-     * @param transaction Transaction with operations to commit together with any operations done within the repository.
      * @param hosts the hosts to make the set of active nodes of this
-     * @param lock provision lock that must be held when calling this
+     * @param generation the application config generation that is activated
+     * @param transaction transaction with operations to commit together with any operations done within the repository,
+     *                    while holding the node repository lock on this application
      */
-    private void activateNodes(Collection<HostSpec> hosts, NestedTransaction transaction, ProvisionLock lock) {
-        ApplicationId application = lock.application();
+    private void activateNodes(Collection<HostSpec> hosts, long generation, ApplicationTransaction transaction) {
+        Instant activationTime = nodeRepository.clock().instant(); // Use one timestamp for all activation changes
+        ApplicationId application = transaction.application();
         Set<String> hostnames = hosts.stream().map(HostSpec::hostname).collect(Collectors.toSet());
-        NodeList allNodes = nodeRepository.list();
+        NodeList allNodes = nodeRepository.nodes().list();
         NodeList applicationNodes = allNodes.owner(application);
 
         List<Node> reserved = applicationNodes.state(Node.State.reserved).asList();
-        List<Node> reservedToActivate = retainHostsInList(hostnames, reserved);
-        List<Node> active = applicationNodes.state(Node.State.active).asList();
-        List<Node> continuedActive = retainHostsInList(hostnames, active);
-        List<Node> allActive = new ArrayList<>(continuedActive);
-        allActive.addAll(reservedToActivate);
-        if (!containsAll(hostnames, allActive))
+        List<Node> reservedToActivate = updatePortsFrom(hosts, retainHostsInList(hostnames, reserved));
+        List<Node> oldActive = applicationNodes.state(Node.State.active).asList(); // All nodes active now
+        List<Node> continuedActive = retainHostsInList(hostnames, oldActive);
+        List<Node> newActive = updateFrom(hosts, continuedActive, activationTime); // All nodes that will be active when this is committed
+        newActive.addAll(reservedToActivate);
+        if ( ! containsAll(hostnames, newActive))
             throw new IllegalArgumentException("Activation of " + application + " failed. " +
                                                "Could not find all requested hosts." +
                                                "\nRequested: " + hosts +
                                                "\nReserved: " + toHostNames(reserved) +
-                                               "\nActive: " + toHostNames(active) +
+                                               "\nActive: " + toHostNames(oldActive) +
                                                "\nThis might happen if the time from reserving host to activation takes " +
                                                "longer time than reservation expiry (the hosts will then no longer be reserved)");
 
         validateParentHosts(application, allNodes, reservedToActivate);
 
-        List<Node> activeToRemove = removeHostsFromList(hostnames, active);
-        activeToRemove = activeToRemove.stream().map(Node::unretire).collect(Collectors.toList()); // only active nodes can be retired
-        nodeRepository.deactivate(activeToRemove, transaction, lock);
-        nodeRepository.activate(updateFrom(hosts, continuedActive), transaction); // update active with any changes
-        nodeRepository.activate(updatePortsFrom(hosts, reservedToActivate), transaction);
+        List<Node> activeToRemove = removeHostsFromList(hostnames, oldActive);
+        activeToRemove = activeToRemove.stream().map(Node::unretire).collect(Collectors.toList()); // only active nodes can be retired. TODO: Move this line to deactivate
+        nodeRepository.nodes().deactivate(activeToRemove, transaction); // TODO: Pass activation time in this call and next line
+        nodeRepository.nodes().activate(newActive, transaction.nested()); // activate also continued active to update node state
+
+        rememberResourceChange(transaction, generation, activationTime,
+                               NodeList.copyOf(oldActive).not().retired(),
+                               NodeList.copyOf(newActive).not().retired());
         unreserveParentsOf(reservedToActivate);
+    }
+
+    private void rememberResourceChange(ApplicationTransaction transaction, long generation, Instant at,
+                                        NodeList oldNodes, NodeList newNodes) {
+        Optional<Application> application = nodeRepository.applications().get(transaction.application());
+        if (application.isEmpty()) return; // infrastructure app, hopefully :-|
+
+        Map<ClusterSpec.Id, NodeList> currentNodesByCluster = newNodes.groupingBy(node -> node.allocation().get().membership().cluster().id());
+        Application modified = application.get();
+        for (var clusterEntry : currentNodesByCluster.entrySet()) {
+            var cluster = modified.cluster(clusterEntry.getKey()).get();
+            var previousResources = oldNodes.cluster(clusterEntry.getKey()).toResources();
+            var currentResources = clusterEntry.getValue().toResources();
+            if ( ! previousResources.justNumbers().equals(currentResources.justNumbers())) {
+                cluster = cluster.with(ScalingEvent.create(previousResources, currentResources, generation, at));
+            }
+            if (cluster.targetResources().isPresent()
+                && cluster.targetResources().get().justNumbers().equals(currentResources.justNumbers())) {
+                cluster = cluster.withAutoscalingStatus("Cluster is ideally scaled within configured limits");
+            }
+            if (cluster != modified.cluster(clusterEntry.getKey()).get())
+                modified = modified.with(cluster);
+        }
+
+        if (modified != application.get())
+            nodeRepository.applications().put(modified, transaction);
     }
 
     /** When a tenant node is activated on a host, we can open up that host for use by others */
     private void unreserveParentsOf(List<Node> nodes) {
         for (Node node : nodes) {
             if ( node.parentHostname().isEmpty()) continue;
-            Optional<Node> parent = nodeRepository.getNode(node.parentHostname().get());
+            Optional<Node> parentNode = nodeRepository.nodes().node(node.parentHostname().get());
+            if (parentNode.isEmpty()) continue;
+            if (parentNode.get().reservedTo().isEmpty()) continue;
+
+            // Above is an optimization to avoid unnecessary locking - now repeat all conditions under lock
+            Optional<NodeMutex> parent = nodeRepository.nodes().lockAndGet(node.parentHostname().get());
             if (parent.isEmpty()) continue;
-            if (parent.get().reservedTo().isEmpty()) continue;
-            try (Mutex lock = nodeRepository.lock(parent.get())) {
-                Optional<Node> lockedParent = nodeRepository.getNode(parent.get().hostname());
-                if (lockedParent.isEmpty()) continue;
-                nodeRepository.write(lockedParent.get().withoutReservedTo(), lock);
+            try (var lock = parent.get()) {
+                if (lock.node().reservedTo().isEmpty()) continue;
+                nodeRepository.nodes().write(lock.node().withoutReservedTo(), lock);
             }
         }
     }
 
     /** Activate load balancers */
-    private void activateLoadBalancers(Collection<HostSpec> hosts, NestedTransaction transaction, ProvisionLock lock) {
-        loadBalancerProvisioner.ifPresent(provisioner -> provisioner.activate(transaction, allClustersOf(hosts), lock));
+    private void activateLoadBalancers(Collection<HostSpec> hosts, ApplicationTransaction transaction) {
+        loadBalancerProvisioner.ifPresent(provisioner -> provisioner.activate(allClustersOf(hosts), transaction));
     }
 
     private static Set<ClusterSpec> allClustersOf(Collection<HostSpec> hosts) {
@@ -173,11 +210,11 @@ class Activator {
     }
 
     /** Returns the input nodes with the changes resulting from applying the settings in hosts to the given list of nodes. */
-    private List<Node> updateFrom(Collection<HostSpec> hosts, List<Node> nodes) {
+    private List<Node> updateFrom(Collection<HostSpec> hosts, List<Node> nodes, Instant at) {
         List<Node> updated = new ArrayList<>();
         for (Node node : nodes) {
             HostSpec hostSpec = getHost(node.hostname(), hosts);
-            node = hostSpec.membership().get().retired() ? node.retire(nodeRepository.clock().instant()) : node.unretire();
+            node = hostSpec.membership().get().retired() ? node.retire(at) : node.unretire();
             if (! hostSpec.advertisedResources().equals(node.resources())) // A resized node
                 node = node.with(new Flavor(hostSpec.advertisedResources()));
             Allocation allocation = node.allocation().get()

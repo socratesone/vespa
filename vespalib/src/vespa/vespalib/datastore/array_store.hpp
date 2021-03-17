@@ -17,7 +17,7 @@ ArrayStore<EntryT, RefT>::LargeArrayType::LargeArrayType(const AllocSpec &spec)
 
 template <typename EntryT, typename RefT>
 void
-ArrayStore<EntryT, RefT>::LargeArrayType::cleanHold(void *buffer, size_t offset, size_t numElems, CleanContext cleanCtx)
+ArrayStore<EntryT, RefT>::LargeArrayType::cleanHold(void *buffer, size_t offset, ElemCount numElems, CleanContext cleanCtx)
 {
     LargeArray *elem = static_cast<LargeArray *>(buffer) + offset;
     for (size_t i = 0; i < numElems; ++i) {
@@ -33,13 +33,15 @@ ArrayStore<EntryT, RefT>::initArrayTypes(const ArrayStoreConfig &cfg)
 {
     _largeArrayTypeId = _store.addType(&_largeArrayType);
     assert(_largeArrayTypeId == 0);
+    _smallArrayTypes.reserve(_maxSmallArraySize);
     for (uint32_t arraySize = 1; arraySize <= _maxSmallArraySize; ++arraySize) {
         const AllocSpec &spec = cfg.specForSize(arraySize);
-        _smallArrayTypes.push_back(std::make_unique<SmallArrayType>
-                                           (arraySize, spec.minArraysInBuffer, spec.maxArraysInBuffer,
-                                            spec.numArraysForNewBuffer, spec.allocGrowFactor));
-        uint32_t typeId = _store.addType(_smallArrayTypes.back().get());
-        assert(typeId == arraySize); // Enforce 1-to-1 mapping between type ids and sizes for small arrays
+        _smallArrayTypes.emplace_back(arraySize, spec.minArraysInBuffer, spec.maxArraysInBuffer,
+                                      spec.numArraysForNewBuffer, spec.allocGrowFactor);
+    }
+    for (auto & type : _smallArrayTypes) {
+        uint32_t typeId = _store.addType(&type);
+        assert(typeId == type.getArraySize()); // Enforce 1-to-1 mapping between type ids and sizes for small arrays
     }
 }
 
@@ -52,7 +54,7 @@ ArrayStore<EntryT, RefT>::ArrayStore(const ArrayStoreConfig &cfg)
       _largeArrayType(cfg.specForSize(0))
 {
     initArrayTypes(cfg);
-    _store.initActiveBuffers();
+    _store.init_primary_buffers();
     if (cfg.enable_free_lists()) {
         _store.enableFreeLists();
     }

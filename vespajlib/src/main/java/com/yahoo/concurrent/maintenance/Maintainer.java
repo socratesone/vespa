@@ -11,6 +11,7 @@ import java.util.Objects;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -19,8 +20,9 @@ import java.util.logging.Logger;
  *
  * @author bratseth
  * @author mpolden
+ * @author jonmv
  */
-public abstract class Maintainer implements Runnable, AutoCloseable {
+public abstract class Maintainer implements Runnable {
 
     protected final Logger log = Logger.getLogger(this.getClass().getName());
 
@@ -29,16 +31,20 @@ public abstract class Maintainer implements Runnable, AutoCloseable {
     private final JobMetrics jobMetrics;
     private final Duration interval;
     private final ScheduledExecutorService service;
+    private final AtomicBoolean shutDown = new AtomicBoolean();
+    private final boolean ignoreCollision;
 
-    public Maintainer(String name, Duration interval, Instant startedAt, JobControl jobControl, JobMetrics jobMetrics, List<String> clusterHostnames) {
-        this(name, interval, staggeredDelay(interval, startedAt, HostName.getLocalhost(), clusterHostnames), jobControl, jobMetrics);
-    }
-
-    public Maintainer(String name, Duration interval, Duration initialDelay, JobControl jobControl, JobMetrics jobMetrics) {
+    public Maintainer(String name, Duration interval, Instant startedAt, JobControl jobControl,
+                      JobMetrics jobMetrics, List<String> clusterHostnames, boolean ignoreCollision) {
         this.name = name;
         this.interval = requireInterval(interval);
         this.jobControl = Objects.requireNonNull(jobControl);
         this.jobMetrics = Objects.requireNonNull(jobMetrics);
+        this.ignoreCollision = ignoreCollision;
+        Objects.requireNonNull(startedAt);
+        Objects.requireNonNull(clusterHostnames);
+        Duration initialDelay = staggeredDelay(interval, startedAt, HostName.getLocalhost(), clusterHostnames)
+                                .plus(Duration.ofSeconds(30)); // Let the system  stabilize before maintenance
         service = new ScheduledThreadPoolExecutor(1, r -> new Thread(r, name() + "-worker"));
         service.scheduleAtFixedRate(this, initialDelay.toMillis(), interval.toMillis(), TimeUnit.MILLISECONDS);
         jobControl.started(name(), this);
@@ -46,21 +52,19 @@ public abstract class Maintainer implements Runnable, AutoCloseable {
 
     @Override
     public void run() {
-        try {
-            if (jobControl.isActive(name())) {
-                lockAndMaintain();
-            }
-        } catch (UncheckedTimeoutException ignored) {
-            // Another actor is running this job
-        } catch (Throwable e) {
-            log.log(Level.WARNING, this + " failed. Will retry in " + interval.toMinutes() + " minutes", e);
-        }
+        lockAndMaintain(false);
     }
 
-    @Override
-    public void close() {
+    /** Starts shutdown of this, typically by shutting down executors. {@link #awaitShutdown()} waits for shutdown to complete. */
+    public void shutdown() {
+        if ( ! shutDown.getAndSet(true))
+            service.shutdown();
+    }
+
+    /** Waits for shutdown to complete, calling {@link #shutdown} if this hasn't been done already. */
+    public void awaitShutdown() {
+        shutdown();
         var timeout = Duration.ofSeconds(30);
-        service.shutdown();
         try {
             if (!service.awaitTermination(timeout.toMillis(), TimeUnit.MILLISECONDS)) {
                 log.log(Level.WARNING, "Maintainer " + name() + " failed to shutdown " +
@@ -81,17 +85,24 @@ public abstract class Maintainer implements Runnable, AutoCloseable {
     protected Duration interval() { return interval; }
 
     /** Run this while holding the job lock */
-    @SuppressWarnings("unused")
-    public final void lockAndMaintain() {
+    public final void lockAndMaintain(boolean force) {
+        if (!force && !jobControl.isActive(name())) return;
+        log.log(Level.FINE, () -> "Running " + this.getClass().getSimpleName());
+        jobMetrics.recordRunOf(name());
         try (var lock = jobControl.lockJob(name())) {
-            try {
-                jobMetrics.recordRunOf(name());
-                if (maintain()) jobMetrics.recordSuccessOf(name());
-            } finally {
-                // Always forward metrics
-                jobMetrics.forward(name());
+            if (maintain()) jobMetrics.recordCompletionOf(name());
+        } catch (UncheckedTimeoutException e) {
+            if (ignoreCollision) {
+                jobMetrics.recordCompletionOf(name());
+            } else {
+                log.log(Level.WARNING, this + " collided with another run. Will retry in " + interval);
             }
+        } catch (Throwable e) {
+            log.log(Level.WARNING, this + " failed. Will retry in " + interval, e);
+        } finally {
+            jobMetrics.forward(name());
         }
+        log.log(Level.FINE, () -> "Finished " + this.getClass().getSimpleName());
     }
 
     /** Returns the simple name of this job */

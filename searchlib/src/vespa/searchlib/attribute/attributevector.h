@@ -15,6 +15,7 @@
 #include <vespa/searchcommon/common/undefinedvalues.h>
 #include <vespa/searchlib/common/i_compactable_lid_space.h>
 #include <vespa/searchlib/common/identifiable.h>
+#include <vespa/searchlib/common/commit_param.h>
 #include <vespa/searchlib/queryeval/searchiterator.h>
 #include <vespa/vespalib/objects/identifiable.h>
 #include <vespa/vespalib/stllike/asciistream.h>
@@ -70,7 +71,6 @@ namespace search {
 
 namespace search {
 
-
 using search::attribute::WeightedType;
 using search::attribute::Status;
 using document::ArithmeticValueUpdate;
@@ -120,7 +120,6 @@ protected:
     using BasicType = search::attribute::BasicType;
     using QueryTermSimpleUP = std::unique_ptr<QueryTermSimple>;
     using QueryPacketT = vespalib::stringref;
-    using LoadedBufferUP = std::unique_ptr<fileutil::LoadedBuffer>;
     using stringref = vespalib::stringref;
 public:
     typedef std::shared_ptr<AttributeVector> SP;
@@ -393,10 +392,12 @@ public:
     /** Return the fixed length of the attribute. If 0 then you must inquire each document. */
     size_t getFixedWidth() const override { return _config.basicType().fixedSize(); }
     const Config &getConfig() const { return _config; }
+    void update_config(const Config& cfg);
     BasicType getInternalBasicType() const { return _config.basicType(); }
     CollectionType getInternalCollectionType() const { return _config.collectionType(); }
     const BaseName & getBaseFileName() const { return _baseFileName; }
     void setBaseFileName(vespalib::stringref name) { _baseFileName = name; }
+    bool isUpdateableInMemoryOnly() const { return _isUpdateableInMemoryOnly; }
 
     const vespalib::string & getName() const override final { return _baseFileName.getAttributeName(); }
 
@@ -447,8 +448,9 @@ public:
 
     bool isEnumeratedSaveFormat() const;
     bool load();
-    void commit(bool forceStatUpdate = false);
-    void commit(uint64_t firstSyncToken, uint64_t lastSyncToken);
+    void commit() { commit(false); }
+    void commit(bool forceUpdateStats);
+    void commit(const CommitParam & param);
     void setCreateSerialNum(uint64_t createSerialNum);
     uint64_t getCreateSerialNum() const;
     virtual uint32_t getVersion() const;
@@ -575,7 +577,7 @@ private:
     BaseName                              _baseFileName;
     Config                                _config;
     std::shared_ptr<attribute::Interlock> _interlock;
-    mutable std::shared_mutex       _enumLock;
+    mutable std::shared_mutex             _enumLock;
     GenerationHandler                     _genHandler;
     GenerationHolder                      _genHolder;
     Status                                _status;
@@ -587,6 +589,7 @@ private:
     uint64_t                              _compactLidSpaceGeneration;
     bool                                  _hasEnum;
     bool                                  _loaded;
+    bool                                  _isUpdateableInMemoryOnly;
     vespalib::steady_time                 _nextStatUpdateTime;
 
 ////// Locking strategy interface. only available from the Guards.
@@ -665,6 +668,8 @@ public:
     static bool isEnumerated(const vespalib::GenericHeader &header);
 
     virtual vespalib::MemoryUsage getChangeVectorMemoryUsage() const;
+
+    void drain_hold(uint64_t hold_limit);
 };
 
 }

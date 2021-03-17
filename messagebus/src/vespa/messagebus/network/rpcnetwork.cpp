@@ -5,18 +5,20 @@
 #include "rpcsendv2.h"
 #include "rpctargetpool.h"
 #include "rpcnetworkparams.h"
-#include <vespa/messagebus/errorcode.h>
-#include <vespa/messagebus/iprotocol.h>
-#include <vespa/messagebus/emptyreply.h>
-#include <vespa/messagebus/routing/routingnode.h>
-#include <vespa/slobrok/sbregister.h>
-#include <vespa/slobrok/sbmirror.h>
-#include <vespa/vespalib/component/vtag.h>
-#include <vespa/vespalib/stllike/asciistream.h>
-#include <vespa/vespalib/util/stringfmt.h>
+#include <vespa/fnet/frt/supervisor.h>
 #include <vespa/fnet/scheduler.h>
 #include <vespa/fnet/transport.h>
-#include <vespa/fnet/frt/supervisor.h>
+#include <vespa/messagebus/emptyreply.h>
+#include <vespa/messagebus/errorcode.h>
+#include <vespa/messagebus/iprotocol.h>
+#include <vespa/messagebus/routing/routingnode.h>
+#include <vespa/slobrok/sbmirror.h>
+#include <vespa/slobrok/sbregister.h>
+#include <vespa/vespalib/component/vtag.h>
+#include <vespa/vespalib/stllike/asciistream.h>
+#include <vespa/vespalib/util/size_literals.h>
+#include <vespa/vespalib/util/stringfmt.h>
+#include <vespa/vespalib/util/threadstackexecutor.h>
 #include <vespa/fastos/thread.h>
 #include <thread>
 
@@ -78,6 +80,14 @@ struct TargetPoolTask : public FNET_Task {
     }
 };
 
+TransportConfig
+toFNETConfig(const RPCNetworkParams & params) {
+    return TransportConfig()
+              .maxInputBufferSize(params.getMaxInputBufferSize())
+              .maxOutputBufferSize(params.getMaxOutputBufferSize())
+              .tcpNoDelay(params.getTcpNoDelay());
+}
+
 }
 
 RPCNetwork::SendContext::SendContext(RPCNetwork &net, const Message &msg,
@@ -116,7 +126,7 @@ RPCNetwork::RPCNetwork(const RPCNetworkParams &params) :
     _owner(nullptr),
     _ident(params.getIdentity()),
     _threadPool(std::make_unique<FastOS_ThreadPool>(128000, 0)),
-    _transport(std::make_unique<FNET_Transport>()),
+    _transport(std::make_unique<FNET_Transport>(toFNETConfig(params))),
     _orb(std::make_unique<FRT_Supervisor>(_transport.get())),
     _scheduler(*_transport->GetScheduler()),
     _slobrokCfgFactory(std::make_unique<slobrok::ConfiguratorFactory>(params.getSlobrokConfig())),
@@ -125,8 +135,8 @@ RPCNetwork::RPCNetwork(const RPCNetworkParams &params) :
     _requestedPort(params.getListenPort()),
     _targetPool(std::make_unique<RPCTargetPool>(params.getConnectionExpireSecs())),
     _targetPoolTask(std::make_unique<TargetPoolTask>(_scheduler, *_targetPool)),
-    _servicePool(std::make_unique<RPCServicePool>(*_mirror, 4096)),
-    _executor(std::make_unique<vespalib::ThreadStackExecutor>(params.getNumThreads(), 65536)),
+    _servicePool(std::make_unique<RPCServicePool>(*_mirror, 4_Ki)),
+    _executor(std::make_unique<vespalib::ThreadStackExecutor>(params.getNumThreads(), 64_Ki)),
     _sendV1(std::make_unique<RPCSendV1>()),
     _sendV2(std::make_unique<RPCSendV2>()),
     _sendAdapters(),
@@ -134,9 +144,6 @@ RPCNetwork::RPCNetwork(const RPCNetworkParams &params) :
     _allowDispatchForEncode(params.getDispatchOnEncode()),
     _allowDispatchForDecode(params.getDispatchOnDecode())
 {
-    _transport->SetMaxInputBufferSize(params.getMaxInputBufferSize());
-    _transport->SetMaxOutputBufferSize(params.getMaxOutputBufferSize());
-    _transport->SetTCPNoDelay(params.getTcpNoDelay());
 }
 
 RPCNetwork::~RPCNetwork()
@@ -274,6 +281,9 @@ void
 RPCNetwork::unregisterSession(const string &session)
 {
     if (_ident.getServicePrefix().empty()) {
+        return;
+    }
+    if (getPort() <= 0) {
         return;
     }
     string name = _ident.getServicePrefix();

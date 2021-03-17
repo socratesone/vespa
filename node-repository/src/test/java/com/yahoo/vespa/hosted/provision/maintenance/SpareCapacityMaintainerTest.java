@@ -31,7 +31,6 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
@@ -48,7 +47,7 @@ public class SpareCapacityMaintainerTest {
         var tester = new SpareCapacityMaintainerTester();
         tester.maintainer.maintain();
         assertEquals(0, tester.deployer.redeployments);
-        assertEquals(0, tester.nodeRepository.list().retired().size());
+        assertEquals(0, tester.nodeRepository.nodes().list().retired().size());
     }
 
     @Test
@@ -58,7 +57,7 @@ public class SpareCapacityMaintainerTest {
         tester.addNodes(0, 1, new NodeResources(10, 100, 1000, 1), 0);
         tester.maintainer.maintain();
         assertEquals(0, tester.deployer.redeployments);
-        assertEquals(0, tester.nodeRepository.list().retired().size());
+        assertEquals(0, tester.nodeRepository.nodes().list().retired().size());
         assertEquals(1, tester.metric.values.get("spareHostCapacity"));
     }
 
@@ -69,7 +68,7 @@ public class SpareCapacityMaintainerTest {
         tester.addNodes(0, 1, new NodeResources(10, 100, 1000, 1), 0);
         tester.maintainer.maintain();
         assertEquals(0, tester.deployer.redeployments);
-        assertEquals(0, tester.nodeRepository.list().retired().size());
+        assertEquals(0, tester.nodeRepository.nodes().list().retired().size());
         assertEquals(2, tester.metric.values.get("spareHostCapacity"));
     }
 
@@ -80,7 +79,7 @@ public class SpareCapacityMaintainerTest {
         tester.addNodes(0, 2, new NodeResources(10, 100, 1000, 1), 0);
         tester.maintainer.maintain();
         assertEquals(0, tester.deployer.redeployments);
-        assertEquals(0, tester.nodeRepository.list().retired().size());
+        assertEquals(0, tester.nodeRepository.nodes().list().retired().size());
         assertEquals(0, tester.metric.values.get("spareHostCapacity"));
     }
 
@@ -92,7 +91,7 @@ public class SpareCapacityMaintainerTest {
         tester.addNodes(1, 2, new NodeResources(5, 50, 500, 0.5), 2);
         tester.maintainer.maintain();
         assertEquals(0, tester.deployer.redeployments);
-        assertEquals(0, tester.nodeRepository.list().retired().size());
+        assertEquals(0, tester.nodeRepository.nodes().list().retired().size());
         assertEquals(2, tester.metric.values.get("spareHostCapacity"));
     }
 
@@ -106,13 +105,13 @@ public class SpareCapacityMaintainerTest {
         tester.addNodes(2, 2, new NodeResources(5, 50, 500, 0.5), 4);
         tester.maintainer.maintain();
         assertEquals(1, tester.deployer.redeployments);
-        assertEquals(1, tester.nodeRepository.list().retired().size());
+        assertEquals(1, tester.nodeRepository.nodes().list().retired().size());
         assertEquals(1, tester.metric.values.get("spareHostCapacity"));
 
         // Maintaining again is a no-op since the node to move is already retired
         tester.maintainer.maintain();
         assertEquals(1, tester.deployer.redeployments);
-        assertEquals(1, tester.nodeRepository.list().retired().size());
+        assertEquals(1, tester.nodeRepository.nodes().list().retired().size());
         assertEquals(1, tester.metric.values.get("spareHostCapacity"));
     }
 
@@ -129,7 +128,7 @@ public class SpareCapacityMaintainerTest {
         tester.addNodes(3, 2, new NodeResources(5, 50, 500, 0.5), 6);
         tester.maintainer.maintain();
         assertEquals(1, tester.deployer.redeployments);
-        assertEquals(1, tester.nodeRepository.list().retired().size());
+        assertEquals(1, tester.nodeRepository.nodes().list().retired().size());
         assertEquals(1, tester.metric.values.get("spareHostCapacity"));
     }
 
@@ -142,7 +141,7 @@ public class SpareCapacityMaintainerTest {
 
         tester.maintainer.maintain();
         assertEquals(1, tester.deployer.redeployments);
-        assertEquals(1, tester.nodeRepository.list().retired().size());
+        assertEquals(1, tester.nodeRepository.nodes().list().retired().size());
         assertEquals(1, tester.metric.values.get("spareHostCapacity"));
     }
 
@@ -153,7 +152,7 @@ public class SpareCapacityMaintainerTest {
 
         tester.maintainer.maintain();
         assertEquals(0, tester.deployer.redeployments);
-        assertEquals(0, tester.nodeRepository.list().retired().size());
+        assertEquals(0, tester.nodeRepository.nodes().list().retired().size());
         assertEquals(0, tester.metric.values.get("spareHostCapacity"));
     }
 
@@ -196,7 +195,7 @@ public class SpareCapacityMaintainerTest {
 
         tester.maintainer.maintain();
         assertEquals(0, tester.deployer.redeployments);
-        assertEquals(0, tester.nodeRepository.list().retired().size());
+        assertEquals(0, tester.nodeRepository.nodes().list().retired().size());
         assertEquals(0, tester.metric.values.get("spareHostCapacity"));
     }
 
@@ -213,7 +212,7 @@ public class SpareCapacityMaintainerTest {
         tester.maintainer.maintain();
         assertEquals(2, tester.metric.values.get("overcommittedHosts"));
         assertEquals(1, tester.deployer.redeployments);
-        assertEquals(List.of(new NodeResources( 1.1, 10, 100, 0.1)), tester.nodeRepository.list().retired().mapToList(Node::resources));
+        assertEquals(List.of(new NodeResources( 1.1, 10, 100, 0.1)), tester.nodeRepository.nodes().list().retired().mapToList(Node::resources));
     }
 
     /** Microbenchmark */
@@ -236,7 +235,7 @@ public class SpareCapacityMaintainerTest {
         long totalTime = System.currentTimeMillis() - startTime;
         System.out.println("Complete in " + ( totalTime / 1000) + " seconds");
         assertEquals(0, tester.deployer.redeployments);
-        assertEquals(0, tester.nodeRepository.list().retired().size());
+        assertEquals(0, tester.nodeRepository.nodes().list().retired().size());
         assertEquals(0, tester.metric.values.get("spareHostCapacity"));
     }
 
@@ -256,7 +255,7 @@ public class SpareCapacityMaintainerTest {
         private SpareCapacityMaintainerTester(int maxIterations) {
             NodeFlavors flavors = new NodeFlavors(new FlavorConfigBuilder().build());
             nodeRepository = new NodeRepository(flavors,
-                                                new EmptyProvisionServiceProvider().getHostResourcesCalculator(),
+                                                new EmptyProvisionServiceProvider(),
                                                 new MockCurator(),
                                                 new ManualClock(),
                                                 new Zone(Environment.prod, RegionName.from("us-east-3")),
@@ -264,7 +263,6 @@ public class SpareCapacityMaintainerTest {
                                                 DockerImage.fromString("docker-registry.domain.tld:8080/dist/vespa"),
                                                 new InMemoryFlagSource(),
                                                 true,
-                                                false,
                                                 1, 1000);
             deployer = new MockDeployer(nodeRepository);
             maintainer = new SpareCapacityMaintainer(deployer, nodeRepository, metric, Duration.ofDays(1), maxIterations);
@@ -273,13 +271,8 @@ public class SpareCapacityMaintainerTest {
         private void addHosts(int count, NodeResources resources) {
             List<Node> hosts = new ArrayList<>();
             for (int i = 0; i < count; i++) {
-                Node host = nodeRepository.createNode("host" + hostIndex,
-                                                      "host" + hostIndex + ".yahoo.com",
-                                                      ipConfig(hostIndex + nodeIndex, true),
-                                                      Optional.empty(),
-                                                      new Flavor(resources),
-                                                      Optional.empty(),
-                                                      NodeType.host);
+                Node host = Node.create("host" + hostIndex, ipConfig(hostIndex + nodeIndex, true),
+                        "host" + hostIndex + ".yahoo.com", new Flavor(resources), NodeType.host).build();
                 hosts.add(host);
                 hostIndex++;
             }
@@ -295,13 +288,9 @@ public class SpareCapacityMaintainerTest {
         private void addNodes(int id, int count, NodeResources resources, int hostOffset) {
             List<Node> nodes = new ArrayList<>();
             for (int i = 0; i < count; i++) {
-                Node node = nodeRepository.createNode("node" + nodeIndex,
-                                                      "node" + nodeIndex + ".yahoo.com",
-                                                      ipConfig(hostIndex + nodeIndex, false),
-                                                      Optional.of("host" + ( hostOffset + i) + ".yahoo.com"),
-                                                      new Flavor(resources),
-                                                      Optional.empty(),
-                                                      NodeType.tenant);
+                Node node = Node.create("node" + nodeIndex, ipConfig(hostIndex + nodeIndex, false),
+                        "node" + nodeIndex + ".yahoo.com", new Flavor(resources), NodeType.tenant)
+                        .parentHostname("host" + ( hostOffset + i) + ".yahoo.com").build();
                 nodes.add(node);
                 nodeIndex++;
             }
@@ -315,16 +304,16 @@ public class SpareCapacityMaintainerTest {
         }
 
         private void allocate(ApplicationId application, ClusterSpec clusterSpec, List<Node> nodes) {
-            nodes = nodeRepository.addNodes(nodes, Agent.system);
+            nodes = nodeRepository.nodes().addNodes(nodes, Agent.system);
             for (int i = 0; i < nodes.size(); i++) {
                 Node node = nodes.get(i);
                 ClusterMembership membership = ClusterMembership.from(clusterSpec, i);
                 node = node.allocate(application, membership, node.resources(), Instant.now());
                 nodes.set(i, node);
             }
-            nodes = nodeRepository.reserve(nodes);
+            nodes = nodeRepository.nodes().reserve(nodes);
             var transaction = new NestedTransaction();
-            nodes = nodeRepository.activate(nodes, transaction);
+            nodes = nodeRepository.nodes().activate(nodes, transaction);
             transaction.commit();
         }
 
@@ -337,9 +326,9 @@ public class SpareCapacityMaintainerTest {
         }
 
         private void dumpState() {
-            for (Node host : nodeRepository.list().hosts().asList()) {
+            for (Node host : nodeRepository.nodes().list().hosts()) {
                 System.out.println("Host " + host.hostname() + " " + host.resources());
-                for (Node node : nodeRepository.list().childrenOf(host).asList())
+                for (Node node : nodeRepository.nodes().list().childrenOf(host))
                     System.out.println("    Node " + node.hostname() + " " + node.resources() + " allocation " +node.allocation());
             }
         }

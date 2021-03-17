@@ -1,4 +1,4 @@
-// Copyright 2017 Yahoo Holdings. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Verizon Media. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.config.server.modelfactory;
 
 import com.yahoo.cloud.config.ConfigserverConfig;
@@ -17,21 +17,25 @@ import com.yahoo.config.model.api.Provisioned;
 import com.yahoo.config.model.api.ValidationParameters;
 import com.yahoo.config.model.api.ValidationParameters.IgnoreValidationErrors;
 import com.yahoo.config.model.application.provider.FilesApplicationPackage;
+import com.yahoo.config.model.deploy.DeployState;
 import com.yahoo.config.provision.AllocatedHosts;
 import com.yahoo.config.provision.ApplicationId;
 import com.yahoo.config.provision.DockerImage;
 import com.yahoo.vespa.config.server.application.Application;
+import com.yahoo.vespa.config.server.application.ApplicationCuratorDatabase;
 import com.yahoo.vespa.config.server.application.ApplicationSet;
 import com.yahoo.vespa.config.server.application.PermanentApplicationPackage;
 import com.yahoo.vespa.config.server.deploy.ModelContextImpl;
 import com.yahoo.vespa.config.server.filedistribution.FileDistributionProvider;
 import com.yahoo.vespa.config.server.host.HostValidator;
 import com.yahoo.vespa.config.server.provision.HostProvisionerProvider;
-import com.yahoo.vespa.config.server.provision.StaticProvisioner;
 import com.yahoo.vespa.config.server.session.PrepareParams;
+import com.yahoo.vespa.curator.Curator;
 
 import java.io.File;
 import java.io.IOException;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 import java.util.logging.Level;
@@ -53,12 +57,14 @@ public class PreparedModelsBuilder extends ModelsBuilder<PreparedModelsBuilder.P
     private final FileDistributionProvider fileDistributionProvider;
     private final Optional<ApplicationSet> currentActiveApplicationSet;
     private final ModelContext.Properties properties;
+    private final Curator curator;
 
     public PreparedModelsBuilder(ModelFactoryRegistry modelFactoryRegistry,
                                  PermanentApplicationPackage permanentApplicationPackage,
                                  ConfigDefinitionRepo configDefinitionRepo,
                                  FileDistributionProvider fileDistributionProvider,
                                  HostProvisionerProvider hostProvisionerProvider,
+                                 Curator curator,
                                  HostValidator<ApplicationId> hostValidator,
                                  DeployLogger logger,
                                  PrepareParams params,
@@ -70,6 +76,7 @@ public class PreparedModelsBuilder extends ModelsBuilder<PreparedModelsBuilder.P
         this.configDefinitionRepo = configDefinitionRepo;
         this.fileDistributionProvider = fileDistributionProvider;
         this.hostValidator = hostValidator;
+        this.curator = curator;
         this.logger = logger;
         this.params = params;
         this.currentActiveApplicationSet = currentActiveApplicationSet;
@@ -95,7 +102,8 @@ public class PreparedModelsBuilder extends ModelsBuilder<PreparedModelsBuilder.P
                 logger,
                 configDefinitionRepo,
                 fileDistributionProvider.getFileRegistry(),
-                createHostProvisioner(allocatedHosts, provisioned),
+                new ApplicationCuratorDatabase(applicationId.tenant(), curator).readReindexingStatus(applicationId),
+                createHostProvisioner(applicationPackage, provisioned),
                 provisioned,
                 properties,
                 getAppDir(applicationPackage),
@@ -103,17 +111,22 @@ public class PreparedModelsBuilder extends ModelsBuilder<PreparedModelsBuilder.P
                 modelVersion,
                 wantedNodeVespaVersion);
 
+        ModelCreateResult result = createAndValidateModel(modelFactory, applicationId, modelVersion, modelContext);
+        return new PreparedModelResult(modelVersion, result.getModel(), fileDistributionProvider, result.getConfigChangeActions());
+    }
 
+    private ModelCreateResult createAndValidateModel(ModelFactory modelFactory, ApplicationId applicationId, Version modelVersion, ModelContext modelContext) {
         log.log(properties.zone().system().isCd() ? Level.INFO : Level.FINE,
-                "Create and validate model " + modelVersion + " for " + applicationId + ", previous model is " + modelOf(modelVersion));
+                "Create and validate model " + modelVersion + " for " + applicationId + ", previous model is " +
+                modelOf(modelVersion).map(Model::version).map(Version::toFullString).orElse("non-existing"));
         ValidationParameters validationParameters =
                 new ValidationParameters(params.ignoreValidationErrors() ? IgnoreValidationErrors.TRUE : IgnoreValidationErrors.FALSE);
         ModelCreateResult result = modelFactory.createAndValidateModel(modelContext, validationParameters);
         validateModelHosts(hostValidator, applicationId, result.getModel());
         log.log(Level.FINE, "Done building model " + modelVersion + " for " + applicationId);
         params.getTimeoutBudget().assertNotTimedOut(() -> "prepare timed out after building model " + modelVersion +
-                " (timeout " + params.getTimeoutBudget().timeout() + "): " + applicationId);
-        return new PreparedModelsBuilder.PreparedModelResult(modelVersion, result.getModel(), fileDistributionProvider, result.getConfigChangeActions());
+                                                          " (timeout " + params.getTimeoutBudget().timeout() + "): " + applicationId);
+        return result;
     }
 
     private Optional<Model> modelOf(Version version) {
@@ -121,22 +134,19 @@ public class PreparedModelsBuilder extends ModelsBuilder<PreparedModelsBuilder.P
         return currentActiveApplicationSet.get().get(version).map(Application::getModel);
     }
 
-    // This method is an excellent demonstration of what happens when one is too liberal with Optional   
-    // -bratseth, who had to write the below  :-\
-    private Optional<HostProvisioner> createHostProvisioner(Optional<AllocatedHosts> allocatedHosts,
-                                                            Provisioned provisioned) {
-        Optional<HostProvisioner> nodeRepositoryProvisioner = createNodeRepositoryProvisioner(properties.applicationId(),
-                                                                                              provisioned);
-        if (allocatedHosts.isEmpty()) return nodeRepositoryProvisioner;
-        
-        Optional<HostProvisioner> staticProvisioner = createStaticProvisioner(allocatedHosts,
-                                                                              properties.applicationId(),
-                                                                              provisioned);
-        if (staticProvisioner.isEmpty()) return Optional.empty(); // Since we have hosts allocated this means we are on non-hosted
-            
+    private HostProvisioner createHostProvisioner(ApplicationPackage applicationPackage, Provisioned provisioned) {
+        HostProvisioner defaultHostProvisioner = DeployState.getDefaultModelHostProvisioner(applicationPackage);
+        // Note: nodeRepositoryProvisioner will always be present when hosted is true
+        Optional<HostProvisioner> nodeRepositoryProvisioner = createNodeRepositoryProvisioner(properties.applicationId(), provisioned);
+        Optional<AllocatedHosts> allocatedHosts = applicationPackage.getAllocatedHosts();
+
+        if (allocatedHosts.isEmpty()) return nodeRepositoryProvisioner.orElse(defaultHostProvisioner);
+
         // Nodes are already allocated by a model and we should use them unless this model requests hosts from a
         // previously unallocated cluster. This allows future models to stop allocate certain clusters.
-        return Optional.of(new StaticProvisioner(allocatedHosts.get(), nodeRepositoryProvisioner.get()));
+        if (hosted) return createStaticProvisionerForHosted(allocatedHosts.get(), nodeRepositoryProvisioner.get());
+
+        return defaultHostProvisioner;
     }
 
     private Optional<File> getAppDir(ApplicationPackage applicationPackage) {
@@ -150,9 +160,26 @@ public class PreparedModelsBuilder extends ModelsBuilder<PreparedModelsBuilder.P
     }
 
     private void validateModelHosts(HostValidator<ApplicationId> hostValidator, ApplicationId applicationId, Model model) {
-        hostValidator.verifyHosts(applicationId, model.getHosts().stream()
-                .map(HostInfo::getHostname)
-                .collect(Collectors.toList()));
+        // Will retry here, since hosts used might not be in sync on all config servers (we wait for 2/3 servers
+        // to respond to deployments and deletions).
+        Instant end = Instant.now().plus(Duration.ofSeconds(1));
+        IllegalArgumentException exception;
+        do {
+            try {
+                hostValidator.verifyHosts(applicationId, model.getHosts().stream()
+                                                              .map(HostInfo::getHostname)
+                                                              .collect(Collectors.toList()));
+                return;
+            } catch (IllegalArgumentException e) {
+                exception = e;
+                log.log(Level.INFO, "Verifying hosts failed, will retry: " + e.getMessage());
+                try {
+                    Thread.sleep(100);
+                } catch (InterruptedException interruptedException) {/* ignore */}
+            }
+        } while (Instant.now().isBefore(end));
+
+        throw exception;
     }
 
     /** The result of preparing a single model version */
@@ -160,11 +187,13 @@ public class PreparedModelsBuilder extends ModelsBuilder<PreparedModelsBuilder.P
 
         public final Version version;
         public final Model model;
-        public final com.yahoo.vespa.config.server.filedistribution.FileDistributionProvider fileDistributionProvider;
+        public final FileDistributionProvider fileDistributionProvider;
         public final List<ConfigChangeAction> actions;
 
-        public PreparedModelResult(Version version, Model model,
-                                   com.yahoo.vespa.config.server.filedistribution.FileDistributionProvider fileDistributionProvider, List<ConfigChangeAction> actions) {
+        public PreparedModelResult(Version version,
+                                   Model model,
+                                   FileDistributionProvider fileDistributionProvider,
+                                   List<ConfigChangeAction> actions) {
             this.version = version;
             this.model = model;
             this.fileDistributionProvider = fileDistributionProvider;

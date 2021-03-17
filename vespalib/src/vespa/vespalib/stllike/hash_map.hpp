@@ -8,6 +8,11 @@
 namespace vespalib {
 
 template <typename K, typename V, typename H, typename EQ, typename M>
+hash_map<K, V, H, EQ, M>::hash_map() :
+    _ht(0)
+{ }
+
+template <typename K, typename V, typename H, typename EQ, typename M>
 hash_map<K, V, H, EQ, M>::hash_map(size_t reserveSize) :
     _ht(reserveSize)
 { }

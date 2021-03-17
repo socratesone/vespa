@@ -6,11 +6,12 @@ import com.yahoo.component.ComponentId;
 import com.yahoo.component.provider.ComponentRegistry;
 import com.yahoo.concurrent.DaemonThreadFactory;
 import com.yahoo.container.logging.AccessLog;
+import com.yahoo.container.logging.ConnectionLog;
+import com.yahoo.container.logging.RequestLog;
 import com.yahoo.jdisc.Metric;
 import com.yahoo.jdisc.http.ConnectorConfig;
 import com.yahoo.jdisc.http.ServerConfig;
 import com.yahoo.jdisc.http.ServletPathsConfig;
-import com.yahoo.jdisc.http.server.FilterBindings;
 import com.yahoo.jdisc.service.AbstractServerProvider;
 import com.yahoo.jdisc.service.CurrentContainer;
 import org.eclipse.jetty.http.HttpField;
@@ -73,7 +74,8 @@ public class JettyHttpServer extends AbstractServerProvider {
                            ComponentRegistry<ConnectorFactory> connectorFactories,
                            ComponentRegistry<ServletHolder> servletHolders,
                            FilterInvoker filterInvoker,
-                           AccessLog accessLog) {
+                           RequestLog requestLog,
+                           ConnectionLog connectionLog) {
         super(container);
         if (connectorFactories.allComponents().isEmpty())
             throw new IllegalArgumentException("No connectors configured.");
@@ -82,20 +84,20 @@ public class JettyHttpServer extends AbstractServerProvider {
 
         server = new Server();
         server.setStopTimeout((long)(serverConfig.stopTimeout() * 1000.0));
-        server.setRequestLog(new AccessLogRequestLog(accessLog, serverConfig.accessLog()));
+        server.setRequestLog(new AccessLogRequestLog(requestLog, serverConfig.accessLog()));
         setupJmx(server, serverConfig);
-        ((QueuedThreadPool)server.getThreadPool()).setMaxThreads(serverConfig.maxWorkerThreads());
+        configureJettyThreadpool(server, serverConfig);
+        JettyConnectionLogger connectionLogger = new JettyConnectionLogger(serverConfig.connectionLog(), connectionLog);
 
         for (ConnectorFactory connectorFactory : connectorFactories.allComponents()) {
             ConnectorConfig connectorConfig = connectorFactory.getConnectorConfig();
-            server.addConnector(connectorFactory.createConnector(metric, server));
+            server.addConnector(connectorFactory.createConnector(metric, server, connectionLogger));
             listenedPorts.add(connectorConfig.listenPort());
         }
 
         janitor = newJanitor();
 
-        JDiscContext jDiscContext = new JDiscContext(filterBindings.getRequestFilters().activate(),
-                                                     filterBindings.getResponseFilters().activate(),
+        JDiscContext jDiscContext = new JDiscContext(filterBindings,
                                                      container,
                                                      janitor,
                                                      metric,
@@ -133,6 +135,12 @@ public class JettyHttpServer extends AbstractServerProvider {
             server.addBean(new ConnectorServer(createJmxLoopbackOnlyServiceUrl(serverConfig.jmx().listenPort()),
                                                "org.eclipse.jetty.jmx:name=rmiconnectorserver"));
         }
+    }
+
+    private static void configureJettyThreadpool(Server server, ServerConfig config) {
+        QueuedThreadPool pool = (QueuedThreadPool) server.getThreadPool();
+        pool.setMaxThreads(config.maxWorkerThreads());
+        pool.setMinThreads(config.minWorkerThreads());
     }
 
     private static JMXServiceURL createJmxLoopbackOnlyServiceUrl(int port) {
@@ -200,8 +208,9 @@ public class JettyHttpServer extends AbstractServerProvider {
         return ports.stream().map(Object::toString).collect(Collectors.joining(":"));
     }
 
+    // Separate threadpool for tasks that cannot be executed on the jdisc default threadpool due to risk of deadlock
     private static ExecutorService newJanitor() {
-        int threadPoolSize = Runtime.getRuntime().availableProcessors();
+        int threadPoolSize = Math.max(1, Runtime.getRuntime().availableProcessors()/8);
         log.info("Creating janitor executor with " + threadPoolSize + " threads");
         return Executors.newFixedThreadPool(
                 threadPoolSize,
@@ -216,7 +225,7 @@ public class JettyHttpServer extends AbstractServerProvider {
             logEffectiveSslConfiguration();
         } catch (final Exception e) {
             if (e instanceof IOException && e.getCause() instanceof BindException) {
-                throw new RuntimeException("Failed to start server due to BindExecption. ListenPorts = " + listenedPorts.toString(), e.getCause());
+                throw new RuntimeException("Failed to start server due to BindException. ListenPorts = " + listenedPorts.toString(), e.getCause());
             }
             throw new RuntimeException("Failed to start server.", e);
         }

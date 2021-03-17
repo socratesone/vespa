@@ -6,6 +6,7 @@ import java.util.Objects;
 /**
  * @author valerijf
  */
+// TODO: Move this to node-admin when docker-api module can be removed
 public class ContainerResources {
 
     public static final ContainerResources UNLIMITED = ContainerResources.from(0, 0, 0);
@@ -28,7 +29,7 @@ public class ContainerResources {
     /** The maximum amount, in bytes, of memory the container can use. */
     private final long memoryBytes;
 
-    ContainerResources(double cpus, int cpuShares, long memoryBytes) {
+    public ContainerResources(double cpus, int cpuShares, long memoryBytes) {
         this.cpus = cpus;
         this.cpuShares = cpuShares;
         this.memoryBytes = memoryBytes;
@@ -62,8 +63,7 @@ public class ContainerResources {
         return cpus;
     }
 
-    // Although docker allows to update cpu quota to 0, this is not a legal value, must be set -1 for unlimited
-    // See: https://github.com/docker/for-linux/issues/558
+    /** Returns the CFS CPU quota per {@link #cpuPeriod()}, or -1 if disabled. */
     public int cpuQuota() {
         return cpus > 0 ? (int) (cpus * CPU_PERIOD_US) : -1;
     }

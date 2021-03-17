@@ -79,6 +79,7 @@ public class Controller extends AbstractComponent {
     private final Metric metric;
     private final RoutingController routingController;
     private final ControllerConfig controllerConfig;
+    private final SecretStore secretStore;
 
     /**
      * Creates a controller 
@@ -109,12 +110,13 @@ public class Controller extends AbstractComponent {
         metrics = new ConfigServerMetrics(serviceRegistry.configServer());
         nameServiceForwarder = new NameServiceForwarder(curator);
         jobController = new JobController(this);
-        applicationController = new ApplicationController(this, curator, accessControl, clock, secretStore, flagSource, serviceRegistry.billingController());
-        tenantController = new TenantController(this, curator, accessControl);
+        applicationController = new ApplicationController(this, curator, accessControl, clock, flagSource, serviceRegistry.billingController());
+        tenantController = new TenantController(this, curator, accessControl, flagSource);
         routingController = new RoutingController(this, Objects.requireNonNull(rotationsConfig, "RotationsConfig cannot be null"));
         auditLogger = new AuditLogger(curator, clock);
         jobControl = new JobControl(new JobControlFlags(curator, flagSource));
         this.controllerConfig = controllerConfig;
+        this.secretStore = secretStore;
 
         // Record the version of this controller
         curator().writeControllerVersion(this.hostname(), ControllerVersion.CURRENT);
@@ -163,7 +165,7 @@ public class Controller extends AbstractComponent {
 
     /** Replace the current version status by a new one */
     public void updateVersionStatus(VersionStatus newStatus) {
-        VersionStatus currentStatus = versionStatus();
+        VersionStatus currentStatus = readVersionStatus();
         if (newStatus.systemVersion().isPresent() &&
             ! newStatus.systemVersion().equals(currentStatus.systemVersion())) {
             log.info("Changing system version from " + printableVersion(currentStatus.systemVersion()) +
@@ -177,7 +179,7 @@ public class Controller extends AbstractComponent {
     }
     
     /** Returns the latest known version status. Calling this is free but the status may be slightly out of date. */
-    public VersionStatus versionStatus() { return curator.readVersionStatus(); }
+    public VersionStatus readVersionStatus() { return curator.readVersionStatus(); }
 
     /** Remove confidence override for versions matching given filter */
     public void removeConfidenceOverride(Predicate<Version> filter) {
@@ -189,10 +191,15 @@ public class Controller extends AbstractComponent {
     }
     
     /** Returns the current system version: The controller should drive towards running all applications on this version */
-    public Version systemVersion() {
-        return versionStatus().systemVersion()
-                              .map(VespaVersion::versionNumber)
-                              .orElse(Vtag.currentVersion);
+    public Version readSystemVersion() {
+        return systemVersion(readVersionStatus());
+    }
+
+    /** Returns the current system version from given status: The controller should drive towards running all applications on this version */
+    public Version systemVersion(VersionStatus versionStatus) {
+        return versionStatus.systemVersion()
+                            .map(VespaVersion::versionNumber)
+                            .orElse(Vtag.currentVersion);
     }
 
     /** Returns the target OS version for infrastructure in this system. The controller will drive infrastructure OS
@@ -228,6 +235,8 @@ public class Controller extends AbstractComponent {
             targets.removeIf(target -> target.osVersion().cloud().equals(cloudName)); // Only allow a single target per cloud
             targets.add(new OsVersionTarget(new OsVersion(version, cloudName), upgradeBudget));
             curator.writeOsVersionTargets(targets);
+            log.info("Triggered OS upgrade to " + version.toFullString() + " in cloud " +
+                     cloudName.value() + upgradeBudget.map(b -> ", with upgrade budget " + b).orElse(""));
         }
     }
 
@@ -274,6 +283,10 @@ public class Controller extends AbstractComponent {
 
     public Metric metric() {
         return metric;
+    }
+
+    public SecretStore secretStore() {
+        return secretStore;
     }
 
     private Set<CloudName> clouds() {

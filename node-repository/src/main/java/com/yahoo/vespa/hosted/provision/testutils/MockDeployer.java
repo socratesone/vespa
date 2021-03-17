@@ -1,8 +1,10 @@
-// Copyright 2017 Yahoo Holdings. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Verizon Media. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.hosted.provision.testutils;
 
 import com.google.inject.Inject;
+import com.yahoo.config.provision.ActivationContext;
 import com.yahoo.config.provision.ApplicationId;
+import com.yahoo.config.provision.ApplicationTransaction;
 import com.yahoo.config.provision.Capacity;
 import com.yahoo.config.provision.ClusterSpec;
 import com.yahoo.config.provision.Deployer;
@@ -11,6 +13,7 @@ import com.yahoo.config.provision.HostFilter;
 import com.yahoo.config.provision.HostSpec;
 import com.yahoo.transaction.NestedTransaction;
 import com.yahoo.vespa.hosted.provision.Node;
+import com.yahoo.vespa.hosted.provision.NodeMutex;
 import com.yahoo.vespa.hosted.provision.NodeRepository;
 import com.yahoo.vespa.hosted.provision.provisioning.NodeRepositoryProvisioner;
 
@@ -35,7 +38,7 @@ public class MockDeployer implements Deployer {
     // For mock deploy anything, changing wantToRetire to retired only
     private final NodeRepository nodeRepository;
 
-    /** The number of redeployments done to this */
+    /** The number of redeployments done to this, which is also the config generation */
     public int redeployments = 0;
 
     private final Map<ApplicationId, Instant> lastDeployTimes = new HashMap<>();
@@ -124,6 +127,9 @@ public class MockDeployer implements Deployer {
         return bootstrapping;
     }
 
+    @Override
+    public Duration serverDeployTimeout() { return Duration.ofSeconds(60); }
+
     public void removeApplication(ApplicationId applicationId) {
         new MockDeployment(provisioner, new ApplicationContext(applicationId, List.of())).activate();
 
@@ -155,14 +161,16 @@ public class MockDeployer implements Deployer {
                 prepare();
             if (failActivate)
                 throw new IllegalStateException("failActivate is true");
+
+            redeployments++;
             try (var lock = provisioner.lock(application.id)) {
                 try (NestedTransaction t = new NestedTransaction()) {
-                    provisioner.activate(t, preparedHosts, lock);
+                    provisioner.activate(preparedHosts, new ActivationContext(redeployments), new ApplicationTransaction(lock, t));
                     t.commit();
                     lastDeployTimes.put(application.id, clock.instant());
                 }
             }
-            return redeployments++;
+            return redeployments;
         }
 
         @Override
@@ -187,8 +195,11 @@ public class MockDeployer implements Deployer {
         public long activate() {
             lastDeployTimes.put(applicationId, clock.instant());
 
-            for (Node node : nodeRepository.list().owner(applicationId).state(Node.State.active).wantToRetire().asList())
-                nodeRepository.write(node.retire(nodeRepository.clock().instant()), nodeRepository.lock(node));
+            for (Node node : nodeRepository.nodes().list().owner(applicationId).state(Node.State.active).retirementRequested()) {
+                try (NodeMutex lock = nodeRepository.nodes().lockAndGetRequired(node)) {
+                    nodeRepository.nodes().write(lock.node().retire(nodeRepository.clock().instant()), lock);
+                }
+            }
             return redeployments++;
         }
 

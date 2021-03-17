@@ -4,9 +4,9 @@
 #include "domainpart.h"
 #include "session.h"
 #include <vespa/vespalib/util/stringfmt.h>
-#include <vespa/vespalib/util/closuretask.h>
 #include <vespa/vespalib/io/fileutil.h>
 #include <vespa/vespalib/util/lambdatask.h>
+#include <vespa/vespalib/util/size_literals.h>
 #include <vespa/fastos/file.h>
 #include <algorithm>
 #include <thread>
@@ -19,8 +19,6 @@ LOG_SETUP(".transactionlog.domain");
 
 using vespalib::string;
 using vespalib::make_string_short::fmt;
-using vespalib::makeTask;
-using vespalib::makeClosure;
 using vespalib::makeLambdaTask;
 using std::runtime_error;
 using std::make_shared;
@@ -40,11 +38,12 @@ Domain::Domain(const string &domainName, const string & baseDir, Executor & exec
     : _config(cfg),
       _currentChunk(createCommitChunk(cfg)),
       _lastSerial(0),
-      _singleCommitter(std::make_unique<vespalib::ThreadStackExecutor>(1, 128 * 1024)),
+      _singleCommitter(std::make_unique<vespalib::ThreadStackExecutor>(1, 128_Ki)),
       _executor(executor),
       _sessionId(1),
       _syncMonitor(),
       _pendingSync(false),
+      _done_sync_tasks(),
       _name(domainName),
       _parts(),
       _lock(),
@@ -67,7 +66,7 @@ Domain::Domain(const string &domainName, const string & baseDir, Executor & exec
     const SerialNum lastPart = partIdVector.empty() ? 0 : partIdVector.back();
     for (const SerialNum partId : partIdVector) {
         if ( partId != std::numeric_limits<SerialNum>::max()) {
-            _executor.execute(makeTask(makeClosure(this, &Domain::addPart, partId, partId == lastPart)));
+            _executor.execute(makeLambdaTask([this, partId, lastPart]() { addPart(partId, partId == lastPart); }));
         }
     }
     _executor.sync();
@@ -206,20 +205,33 @@ Domain::getSynced() const
 
 
 void
-Domain::triggerSyncNow()
+Domain::triggerSyncNow(std::unique_ptr<vespalib::Executor::Task> done_sync_task)
 {
     {
         std::unique_lock guard(_currentChunkMonitor);
         commitAndTransferResponses(guard);
     }
+    if (done_sync_task) {
+        // Need to protect against being called from the _singleCommitter as that will cause a deadlock
+        // That is done from Domain::commitChunk.lamdba->Domain::doCommit()->optionallyRotateFile->triggerSyncNow({})
+        _singleCommitter->sync();
+    }
     std::unique_lock guard(_syncMonitor);
+    if (done_sync_task) {
+        _done_sync_tasks.push_back(std::move(done_sync_task));
+    }
     if (!_pendingSync) {
         _pendingSync = true;
-        _executor.execute(makeLambdaTask([this, domainPart=_parts.rbegin()->second]() {
+        _executor.execute(makeLambdaTask([this, domainPart= getActivePart()]() {
             domainPart->sync();
             std::lock_guard monitorGuard(_syncMonitor);
             _pendingSync = false;
             _syncCond.notify_all();
+            for (auto &task : _done_sync_tasks) {
+                auto failed_task = _executor.execute(std::move(task));
+                assert(!failed_task);
+            }
+            _done_sync_tasks.clear();
         }));
     }
 }
@@ -240,6 +252,12 @@ Domain::findPart(SerialNum s)
         return it->second;
     }
     return DomainPart::SP();
+}
+
+DomainPart::SP
+Domain::getActivePart() {
+    std::lock_guard guard(_lock);
+    return _parts.rbegin()->second;
 }
 
 uint64_t
@@ -307,10 +325,10 @@ waitPendingSync(std::mutex &syncMonitor, std::condition_variable & syncCond, boo
 
 DomainPart::SP
 Domain::optionallyRotateFile(SerialNum serialNum) {
-    DomainPart::SP dp(_parts.rbegin()->second);
+    DomainPart::SP dp = getActivePart();
     if (dp->byteSize() > _config.getPartSizeLimit()) {
         waitPendingSync(_syncMonitor, _syncCond, _pendingSync);
-        triggerSyncNow();
+        triggerSyncNow({});
         waitPendingSync(_syncMonitor, _syncCond, _pendingSync);
         dp->close();
         dp = std::make_shared<DomainPart>(_name, dir(), serialNum, _config.getEncoding(),
@@ -404,14 +422,14 @@ Domain::erase(SerialNum to)
 {
     bool retval(true);
     /// Do not erase the last element
+    UniqueLock guard(_lock);
     for (DomainPartList::iterator it(_parts.begin()); (_parts.size() > 1) && (it->second.get()->range().to() < to); it = _parts.begin()) {
         DomainPart::SP dp(it->second);
-        {
-            std::lock_guard guard(_lock);
-            _parts.erase(it);
-        }
+        _parts.erase(it);
+        guard.unlock();
         retval = retval && dp->erase(to);
         vespalib::File::sync(dir());
+        guard.lock();
     }
     if (_parts.begin()->second->range().to() >= to) {
         _parts.begin()->second->erase(to);

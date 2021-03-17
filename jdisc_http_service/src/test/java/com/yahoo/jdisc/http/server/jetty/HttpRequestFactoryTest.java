@@ -7,10 +7,10 @@ import com.yahoo.jdisc.References;
 import com.yahoo.jdisc.ResourceReference;
 import com.yahoo.jdisc.Response;
 import com.yahoo.jdisc.handler.RequestHandler;
+import com.yahoo.jdisc.http.ConnectorConfig;
 import com.yahoo.jdisc.http.HttpRequest;
 import com.yahoo.jdisc.service.CurrentContainer;
 import org.eclipse.jetty.server.HttpConnection;
-import org.eclipse.jetty.server.ServerConnector;
 import org.junit.Test;
 
 import javax.servlet.http.HttpServletRequest;
@@ -20,6 +20,7 @@ import static org.hamcrest.CoreMatchers.equalTo;
 import static org.hamcrest.CoreMatchers.is;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.fail;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
@@ -33,7 +34,46 @@ public class HttpRequestFactoryTest {
     private static final int LOCAL_PORT = 80;
 
     @Test
-    public final void testIllegalQuery() {
+    public void testLegalURIs() {
+        {
+            URI uri = HttpRequestFactory.getUri(createMockRequest("https", "host", null, null));
+            assertEquals("https", uri.getScheme());
+            assertEquals("host", uri.getHost());
+            assertEquals("", uri.getRawPath());
+            assertNull(uri.getRawQuery());
+        }
+        {
+            URI uri = HttpRequestFactory.getUri(createMockRequest("https", "host", "", ""));
+            assertEquals("https", uri.getScheme());
+            assertEquals("host", uri.getHost());
+            assertEquals("", uri.getRawPath());
+            assertEquals("", uri.getRawQuery());
+        }
+        {
+            URI uri = HttpRequestFactory.getUri(createMockRequest("http", "host.a1-2-3", "", ""));
+            assertEquals("http", uri.getScheme());
+            assertEquals("host.a1-2-3", uri.getHost());
+            assertEquals("", uri.getRawPath());
+            assertEquals("", uri.getRawQuery());
+        }
+        {
+            URI uri = HttpRequestFactory.getUri(createMockRequest("https", "host", "/:1/../1=.", ""));
+            assertEquals("https", uri.getScheme());
+            assertEquals("host", uri.getHost());
+            assertEquals("/:1/../1=.", uri.getRawPath());
+            assertEquals("", uri.getRawQuery());
+        }
+        {
+            URI uri = HttpRequestFactory.getUri(createMockRequest("https", "host", "", "a=/../&?="));
+            assertEquals("https", uri.getScheme());
+            assertEquals("host", uri.getHost());
+            assertEquals("", uri.getRawPath());
+            assertEquals("a=/../&?=", uri.getRawQuery());
+        }
+    }
+
+    @Test
+    public void testIllegalQuery() {
         try {
             HttpRequestFactory.newJDiscRequest(
                     new MockContainer(),
@@ -89,7 +129,7 @@ public class HttpRequestFactoryTest {
             fail("Above statement should throw");
         } catch (RequestException e) {
             assertThat(e.getResponseStatus(), is(Response.Status.BAD_REQUEST));
-            assertThat(e.getMessage(), equalTo("Query violates RFC 2396: Not valid UTF8! byte C0 in state 0"));
+            assertThat(e.getMessage(), equalTo("URL violates RFC 2396: Not valid UTF8! byte C0 in state 0"));
         }
     }
 
@@ -104,7 +144,8 @@ public class HttpRequestFactoryTest {
     private static HttpServletRequest createMockRequest(String scheme, String serverName, String path, String queryString) {
         HttpServletRequest request = mock(HttpServletRequest.class);
         HttpConnection connection = mock(HttpConnection.class);
-        ServerConnector connector = mock(ServerConnector.class);
+        JDiscServerConnector connector = mock(JDiscServerConnector.class);
+        when(connector.connectorConfig()).thenReturn(new ConnectorConfig(new ConnectorConfig.Builder().listenPort(LOCAL_PORT)));
         when(connector.getLocalPort()).thenReturn(LOCAL_PORT);
         when(connection.getCreatedTimeStamp()).thenReturn(System.currentTimeMillis());
         when(connection.getConnector()).thenReturn(connector);

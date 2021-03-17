@@ -29,6 +29,7 @@ enum PathGroup {
     operator(PathPrefix.none,
              "/controller/v1/{*}",
              "/flags/v1/{*}",
+             "/loadbalancers/v1/{*}",
              "/nodes/v2/{*}",
              "/orchestrator/v1/{*}",
              "/os/v1/{*}",
@@ -36,7 +37,9 @@ enum PathGroup {
              "/zone/v2/{*}",
              "/routing/v1/",
              "/routing/v1/status/environment/{*}",
-             "/routing/v1/inactive/environment/{*}"),
+             "/routing/v1/inactive/environment/{*}",
+             "/state/v1/{*}",
+             "/changemanagement/v1/{*}"),
 
     /** Paths used for creating and reading user resources. */
     user(PathPrefix.api,
@@ -57,6 +60,7 @@ enum PathGroup {
     tenantInfo(Matcher.tenant,
                PathPrefix.api,
                "/application/v4/tenant/{tenant}/application/",
+               "/application/v4/tenant/{tenant}/info/",
                "/routing/v1/status/tenant/{tenant}/{*}"),
 
     tenantKeys(Matcher.tenant,
@@ -75,6 +79,10 @@ enum PathGroup {
     billingPlan(Matcher.tenant,
             PathPrefix.api,
             "/billing/v1/tenant/{tenant}/plan/{*}"),
+
+    billingCollection(Matcher.tenant,
+            PathPrefix.api,
+            "/billing/v1/tenant/{tenant}/collection/{*}"),
 
     billingList(Matcher.tenant,
                 PathPrefix.api,
@@ -149,6 +157,13 @@ enum PathGroup {
                       "/application/v4/tenant/{tenant}/application/{application}/environment/test/region/{region}/instance/{ignored}/restart",
                       "/application/v4/tenant/{tenant}/application/{application}/environment/staging/region/{region}/instance/{ignored}/restart"),
 
+    /** Path used to manipulate reindexing status. */
+    reindexing(Matcher.tenant,
+               Matcher.application,
+               PathPrefix.api,
+               "/application/v4/tenant/{tenant}/application/{application}/instance/{ignored}/environment/{environment}/region/{region}/reindex",
+               "/application/v4/tenant/{tenant}/application/{application}/instance/{ignored}/environment/{environment}/region/{region}/reindexing"),
+
     /** Paths used for development deployments. */
     developmentDeployment(Matcher.tenant,
                           Matcher.application,
@@ -157,8 +172,10 @@ enum PathGroup {
                           "/application/v4/tenant/{tenant}/application/{application}/instance/{instance}/deploy/{job}",
                           "/application/v4/tenant/{tenant}/application/{application}/instance/{instance}/environment/dev/region/{region}",
                           "/application/v4/tenant/{tenant}/application/{application}/instance/{instance}/environment/dev/region/{region}/deploy",
+                          "/application/v4/tenant/{tenant}/application/{application}/instance/{instance}/environment/dev/region/{region}/suspend",
                           "/application/v4/tenant/{tenant}/application/{application}/instance/{instance}/environment/perf/region/{region}",
                           "/application/v4/tenant/{tenant}/application/{application}/instance/{instance}/environment/perf/region/{region}/deploy",
+                          "/application/v4/tenant/{tenant}/application/{application}/instance/{instance}/environment/perf/region/{region}/suspend",
                           "/application/v4/tenant/{tenant}/application/{application}/environment/dev/region/{region}/instance/{instance}",
                           "/application/v4/tenant/{tenant}/application/{application}/environment/dev/region/{region}/instance/{instance}/deploy",
                           "/application/v4/tenant/{tenant}/application/{application}/environment/perf/region/{region}/instance/{instance}",
@@ -228,7 +245,10 @@ enum PathGroup {
             "/billing/v1/billing"),
 
     /** Path used for listing endpoint certificate request info */
-    endpointCertificateRequestInfo(PathPrefix.none, "/certificateRequests/");
+    endpointCertificateRequestInfo(PathPrefix.none, "/certificateRequests/"),
+
+    /** Path used for secret store management */
+    secretStore(Matcher.tenant, PathPrefix.api, "/application/v4/tenant/{tenant}/secret-store/{*}");
 
     final List<String> pathSpecs;
     final PathPrefix prefix;
@@ -272,6 +292,26 @@ enum PathGroup {
 
     static Set<PathGroup> allExcept(PathGroup... pathGroups) {
         return EnumSet.complementOf(EnumSet.copyOf(List.of(pathGroups)));
+    }
+
+    static Set<PathGroup> allExcept(Set<PathGroup> pathGroups) {
+        return EnumSet.complementOf(EnumSet.copyOf(pathGroups));
+    }
+
+    static Set<PathGroup> billingPaths() {
+        var paths = billingPathsNoToken();
+        paths.add(PathGroup.billingToken);
+        return paths;
+    }
+
+    static Set<PathGroup> billingPathsNoToken() {
+        return EnumSet.of(
+                PathGroup.billingCollection,
+                PathGroup.billingInstrument,
+                PathGroup.billingList,
+                PathGroup.billingPlan,
+                PathGroup.hostedAccountant
+        );
     }
 
     /** Returns whether this group matches path in given context */

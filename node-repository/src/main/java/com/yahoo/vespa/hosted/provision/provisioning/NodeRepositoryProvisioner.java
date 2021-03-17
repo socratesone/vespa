@@ -2,7 +2,9 @@
 package com.yahoo.vespa.hosted.provision.provisioning;
 
 import com.google.inject.Inject;
+import com.yahoo.config.provision.ActivationContext;
 import com.yahoo.config.provision.ApplicationId;
+import com.yahoo.config.provision.ApplicationTransaction;
 import com.yahoo.config.provision.Capacity;
 import com.yahoo.config.provision.ClusterResources;
 import com.yahoo.config.provision.ClusterSpec;
@@ -15,11 +17,7 @@ import com.yahoo.config.provision.ProvisionLogger;
 import com.yahoo.config.provision.Provisioner;
 import com.yahoo.config.provision.Zone;
 import com.yahoo.transaction.Mutex;
-import com.yahoo.transaction.NestedTransaction;
-import com.yahoo.vespa.flags.FetchVector;
 import com.yahoo.vespa.flags.FlagSource;
-import com.yahoo.vespa.flags.Flags;
-import com.yahoo.vespa.flags.IntFlag;
 import com.yahoo.vespa.hosted.provision.Node;
 import com.yahoo.vespa.hosted.provision.NodeList;
 import com.yahoo.vespa.hosted.provision.NodeRepository;
@@ -58,7 +56,6 @@ public class NodeRepositoryProvisioner implements Provisioner {
     private final Activator activator;
     private final Optional<LoadBalancerProvisioner> loadBalancerProvisioner;
     private final NodeResourceLimits nodeResourceLimits;
-    private final IntFlag tenantNodeQuota;
 
     @Inject
     public NodeRepositoryProvisioner(NodeRepository nodeRepository, Zone zone,
@@ -75,7 +72,6 @@ public class NodeRepositoryProvisioner implements Provisioner {
                                      provisionServiceProvider.getHostProvisioner(),
                                      loadBalancerProvisioner);
         this.activator = new Activator(nodeRepository, loadBalancerProvisioner);
-        this.tenantNodeQuota = Flags.TENANT_NODE_QUOTA.bindTo(flagSource);
     }
 
 
@@ -91,22 +87,18 @@ public class NodeRepositoryProvisioner implements Provisioner {
 
         if (cluster.group().isPresent()) throw new IllegalArgumentException("Node requests cannot specify a group");
 
-        if ( ! hasQuota(application, requested.maxResources().nodes()))
-            throw new IllegalArgumentException(requested + " requested for " + cluster +
-                                               ". Max value exceeds your quota. Resolve this at https://cloud.vespa.ai/pricing");
-
         nodeResourceLimits.ensureWithinAdvertisedLimits("Min", requested.minResources().nodeResources(), cluster);
         nodeResourceLimits.ensureWithinAdvertisedLimits("Max", requested.maxResources().nodeResources(), cluster);
 
         int groups;
         NodeResources resources;
         NodeSpec nodeSpec;
-        if ( requested.type() == NodeType.tenant) {
+        if (requested.type() == NodeType.tenant) {
             ClusterResources target = decideTargetResources(application, cluster, requested);
             int nodeCount = capacityPolicies.decideSize(target.nodes(), requested, cluster, application);
             groups = Math.min(target.groups(), nodeCount); // cannot have more groups than nodes
             resources = capacityPolicies.decideNodeResources(target.nodeResources(), requested, cluster);
-            boolean exclusive = capacityPolicies.decideExclusivity(cluster.isExclusive());
+            boolean exclusive = capacityPolicies.decideExclusivity(requested, cluster.isExclusive());
             nodeSpec = NodeSpec.from(nodeCount, resources, exclusive, requested.canFail());
             logIfDownscaled(target.nodes(), nodeCount, cluster, logger);
         }
@@ -119,41 +111,25 @@ public class NodeRepositoryProvisioner implements Provisioner {
     }
 
     @Override
-    // TODO(mpolden): Remove
-    public void activate(NestedTransaction transaction, ApplicationId application, Collection<HostSpec> hosts) {
-        try (var lock = lock(application)) {
-            activate(transaction, hosts, lock);
-        }
-    }
-
-    @Override
-    public void activate(NestedTransaction transaction, Collection<HostSpec> hosts, ProvisionLock lock) {
+    public void activate(Collection<HostSpec> hosts, ActivationContext context, ApplicationTransaction transaction) {
         validate(hosts);
-        activator.activate(hosts, transaction, lock);
+        activator.activate(hosts, context.generation(), transaction);
     }
 
     @Override
     public void restart(ApplicationId application, HostFilter filter) {
-        nodeRepository.restart(ApplicationFilter.from(application, NodeHostFilter.from(filter)));
+        nodeRepository.nodes().restart(ApplicationFilter.from(application, NodeHostFilter.from(filter)));
     }
 
     @Override
-    // TODO(mpolden): Remove
-    public void remove(NestedTransaction transaction, ApplicationId application) {
-        try (var lock = lock(application)) {
-            remove(transaction, lock);
-        }
-    }
-
-    @Override
-    public void remove(NestedTransaction transaction, ProvisionLock lock) {
-        nodeRepository.deactivate(transaction, lock);
-        loadBalancerProvisioner.ifPresent(lbProvisioner -> lbProvisioner.deactivate(transaction, lock));
+    public void remove(ApplicationTransaction transaction) {
+        nodeRepository.remove(transaction);
+        loadBalancerProvisioner.ifPresent(lbProvisioner -> lbProvisioner.deactivate(transaction));
     }
 
     @Override
     public ProvisionLock lock(ApplicationId application) {
-        return new ProvisionLock(application, nodeRepository.lock(application));
+        return new ProvisionLock(application, nodeRepository.nodes().lock(application));
     }
 
     /**
@@ -161,8 +137,8 @@ public class NodeRepositoryProvisioner implements Provisioner {
      * and updates the application store with the received min and max.
      */
     private ClusterResources decideTargetResources(ApplicationId applicationId, ClusterSpec clusterSpec, Capacity requested) {
-        try (Mutex lock = nodeRepository.lock(applicationId)) {
-            Application application = nodeRepository.applications().get(applicationId).orElse(new Application(applicationId));
+        try (Mutex lock = nodeRepository.nodes().lock(applicationId)) {
+            Application application = nodeRepository.applications().get(applicationId).orElse(Application.empty(applicationId));
             application = application.withCluster(clusterSpec.id(), clusterSpec.isExclusive(), requested.minResources(), requested.maxResources());
             nodeRepository.applications().put(application, lock);
             return application.clusters().get(clusterSpec.id()).targetResources()
@@ -170,11 +146,11 @@ public class NodeRepositoryProvisioner implements Provisioner {
         }
     }
 
-    /** Returns the current resources of this cluster, or the closes  */
+    /** Returns the current resources of this cluster, or requested min if none */
     private ClusterResources currentResources(ApplicationId applicationId,
                                               ClusterSpec clusterSpec,
                                               Capacity requested) {
-        List<Node> nodes = NodeList.copyOf(nodeRepository.getNodes(applicationId, Node.State.active))
+        List<Node> nodes = nodeRepository.nodes().list(Node.State.active).owner(applicationId)
                                    .cluster(clusterSpec.id())
                                    .not().retired()
                                    .not().removable()
@@ -182,41 +158,31 @@ public class NodeRepositoryProvisioner implements Provisioner {
         boolean firstDeployment = nodes.isEmpty();
         AllocatableClusterResources currentResources =
                 firstDeployment // start at min, preserve current resources otherwise
-                ? new AllocatableClusterResources(requested.minResources(), clusterSpec.type(), nodeRepository)
-                : new AllocatableClusterResources(nodes, nodeRepository);
-        return within(Limits.of(requested), clusterSpec.isExclusive(), currentResources, firstDeployment);
+                ? new AllocatableClusterResources(requested.minResources(), clusterSpec, nodeRepository)
+                : new AllocatableClusterResources(nodes, nodeRepository, clusterSpec.isExclusive());
+        return within(Limits.of(requested), currentResources, firstDeployment);
     }
 
     /** Make the minimal adjustments needed to the current resources to stay within the limits */
     private ClusterResources within(Limits limits,
-                                    boolean exclusive,
                                     AllocatableClusterResources current,
                                     boolean firstDeployment) {
         if (limits.min().equals(limits.max())) return limits.min();
 
         // Don't change current deployments that are still legal
-        var currentAsAdvertised = current.toAdvertisedClusterResources();
+        var currentAsAdvertised = current.advertisedResources();
         if (! firstDeployment && currentAsAdvertised.isWithin(limits.min(), limits.max())) return currentAsAdvertised;
 
         // Otherwise, find an allocation that preserves the current resources as well as possible
-        return allocationOptimizer.findBestAllocation(ResourceTarget.preserve(current), current, limits, exclusive)
+        return allocationOptimizer.findBestAllocation(ResourceTarget.preserve(current), current, limits)
                                   .orElseThrow(() -> new IllegalArgumentException("No allocation possible within " + limits))
-                                  .toAdvertisedClusterResources();
+                                  .advertisedResources();
     }
 
     private void logIfDownscaled(int targetNodes, int actualNodes, ClusterSpec cluster, ProvisionLogger logger) {
         if (zone.environment().isManuallyDeployed() && actualNodes < targetNodes)
             logger.log(Level.INFO, "Requested " + targetNodes + " nodes for " + cluster +
                                    ", downscaling to " + actualNodes + " nodes in " + zone.environment());
-    }
-
-    private boolean hasQuota(ApplicationId application, int requestedNodes) {
-        if ( ! this.zone.system().isPublic()) return true; // no quota management
-
-        if (application.tenant().value().hashCode() == 3857)        return requestedNodes <= 60;
-        if (application.tenant().value().hashCode() == -1271827001) return requestedNodes <= 75;
-
-        return requestedNodes <= tenantNodeQuota.with(FetchVector.Dimension.APPLICATION_ID, application.tenant().value()).value();
     }
 
     private List<HostSpec> asSortedHosts(List<Node> nodes, NodeResources requestedResources) {
@@ -226,13 +192,13 @@ public class NodeRepositoryProvisioner implements Provisioner {
             log.log(Level.FINE, () -> "Prepared node " + node.hostname() + " - " + node.flavor());
             Allocation nodeAllocation = node.allocation().orElseThrow(IllegalStateException::new);
             hosts.add(new HostSpec(node.hostname(),
-                                   nodeRepository.resourcesCalculator().realResourcesOf(node, nodeRepository),
+                                   nodeRepository.resourcesCalculator().realResourcesOf(node, nodeRepository, node.allocation().get().membership().cluster().isExclusive()),
                                    node.flavor().resources(),
                                    requestedResources,
                                    nodeAllocation.membership(),
                                    node.status().vespaVersion(),
                                    nodeAllocation.networkPorts(),
-                                   node.status().dockerImage()));
+                                   node.status().containerImage()));
             if (nodeAllocation.networkPorts().isPresent()) {
                 log.log(Level.FINE, () -> "Prepared node " + node.hostname() + " has port allocations");
             }

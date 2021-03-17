@@ -1,7 +1,6 @@
 // Copyright 2017 Yahoo Holdings. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 #pragma once
 
-#include <vespa/storageapi/messageapi/returncode.h>
 #include <vespa/vdslib/state/nodetype.h>
 #include <vespa/storage/distributor/distributormessagesender.h>
 #include <vespa/storageframework/generic/clock/time.h>
@@ -19,6 +18,7 @@ class StorageComponent;
 namespace distributor {
 
 class PendingMessageTracker;
+class OperationSequencer;
 
 class Operation
 {
@@ -62,7 +62,7 @@ public:
      * Returns true if we are blocked to start this operation given
      * the pending messages.
      */
-    virtual bool isBlocked(const PendingMessageTracker&) const {
+    virtual bool isBlocked(const PendingMessageTracker&, const OperationSequencer&) const {
         return false;
     }
 

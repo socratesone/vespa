@@ -1,4 +1,4 @@
-// Copyright 2019 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Verizon Media. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.hosted.controller.deployment;
 
 import com.google.common.collect.ImmutableSet;
@@ -43,7 +43,7 @@ import com.yahoo.vespa.hosted.controller.application.ApplicationPackage;
 import com.yahoo.vespa.hosted.controller.application.Deployment;
 import com.yahoo.vespa.hosted.controller.application.Endpoint;
 import com.yahoo.vespa.hosted.controller.application.TenantAndApplicationId;
-import com.yahoo.vespa.hosted.controller.certificate.EndpointCertificateException;
+import com.yahoo.vespa.hosted.controller.api.integration.certificates.EndpointCertificateException;
 import com.yahoo.vespa.hosted.controller.config.ControllerConfig;
 import com.yahoo.vespa.hosted.controller.maintenance.JobRunner;
 import com.yahoo.vespa.hosted.controller.routing.RoutingPolicyId;
@@ -184,9 +184,7 @@ public class InternalStepRunner implements StepRunner {
     }
 
     private Optional<RunStatus> deployReal(RunId id, boolean setTheStage, DualLogger logger) {
-        return deploy(id.application(),
-                      id.type(),
-                      () -> controller.applications().deploy2(id.job(), setTheStage),
+        return deploy(() -> controller.applications().deploy2(id.job(), setTheStage),
                       controller.jobController().run(id).get()
                                 .stepInfo(setTheStage ? deployInitialReal : deployReal).get()
                                 .startTime().get(),
@@ -196,9 +194,7 @@ public class InternalStepRunner implements StepRunner {
     private Optional<RunStatus> deployTester(RunId id, DualLogger logger) {
         Version platform = testerPlatformVersion(id);
         logger.log("Deploying the tester container on platform " + platform + " ...");
-        return deploy(id.tester().id(),
-                      id.type(),
-                      () -> controller.applications().deployTester(id.tester(),
+        return deploy(() -> controller.applications().deployTester(id.tester(),
                                                                    testerPackage(id),
                                                                    id.type().zone(controller.system()),
                                                                    platform),
@@ -208,8 +204,7 @@ public class InternalStepRunner implements StepRunner {
                       logger);
     }
 
-    private Optional<RunStatus> deploy(ApplicationId id, JobType type, Supplier<ActivateResult> deployment,
-                                       Instant startTime, DualLogger logger) {
+    private Optional<RunStatus> deploy(Supplier<ActivateResult> deployment, Instant startTime, DualLogger logger) {
         try {
             PrepareResponse prepareResponse = deployment.get().prepareResponse();
             if (prepareResponse.log != null)
@@ -219,26 +214,11 @@ public class InternalStepRunner implements StepRunner {
                                                                             LogEntry.typeOf(LogLevel.parse(entry.level)),
                                                                             entry.message))
                                                  .collect(toList()));
-            if ( ! prepareResponse.configChangeActions.refeedActions.stream().allMatch(action -> action.allowed)) {
-                List<String> messages = new ArrayList<>();
-                messages.add("Deploy failed due to non-compatible changes that require re-feed.");
-                messages.add("Your options are:");
-                messages.add("1. Revert the incompatible changes.");
-                messages.add("2. If you think it is safe in your case, you can override this validation, see");
-                messages.add("   http://docs.vespa.ai/documentation/reference/validation-overrides.html");
-                messages.add("3. Deploy as a new application under a different name.");
-                messages.add("Illegal actions:");
-                prepareResponse.configChangeActions.refeedActions.stream()
-                                                                 .filter(action -> ! action.allowed)
-                                                                 .flatMap(action -> action.messages.stream())
-                                                                 .forEach(messages::add);
-                logger.log(messages);
-                return Optional.of(deploymentFailed);
-            }
 
             logger.log("Deployment successful.");
             if (prepareResponse.message != null)
                 logger.log(prepareResponse.message);
+
             return Optional.of(running);
         }
         catch (ConfigServerException e) {
@@ -247,8 +227,9 @@ public class InternalStepRunner implements StepRunner {
                                          ? Optional.of(deploymentFailed) : Optional.empty();
             switch (e.getErrorCode()) {
                 case CERTIFICATE_NOT_READY:
+                    logger.log("Waiting for certificate to become ready on config server: New application, or old one has expired");
                     if (startTime.plus(timeouts.endpointCertificate()).isBefore(controller.clock().instant())) {
-                        logger.log("Deployment failed to find provisioned endpoint certificate after " + timeouts.endpointCertificate());
+                        logger.log("Certificate did not become available on config server within (" + timeouts.endpointCertificate() + ")");
                         return Optional.of(RunStatus.endpointCertificateTimeout);
                     }
                     return result;
@@ -278,8 +259,10 @@ public class InternalStepRunner implements StepRunner {
             switch (e.type()) {
                 case CERT_NOT_AVAILABLE:
                     // Same as CERTIFICATE_NOT_READY above, only from the controller
+                    logger.log("Waiting for certificate to become valid: New application, or old one has expired");
                     if (startTime.plus(timeouts.endpointCertificate()).isBefore(controller.clock().instant())) {
-                        logger.log("Deployment failed to find provisioned endpoint certificate after " + timeouts.endpointCertificate());
+                        logger.log("Controller could not validate certificate within " +
+                                   timeouts.endpointCertificate() + ": " + Exceptions.toMessageString(e));
                         return Optional.of(RunStatus.endpointCertificateTimeout);
                     }
                     return Optional.empty();
@@ -316,7 +299,7 @@ public class InternalStepRunner implements StepRunner {
         }
         List<Node> nodes = controller.serviceRegistry().configServer().nodeRepository().list(id.type().zone(controller.system()),
                                                                                              id.application(),
-                                                                                             ImmutableSet.of(active, reserved));
+                                                                                             Set.of(active));
         List<Node> parents = controller.serviceRegistry().configServer().nodeRepository().list(id.type().zone(controller.system()),
                                                                                                nodes.stream().map(node -> node.parentHostname().get()).collect(toList()));
         NodeList nodeList = NodeList.of(nodes, parents, services.get());
@@ -400,7 +383,7 @@ public class InternalStepRunner implements StepRunner {
     private Version testerPlatformVersion(RunId id) {
         return application(id.application()).change().isPinned()
                ? controller.jobController().run(id).get().versions().targetPlatform()
-               : controller.systemVersion();
+               : controller.readSystemVersion();
     }
 
     private Optional<RunStatus> installTester(RunId id, DualLogger logger) {
@@ -524,7 +507,7 @@ public class InternalStepRunner implements StepRunner {
                                                                                         ? " <-- " + currentPlatform(node.node())
                                                                                         : "") +
                                        (node.needsOsUpgrade() && node.isAllowedDown()
-                                        ? ", upgrading OS (" + node.node().wantedOsVersion() + " <-- " + node.node().currentOsVersion() + ")"
+                                        ? ", upgrading OS (" + node.parent().wantedOsVersion() + " <-- " + node.parent().currentOsVersion() + ")"
                                         : "") +
                                        (node.needsFirmwareUpgrade() && node.isAllowedDown()
                                         ? ", upgrading firmware"
@@ -557,6 +540,7 @@ public class InternalStepRunner implements StepRunner {
         switch (state) {
             case allowedDown: return "allowed to be DOWN";
             case expectedUp: return "expected to be UP";
+            case permanentlyDown: return "permanently DOWN";
             case unorchestrated: return "unorchestrated";
             default: return state.name();
         }
@@ -595,7 +579,7 @@ public class InternalStepRunner implements StepRunner {
                                                         id.type(),
                                                         true,
                                                         endpoints,
-                                                        controller.applications().contentClustersByZone(deployments));
+                                                        controller.applications().reachableContentClustersByZone(deployments));
         controller.jobController().cloud().startTests(getTesterDeploymentId(id), suite, config);
         return Optional.of(running);
     }
@@ -828,13 +812,14 @@ public class InternalStepRunner implements StepRunner {
     }
 
     static NodeResources testerResourcesFor(ZoneId zone, DeploymentInstanceSpec spec) {
-        return spec.steps().stream()
+        NodeResources nodeResources = spec.steps().stream()
                    .filter(step -> step.concerns(zone.environment()))
                    .findFirst()
                    .flatMap(step -> step.zones().get(0).testerFlavor())
                    .map(NodeResources::fromLegacyName)
                    .orElse(zone.region().value().contains("aws-") ?
                            DEFAULT_TESTER_RESOURCES_AWS : DEFAULT_TESTER_RESOURCES);
+        return nodeResources.with(NodeResources.DiskSpeed.any);
     }
 
     /** Returns the generated services.xml content for the tester application. */

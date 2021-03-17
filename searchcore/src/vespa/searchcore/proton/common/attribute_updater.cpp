@@ -205,27 +205,6 @@ AttributeUpdater::handleUpdate(PredicateAttribute &vec, uint32_t lid, const Valu
     }
 }
 
-namespace {
-
-template <typename TensorUpdateType>
-void
-applyTensorUpdate(TensorAttribute &vec, uint32_t lid, const TensorUpdateType &update,
-                  bool create_empty_if_non_existing)
-{
-    auto oldTensor = vec.getTensor(lid);
-    if (!oldTensor && create_empty_if_non_existing) {
-        oldTensor = vec.getEmptyTensor();
-    }
-    if (oldTensor) {
-        auto newTensor = update.applyTo(*oldTensor);
-        if (newTensor) {
-            vec.setTensor(lid, *newTensor);
-        }
-    }
-}
-
-}
-
 template <>
 void
 AttributeUpdater::handleUpdate(TensorAttribute &vec, uint32_t lid, const ValueUpdate &upd)
@@ -240,11 +219,11 @@ AttributeUpdater::handleUpdate(TensorAttribute &vec, uint32_t lid, const ValueUp
             updateValue(vec, lid, assign.getValue());
         }
     } else if (op == ValueUpdate::TensorModifyUpdate) {
-        applyTensorUpdate(vec, lid, static_cast<const TensorModifyUpdate &>(upd), false);
+        vec.update_tensor(lid, static_cast<const TensorModifyUpdate &>(upd), false);
     } else if (op == ValueUpdate::TensorAddUpdate) {
-        applyTensorUpdate(vec, lid, static_cast<const TensorAddUpdate &>(upd), true);
+        vec.update_tensor(lid, static_cast<const TensorAddUpdate &>(upd), true);
     } else if (op == ValueUpdate::TensorRemoveUpdate) {
-        applyTensorUpdate(vec, lid, static_cast<const TensorRemoveUpdate &>(upd), false);
+        vec.update_tensor(lid, static_cast<const TensorRemoveUpdate &>(upd), false);
     } else if (op == ValueUpdate::Clear) {
         vec.clearDoc(lid);
     } else {

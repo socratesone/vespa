@@ -25,6 +25,9 @@
       "name": "NodeFailer"
     },
     {
+      "name": "NodeHealthTracker"
+    },
+    {
       "name": "NodeMetricsDbMaintainer"
     },
     {
@@ -56,6 +59,9 @@
     },
     {
       "name": "SpareCapacityMaintainer"
+    },
+    {
+      "name": "SwitchRebalancer"
     }
   ],
   "inactive": []

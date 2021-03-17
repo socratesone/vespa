@@ -24,6 +24,7 @@
 #include <vespa/vespalib/testkit/testapp.h>
 #include <vespa/vespalib/util/threadstackexecutor.h>
 #include <vespa/vespalib/util/sequencedtaskexecutor.h>
+#include <vespa/vespalib/util/size_literals.h>
 
 #include <vespa/log/log.h>
 LOG_SETUP("memoryindexstress_test");
@@ -242,17 +243,19 @@ private:
     Fixture &operator=(Fixture &&index) = delete;
 };
 
+VESPA_THREAD_STACK_TAG(invert_executor)
+VESPA_THREAD_STACK_TAG(push_executor)
 
 Fixture::Fixture(uint32_t readThreads)
     : schema(makeSchema()),
       repo(makeDocTypeRepoConfig()),
-      _executor(1, 128 * 1024),
-      _invertThreads(vespalib::SequencedTaskExecutor::create(2)),
-      _pushThreads(vespalib::SequencedTaskExecutor::create(2)),
+      _executor(1, 128_Ki),
+      _invertThreads(vespalib::SequencedTaskExecutor::create(invert_executor, 2)),
+      _pushThreads(vespalib::SequencedTaskExecutor::create(push_executor, 2)),
       index(schema, MockFieldLengthInspector(), *_invertThreads, *_pushThreads),
       _readThreads(readThreads),
-      _writer(1, 128 * 1024),
-      _readers(readThreads, 128 * 1024),
+      _writer(1, 128_Ki),
+      _readers(readThreads, 128_Ki),
       _rnd(),
       _keyLimit(1000000),
       _readSeed(50),
@@ -369,9 +372,9 @@ Fixture::stressTest(uint32_t writeCnt)
     LOG(info,
         "starting stress test, 1 write thread, %u read threads, %u writes",
         readThreads, writeCnt);
-    _writer.execute(makeLambdaTask([=]() { writeWork(writeCnt); }));
+    _writer.execute(makeLambdaTask([this, writeCnt]() { writeWork(writeCnt); }));
     for (uint32_t i = 0; i < readThreads; ++i) {
-        _readers.execute(makeLambdaTask([=]() { readWork(); }));
+        _readers.execute(makeLambdaTask([this]() { readWork(); }));
     }
 }
 

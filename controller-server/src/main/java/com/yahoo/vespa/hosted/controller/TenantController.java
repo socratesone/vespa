@@ -3,12 +3,18 @@ package com.yahoo.vespa.hosted.controller;
 
 import com.yahoo.config.provision.TenantName;
 import com.yahoo.vespa.curator.Lock;
+import com.yahoo.vespa.flags.BooleanFlag;
+import com.yahoo.vespa.flags.FetchVector;
+import com.yahoo.vespa.flags.FlagSource;
+import com.yahoo.vespa.flags.Flags;
+import com.yahoo.vespa.hosted.controller.api.identifiers.TenantId;
 import com.yahoo.vespa.hosted.controller.athenz.impl.AthenzFacade;
 import com.yahoo.vespa.hosted.controller.concurrent.Once;
 import com.yahoo.vespa.hosted.controller.persistence.CuratorDb;
 import com.yahoo.vespa.hosted.controller.security.AccessControl;
 import com.yahoo.vespa.hosted.controller.security.Credentials;
 import com.yahoo.vespa.hosted.controller.security.TenantSpec;
+import com.yahoo.vespa.hosted.controller.tenant.LastLoginInfo;
 import com.yahoo.vespa.hosted.controller.tenant.Tenant;
 
 import java.time.Duration;
@@ -35,11 +41,15 @@ public class TenantController {
     private final Controller controller;
     private final CuratorDb curator;
     private final AccessControl accessControl;
+    private final BooleanFlag provisionTenantRoles;
 
-    public TenantController(Controller controller, CuratorDb curator, AccessControl accessControl) {
+
+    public TenantController(Controller controller, CuratorDb curator, AccessControl accessControl, FlagSource flagSource) {
         this.controller = Objects.requireNonNull(controller, "controller must be non-null");
         this.curator = Objects.requireNonNull(curator, "curator must be non-null");
         this.accessControl = accessControl;
+        this.provisionTenantRoles = Flags.PROVISION_TENANT_ROLES.bindTo(flagSource);
+
 
         // Update serialization format of all tenants
         Once.after(Duration.ofMinutes(1), () -> {
@@ -97,7 +107,18 @@ public class TenantController {
     public void create(TenantSpec tenantSpec, Credentials credentials) {
         try (Lock lock = lock(tenantSpec.tenant())) {
             requireNonExistent(tenantSpec.tenant());
-            curator.writeTenant(accessControl.createTenant(tenantSpec, credentials, asList()));
+            TenantId.validate(tenantSpec.tenant().value());
+            curator.writeTenant(accessControl.createTenant(tenantSpec, controller.clock().instant(), credentials, asList()));
+
+            // Provision tenant role if enabled
+            if (provisionTenantRoles.with(FetchVector.Dimension.TENANT_ID, tenantSpec.tenant().value()).value()) {
+                try {
+                    controller.serviceRegistry().roleService().createTenantRole(tenantSpec.tenant());
+                } catch (Exception e) {
+                    throw new RuntimeException("Unable to create tenant role for tenant: " + tenantSpec.tenant());
+                }
+            }
+
         }
     }
 
@@ -119,6 +140,22 @@ public class TenantController {
         }
     }
 
+    /**
+     * Update last login times for the given tenant at the given user levers with the given instant, but only if the
+     * new instant is later
+     */
+    public void updateLastLogin(TenantName tenantName, List<LastLoginInfo.UserLevel> userLevels, Instant loggedInAt) {
+        try (Lock lock = lock(tenantName)) {
+            Tenant tenant = require(tenantName);
+            LastLoginInfo loginInfo = tenant.lastLoginInfo();
+            for (LastLoginInfo.UserLevel userLevel : userLevels)
+                loginInfo = loginInfo.withLastLoginIfLater(userLevel, loggedInAt);
+
+            if (tenant.lastLoginInfo().equals(loginInfo)) return; // no change
+            curator.writeTenant(LockedTenant.of(tenant, lock).with(loginInfo).get());
+        }
+    }
+
     /** Deletes the given tenant. */
     public void delete(TenantName tenant, Credentials credentials) {
         try (Lock lock = lock(tenant)) {
@@ -133,7 +170,7 @@ public class TenantController {
     }
 
     private void requireNonExistent(TenantName name) {
-        if (   "hosted-vespa".equals(name.value())
+        if ("hosted-vespa".equals(name.value())
             || get(name).isPresent()
             // Underscores are allowed in existing tenant names, but tenants with - and _ cannot co-exist. E.g.
             // my-tenant cannot be created if my_tenant exists.

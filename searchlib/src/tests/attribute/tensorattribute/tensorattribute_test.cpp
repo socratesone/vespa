@@ -1,7 +1,8 @@
 // Copyright 2017 Yahoo Holdings. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
 #include <vespa/document/base/exceptions.h>
-#include <vespa/eval/eval/engine_or_factory.h>
+#include <vespa/eval/eval/simple_value.h>
+#include <vespa/eval/eval/tensor_spec.h>
 #include <vespa/eval/eval/value.h>
 #include <vespa/eval/eval/test/value_compare.h>
 #include <vespa/fastos/file.h>
@@ -12,11 +13,12 @@
 #include <vespa/searchlib/tensor/dense_tensor_attribute.h>
 #include <vespa/searchlib/tensor/direct_tensor_attribute.h>
 #include <vespa/searchlib/tensor/doc_vector_access.h>
+#include <vespa/searchlib/tensor/distance_functions.h>
 #include <vespa/searchlib/tensor/hnsw_index.h>
 #include <vespa/searchlib/tensor/nearest_neighbor_index.h>
 #include <vespa/searchlib/tensor/nearest_neighbor_index_factory.h>
 #include <vespa/searchlib/tensor/nearest_neighbor_index_saver.h>
-#include <vespa/searchlib/tensor/serialized_tensor_attribute.h>
+#include <vespa/searchlib/tensor/serialized_fast_value_attribute.h>
 #include <vespa/searchlib/tensor/tensor_attribute.h>
 #include <vespa/searchlib/test/directory_handler.h>
 #include <vespa/searchlib/util/fileutil.h>
@@ -24,6 +26,7 @@
 #include <vespa/vespalib/io/fileutil.h>
 #include <vespa/vespalib/test/insertion_operators.h>
 #include <vespa/vespalib/testkit/test_kit.h>
+#include <vespa/vespalib/util/mmap_file_allocator_factory.h>
 #include <vespa/searchlib/util/bufferwriter.h>
 
 #include <vespa/log/log.h>
@@ -40,7 +43,7 @@ using search::tensor::DefaultNearestNeighborIndexFactory;
 using search::tensor::DenseTensorAttribute;
 using search::tensor::DirectTensorAttribute;
 using search::tensor::DocVectorAccess;
-using search::tensor::SerializedTensorAttribute;
+using search::tensor::SerializedFastValueAttribute;
 using search::tensor::HnswIndex;
 using search::tensor::HnswNode;
 using search::tensor::NearestNeighborIndex;
@@ -49,9 +52,10 @@ using search::tensor::NearestNeighborIndexSaver;
 using search::tensor::PrepareResult;
 using search::tensor::TensorAttribute;
 using vespalib::eval::TensorSpec;
+using vespalib::eval::CellType;
 using vespalib::eval::ValueType;
 using vespalib::eval::Value;
-using vespalib::eval::EngineOrFactory;
+using vespalib::eval::SimpleValue;
 
 using DoubleVector = std::vector<double>;
 using generation_t = vespalib::GenerationHandler::generation_t;
@@ -61,7 +65,7 @@ vespalib::string denseSpec("tensor(x[2],y[3])");
 vespalib::string vec_2d_spec("tensor(x[2])");
 
 Value::UP createTensor(const TensorSpec &spec) {
-    return EngineOrFactory::get().from_spec(spec);
+    return SimpleValue::from_spec(spec);
 }
 
 TensorSpec
@@ -204,35 +208,43 @@ public:
         _index_value = (reinterpret_cast<const int*>(buf.buffer()))[0];
         return true;
     }
-    std::vector<Neighbor> find_top_k(uint32_t k, vespalib::eval::TypedCells vector, uint32_t explore_k) const override {
+    std::vector<Neighbor> find_top_k(uint32_t k, vespalib::eval::TypedCells vector, uint32_t explore_k,
+                                     double distance_threshold) const override
+    {
         (void) k;
         (void) vector;
         (void) explore_k;
+        (void) distance_threshold;
         return std::vector<Neighbor>();
     }
     std::vector<Neighbor> find_top_k_with_filter(uint32_t k, vespalib::eval::TypedCells vector,
-                                                 const search::BitVector& filter, uint32_t explore_k) const override
+                                                 const search::BitVector& filter, uint32_t explore_k,
+                                                 double distance_threshold) const override
     {
         (void) k;
         (void) vector;
         (void) explore_k;
         (void) filter;
+        (void) distance_threshold;
         return std::vector<Neighbor>();
     }
 
     
-    const search::tensor::DistanceFunction *distance_function() const override { return nullptr; }
+    const search::tensor::DistanceFunction *distance_function() const override {
+        static search::tensor::SquaredEuclideanDistance<double> my_dist_fun;
+        return &my_dist_fun;
+    }
 };
 
 class MockNearestNeighborIndexFactory : public NearestNeighborIndexFactory {
 
     std::unique_ptr<NearestNeighborIndex> make(const DocVectorAccess& vectors,
                                                size_t vector_size,
-                                               ValueType::CellType cell_type,
+                                               CellType cell_type,
                                                const search::attribute::HnswIndexParams& params) const override {
         (void) vector_size;
         (void) params;
-        assert(cell_type == ValueType::CellType::DOUBLE);
+        assert(cell_type == CellType::DOUBLE);
         return std::make_unique<MockNearestNeighborIndex>(vectors);
     }
 };
@@ -245,10 +257,16 @@ struct FixtureTraits {
     bool use_direct_tensor_attribute = false;
     bool enable_hnsw_index = false;
     bool use_mock_index = false;
+    bool use_mmap_file_allocator = false;
 
     FixtureTraits dense() && {
         use_dense_tensor_attribute = true;
         enable_hnsw_index = false;
+        return *this;
+    }
+
+    FixtureTraits mmap_file_allocator() && {
+        use_mmap_file_allocator = true;
         return *this;
     }
 
@@ -316,6 +334,9 @@ struct Fixture {
         if (_cfg.tensorType().is_dense()) {
             _denseTensors = true;
         }
+        if (_traits.use_mmap_file_allocator) {
+            _cfg.setHuge(true);
+        }
         if (_traits.use_mock_index) {
             _index_factory = std::make_unique<MockNearestNeighborIndexFactory>();
         } else {
@@ -343,7 +364,7 @@ struct Fixture {
         } else if (_traits.use_direct_tensor_attribute) {
             return std::make_shared<DirectTensorAttribute>(_name, _cfg);
         } else {
-            return std::make_shared<SerializedTensorAttribute>(_name, _cfg);
+            return std::make_shared<SerializedFastValueAttribute>(_name, _cfg);
         }
     }
 
@@ -471,6 +492,7 @@ struct Fixture {
     void testCompaction();
     void testTensorTypeFileHeaderTag();
     void testEmptyTensor();
+    void testOnHoldAccounting();
 };
 
 
@@ -561,7 +583,7 @@ void
 Fixture::testCompaction()
 {
     if ((_traits.use_dense_tensor_attribute && _denseTensors) ||
-            _traits.use_direct_tensor_attribute)
+         ! _traits.use_dense_tensor_attribute)
     {
         LOG(info, "Skipping compaction test for tensor '%s' which is using free-lists", _cfg.tensorType().to_spec().c_str());
         return;
@@ -647,6 +669,19 @@ Fixture::testEmptyTensor()
     }
 }
 
+void
+Fixture::testOnHoldAccounting()
+{
+    {
+        AttributeGuard guard(_attr);
+        EXPECT_EQUAL(0u, getStatus().getOnHold());
+        set_empty_tensor(1);
+        clearTensor(1);
+        EXPECT_NOT_EQUAL(0u, getStatus().getOnHold());
+    }
+    EXPECT_EQUAL(0u, getStatus().getOnHold());
+}
+
 template <class MakeFixture>
 void testAll(MakeFixture &&f)
 {
@@ -656,6 +691,7 @@ void testAll(MakeFixture &&f)
     TEST_DO(f()->testCompaction());
     TEST_DO(f()->testTensorTypeFileHeaderTag());
     TEST_DO(f()->testEmptyTensor());
+    TEST_DO(f()->testOnHoldAccounting());
 }
 
 TEST("Test sparse tensors with generic tensor attribute")
@@ -903,7 +939,7 @@ public:
     }
 
     std::unique_ptr<Value> createDenseTensor(const TensorSpec &spec) {
-        return EngineOrFactory::get().from_spec(spec);
+        return SimpleValue::from_spec(spec);
     }
 
     std::unique_ptr<NearestNeighborBlueprint> make_blueprint(double brute_force_limit = 0.05) {
@@ -912,9 +948,12 @@ public:
             field,
             as_dense_tensor(),
             createDenseTensor(vec_2d(17, 42)),
-            3, true, 5, brute_force_limit);
+            3, true, 5,
+            100100.25,
+            brute_force_limit);
         EXPECT_EQUAL(11u, bp->getState().estimate().estHits);
         EXPECT_TRUE(bp->may_approximate());
+        EXPECT_EQUAL(100100.25 * 100100.25, bp->get_distance_threshold());
         return bp;
     }
 };
@@ -967,6 +1006,19 @@ TEST_F("NN blueprint handles strong filter triggering brute force search", Neare
     bp->set_global_filter(*strong_filter);
     EXPECT_EQUAL(11u, bp->getState().estimate().estHits);
     EXPECT_FALSE(bp->may_approximate());
+}
+
+TEST("Dense tensor attribute with huge flag uses mmap file allocator")
+{
+    vespalib::string basedir("mmap-file-allocator-factory-dir");
+    vespalib::alloc::MmapFileAllocatorFactory::instance().setup(basedir);
+    {
+        Fixture f(vec_2d_spec, FixtureTraits().dense().mmap_file_allocator());
+        vespalib::string allocator_dir(basedir + "/0.my_attr");
+        EXPECT_TRUE(vespalib::isDirectory(allocator_dir));
+    }
+    vespalib::alloc::MmapFileAllocatorFactory::instance().setup("");
+    vespalib::rmdir(basedir, true);
 }
 
 TEST_MAIN() { TEST_RUN_ALL(); }

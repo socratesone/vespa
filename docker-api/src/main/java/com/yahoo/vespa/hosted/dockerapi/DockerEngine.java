@@ -1,15 +1,18 @@
-// Copyright 2017 Yahoo Holdings. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Verizon Media. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.hosted.dockerapi;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.github.dockerjava.api.DockerClient;
 import com.github.dockerjava.api.command.ExecCreateCmdResponse;
 import com.github.dockerjava.api.command.InspectContainerResponse;
 import com.github.dockerjava.api.command.InspectExecResponse;
 import com.github.dockerjava.api.command.InspectImageResponse;
+import com.github.dockerjava.api.command.PullImageCmd;
 import com.github.dockerjava.api.command.UpdateContainerCmd;
 import com.github.dockerjava.api.exception.DockerClientException;
 import com.github.dockerjava.api.exception.NotFoundException;
 import com.github.dockerjava.api.exception.NotModifiedException;
+import com.github.dockerjava.api.model.AuthConfig;
 import com.github.dockerjava.api.model.HostConfig;
 import com.github.dockerjava.api.model.Image;
 import com.github.dockerjava.api.model.Statistics;
@@ -26,10 +29,16 @@ import com.yahoo.vespa.hosted.dockerapi.exception.ContainerNotFoundException;
 import com.yahoo.vespa.hosted.dockerapi.exception.DockerException;
 import com.yahoo.vespa.hosted.dockerapi.exception.DockerExecTimeoutException;
 import com.yahoo.vespa.hosted.dockerapi.metrics.Counter;
+import com.yahoo.vespa.hosted.dockerapi.metrics.Dimensions;
+import com.yahoo.vespa.hosted.dockerapi.metrics.Gauge;
 import com.yahoo.vespa.hosted.dockerapi.metrics.Metrics;
 
 import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.time.Clock;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
@@ -37,10 +46,12 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
 import java.util.logging.Logger;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 public class DockerEngine implements ContainerEngine {
@@ -56,22 +67,26 @@ public class DockerEngine implements ContainerEngine {
 
     private final DockerClient dockerClient;
     private final DockerImageGarbageCollector dockerImageGC;
+    private final Metrics metrics;
     private final Counter numberOfDockerApiFails;
+    private final Clock clock;
 
     @Inject
     public DockerEngine(Metrics metrics) {
-        this(createDockerClient(), metrics);
+        this(createDockerClient(), metrics, Clock.systemUTC());
     }
 
-    DockerEngine(DockerClient dockerClient, Metrics metrics) {
+    DockerEngine(DockerClient dockerClient, Metrics metrics, Clock clock) {
         this.dockerClient = dockerClient;
         this.dockerImageGC = new DockerImageGarbageCollector(this);
+        this.metrics = metrics;
+        this.clock = clock;
 
         numberOfDockerApiFails = metrics.declareCounter("docker.api_fails");
     }
 
     @Override
-    public boolean pullImageAsyncIfNeeded(DockerImage image) {
+    public boolean pullImageAsyncIfNeeded(DockerImage image, RegistryCredentials registryCredentials) {
         try {
             synchronized (monitor) {
                 if (scheduledPulls.contains(image)) return true;
@@ -80,8 +95,15 @@ public class DockerEngine implements ContainerEngine {
                 scheduledPulls.add(image);
 
                 logger.log(Level.INFO, "Starting download of " + image.asString());
-
-                dockerClient.pullImageCmd(image.asString()).exec(new ImagePullCallback(image));
+                PullImageCmd pullCmd = dockerClient.pullImageCmd(image.asString());
+                if (!registryCredentials.equals(RegistryCredentials.none)) {
+                    logger.log(Level.INFO, "Authenticating with " + registryCredentials.registryAddress());
+                    AuthConfig authConfig = new AuthConfig().withUsername(registryCredentials.username())
+                                                            .withPassword(registryCredentials.password())
+                                                            .withRegistryAddress(registryCredentials.registryAddress());
+                    pullCmd = pullCmd.withAuthConfig(authConfig);
+                }
+                pullCmd.exec(new ImagePullCallback(image));
                 return true;
             }
         } catch (RuntimeException e) {
@@ -180,8 +202,7 @@ public class DockerEngine implements ContainerEngine {
         try {
             DockerStatsCallback statsCallback = dockerClient.statsCmd(containerName.asString()).exec(new DockerStatsCallback());
             statsCallback.awaitCompletion(5, TimeUnit.SECONDS);
-
-            return statsCallback.stats.map(ContainerStats::new);
+            return statsCallback.stats.map(DockerEngine::containerStatsFrom);
         } catch (NotFoundException ignored) {
             return Optional.empty();
         } catch (RuntimeException | InterruptedException e) {
@@ -265,10 +286,11 @@ public class DockerEngine implements ContainerEngine {
     private Stream<Container> asContainer(String container) {
         return inspectContainerCmd(container)
                 .map(response -> new Container(
+                        new ContainerId(response.getId()),
                         response.getConfig().getHostName(),
                         DockerImage.fromString(response.getConfig().getImage()),
                         containerResourcesFromHostConfig(response.getHostConfig()),
-                        new ContainerName(decode(response.getName())),
+                        toContainerName(response.getName()),
                         Container.State.valueOf(response.getState().getStatus().toUpperCase()),
                         response.getState().getPid()
                 ))
@@ -291,8 +313,8 @@ public class DockerEngine implements ContainerEngine {
         return labels != null && manager.equals(labels.get(LABEL_NAME_MANAGEDBY));
     }
 
-    private String decode(String encodedContainerName) {
-        return encodedContainerName.substring(FRAMEWORK_CONTAINER_PREFIX.length());
+    private ContainerName toContainerName(String encodedContainerName) {
+        return new ContainerName(encodedContainerName.substring(FRAMEWORK_CONTAINER_PREFIX.length()));
     }
 
     @Override
@@ -300,6 +322,14 @@ public class DockerEngine implements ContainerEngine {
         return listAllContainers().stream()
                 .filter(container -> isManagedBy(container, manager))
                 .noneMatch(container -> "running".equalsIgnoreCase(container.getState()));
+    }
+
+    @Override
+    public List<ContainerName> listManagedContainers(String manager) {
+        return listAllContainers().stream()
+                .filter(container -> isManagedBy(container, manager))
+                .map(container -> toContainerName(container.getNames()[0]))
+                .collect(Collectors.toList());
     }
 
     List<com.github.dockerjava.api.model.Container> listAllContainers() {
@@ -320,27 +350,31 @@ public class DockerEngine implements ContainerEngine {
         }
     }
 
-    void deleteImage(DockerImage dockerImage) {
+    void deleteImage(String imageReference) {
         try {
-            dockerClient.removeImageCmd(dockerImage.asString()).exec();
+            dockerClient.removeImageCmd(imageReference).exec();
         } catch (NotFoundException ignored) {
             // Image was already deleted, ignore
         } catch (RuntimeException e) {
             numberOfDockerApiFails.increment();
-            throw new DockerException("Failed to delete docker image " + dockerImage.asString(), e);
+            throw new DockerException("Failed to delete image by reference '" + imageReference + "'", e);
         }
     }
 
     @Override
     public boolean deleteUnusedDockerImages(List<DockerImage> excludes, Duration minImageAgeToDelete) {
-        return dockerImageGC.deleteUnusedDockerImages(excludes, minImageAgeToDelete);
+        List<String> excludedRefs = excludes.stream().map(DockerImage::asString).collect(Collectors.toList());
+        return dockerImageGC.deleteUnusedDockerImages(excludedRefs, minImageAgeToDelete);
     }
 
     private class ImagePullCallback extends PullImageResultCallback {
+
         private final DockerImage dockerImage;
+        private final Instant startedAt;
 
         private ImagePullCallback(DockerImage dockerImage) {
             this.dockerImage = dockerImage;
+            this.startedAt = clock.instant();
         }
 
         @Override
@@ -348,7 +382,6 @@ public class DockerEngine implements ContainerEngine {
             removeScheduledPoll(dockerImage);
             logger.log(Level.SEVERE, "Could not download image " + dockerImage.asString(), throwable);
         }
-
 
         @Override
         public void onComplete() {
@@ -359,7 +392,16 @@ public class DockerEngine implements ContainerEngine {
                 numberOfDockerApiFails.increment();
                 throw new DockerClientException("Could not download image: " + dockerImage);
             }
+            sampleDuration();
         }
+
+        private void sampleDuration() {
+            Gauge gauge = metrics.declareGauge("docker.imagePullDurationSecs",
+                                               new Dimensions(Map.of("image", dockerImage.asString())));
+            Duration pullDuration = Duration.between(startedAt, clock.instant());
+            gauge.sample(pullDuration.getSeconds());
+        }
+
     }
 
     // docker-java currently (3.0.8) does not support getting docker stats with stream=false, therefore we need
@@ -399,4 +441,39 @@ public class DockerEngine implements ContainerEngine {
         return DockerClientImpl.getInstance(dockerClientConfig)
                 .withDockerCmdExecFactory(dockerFactory);
     }
+
+    private static ContainerStats containerStatsFrom(Statistics statistics) {
+        return new ContainerStats(Optional.ofNullable(statistics.getNetworks()).orElseGet(Map::of)
+                                          .entrySet().stream()
+                                          .collect(Collectors.toMap(
+                                                  Map.Entry::getKey,
+                                                  e -> new ContainerStats.NetworkStats(e.getValue().getRxBytes(), e.getValue().getRxDropped(),
+                                                                                       e.getValue().getRxErrors(), e.getValue().getTxBytes(),
+                                                                                       e.getValue().getTxDropped(), e.getValue().getTxErrors()),
+                                                  (u, v) -> {
+                                                      throw new IllegalStateException();
+                                                  },
+                                                  TreeMap::new)),
+                                  new ContainerStats.MemoryStats(statistics.getMemoryStats().getStats().getCache(),
+                                                                 statistics.getMemoryStats().getUsage(),
+                                                                 statistics.getMemoryStats().getLimit()),
+                                  new ContainerStats.CpuStats(statistics.getCpuStats().getCpuUsage().getPercpuUsage().size(),
+                                                              statistics.getCpuStats().getSystemCpuUsage(),
+                                                              statistics.getCpuStats().getCpuUsage().getTotalUsage(),
+                                                              statistics.getCpuStats().getCpuUsage().getUsageInKernelmode(),
+                                                              statistics.getCpuStats().getThrottlingData().getThrottledTime(),
+                                                              statistics.getCpuStats().getThrottlingData().getPeriods(),
+                                                              statistics.getCpuStats().getThrottlingData().getThrottledPeriods()));
+    }
+
+    // For testing only, create ContainerStats from JSON returned by docker daemon stats API
+    public static ContainerStats statsFromJson(String json) {
+        try {
+            Statistics statistics = new ObjectMapper().readValue(json, Statistics.class);
+            return containerStatsFrom(statistics);
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+    }
+
 }

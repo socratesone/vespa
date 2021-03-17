@@ -8,21 +8,18 @@ import com.yahoo.config.provision.Flavor;
 import com.yahoo.config.provision.NodeType;
 import com.yahoo.config.provision.serialization.NetworkPortsSerializer;
 import com.yahoo.container.jdisc.HttpRequest;
-import com.yahoo.container.jdisc.HttpResponse;
+import com.yahoo.restapi.SlimeJsonResponse;
 import com.yahoo.slime.Cursor;
-import com.yahoo.slime.JsonFormat;
-import com.yahoo.slime.Slime;
 import com.yahoo.vespa.applicationmodel.HostName;
 import com.yahoo.vespa.hosted.provision.Node;
 import com.yahoo.vespa.hosted.provision.NodeRepository;
+import com.yahoo.vespa.hosted.provision.node.Address;
 import com.yahoo.vespa.hosted.provision.node.History;
 import com.yahoo.vespa.hosted.provision.node.filter.NodeFilter;
 import com.yahoo.vespa.orchestrator.Orchestrator;
 import com.yahoo.vespa.orchestrator.status.HostInfo;
 import com.yahoo.vespa.orchestrator.status.HostStatus;
 
-import java.io.IOException;
-import java.io.OutputStream;
 import java.net.URI;
 import java.util.List;
 import java.util.Optional;
@@ -32,7 +29,7 @@ import java.util.function.Function;
 /**
 * @author bratseth
 */
-class NodesResponse extends HttpResponse {
+class NodesResponse extends SlimeJsonResponse {
 
     /** The responses this can create */
     public enum ResponseType { nodeList, stateList, nodesInStateList, singleNode }
@@ -47,19 +44,16 @@ class NodesResponse extends HttpResponse {
     private final boolean recursive;
     private final Function<HostName, Optional<HostInfo>> orchestrator;
     private final NodeRepository nodeRepository;
-    private final Slime slime;
 
-    public NodesResponse(ResponseType responseType, HttpRequest request,  
+    public NodesResponse(ResponseType responseType, HttpRequest request,
                          Orchestrator orchestrator, NodeRepository nodeRepository) {
-        super(200);
         this.parentUrl = toParentUrl(request);
         this.nodeParentUrl = toNodeParentUrl(request);
-        filter = NodesV2ApiHandler.toNodeFilter(request);
+        this.filter = NodesV2ApiHandler.toNodeFilter(request);
         this.recursive = request.getBooleanProperty("recursive");
         this.orchestrator = orchestrator.getHostResolver();
         this.nodeRepository = nodeRepository;
 
-        slime = new Slime();
         Cursor root = slime.setObject();
         switch (responseType) {
             case nodeList: nodesToSlime(root); break;
@@ -83,16 +77,6 @@ class NodesResponse extends HttpResponse {
         return uri.getScheme() + "://" + uri.getHost() + ":" + uri.getPort() + "/nodes/v2/node/";
     }
 
-    @Override
-    public void render(OutputStream stream) throws IOException {
-        new JsonFormat(true).encode(stream, slime);
-    }
-
-    @Override
-    public String getContentType() {
-        return "application/json";
-    }
-
     private void statesToSlime(Cursor root) {
         Cursor states = root.setObject("states");
         for (Node.State state : Node.State.values())
@@ -109,13 +93,13 @@ class NodesResponse extends HttpResponse {
     private void nodesToSlime(Node.State state, Cursor parentObject) {
         Cursor nodeArray = parentObject.setArray("nodes");
         for (NodeType type : NodeType.values())
-            toSlime(nodeRepository.getNodes(type, state), nodeArray);
+            toSlime(nodeRepository.nodes().list(state).nodeType(type).asList(), nodeArray);
     }
 
     /** Outputs all the nodes to a node array */
     private void nodesToSlime(Cursor parentObject) {
         Cursor nodeArray = parentObject.setArray("nodes");
-        toSlime(nodeRepository.getNodes(), nodeArray);
+        toSlime(nodeRepository.nodes().list().asList(), nodeArray);
     }
 
     private void toSlime(List<Node> nodes, Cursor array) {
@@ -126,7 +110,7 @@ class NodesResponse extends HttpResponse {
     }
 
     private void nodeToSlime(String hostname, Cursor object) {
-        Node node = nodeRepository.getNode(hostname).orElseThrow(() ->
+        Node node = nodeRepository.nodes().node(hostname).orElseThrow(() ->
                 new NotFoundException("No node with hostname '" + hostname + "'"));
         toSlime(node, true, object);
     }
@@ -137,15 +121,15 @@ class NodesResponse extends HttpResponse {
         if ( ! allFields) return;
         object.setString("id", node.hostname());
         object.setString("state", NodeSerializer.toString(node.state()));
-        object.setString("type", node.type().name());
-        object.setString("hostname", node.hostname());
         object.setString("type", NodeSerializer.toString(node.type()));
+        object.setString("hostname", node.hostname());
         if (node.parentHostname().isPresent()) {
             object.setString("parentHostname", node.parentHostname().get());
         }
         object.setString("openStackId", node.id());
         object.setString("flavor", node.flavor().name());
         node.reservedTo().ifPresent(reservedTo -> object.setString("reservedTo", reservedTo.value()));
+        node.exclusiveTo().ifPresent(exclusiveTo -> object.setString("exclusiveTo", exclusiveTo.serializedForm()));
         if (node.flavor().isConfigured())
             object.setDouble("cpuCores", node.flavor().resources().vcpu());
         NodeResourcesSerializer.toSlime(node.flavor().resources(), object.setObject("resources"));
@@ -158,14 +142,14 @@ class NodesResponse extends HttpResponse {
             object.setLong("restartGeneration", allocation.restartGeneration().wanted());
             object.setLong("currentRestartGeneration", allocation.restartGeneration().current());
             object.setString("wantedDockerImage", allocation.membership().cluster().dockerImage()
-                    .orElseGet(() -> nodeRepository.dockerImage(node).withTag(allocation.membership().cluster().vespaVersion()).asString()));
+                    .orElseGet(() -> nodeRepository.containerImages().imageFor(node.type()).withTag(allocation.membership().cluster().vespaVersion()).asString()));
             object.setString("wantedVespaVersion", allocation.membership().cluster().vespaVersion().toFullString());
             NodeResourcesSerializer.toSlime(allocation.requestedResources(), object.setObject("requestedResources"));
             allocation.networkPorts().ifPresent(ports -> NetworkPortsSerializer.toSlime(ports, object.setArray("networkPorts")));
             orchestrator.apply(new HostName(node.hostname()))
                         .ifPresent(info -> {
                             object.setBool("allowedToBeDown", info.status().isSuspended());
-                            // TODO: Remove allowedToBeDown as a special-case of orchestratorHostStatus
+                            // TODO: Remove allowedToBeDown as a special-case of orchestratorStatus
                             if (info.status() != HostStatus.NO_REMARKS) {
                                 object.setString("orchestratorStatus", info.status().asString());
                             }
@@ -183,13 +167,16 @@ class NodesResponse extends HttpResponse {
         currentDockerImage(node).ifPresent(dockerImage -> object.setString("currentDockerImage", dockerImage.asString()));
         object.setLong("failCount", node.status().failCount());
         object.setBool("wantToRetire", node.status().wantToRetire());
+        object.setBool("preferToRetire", node.status().preferToRetire());
         object.setBool("wantToDeprovision", node.status().wantToDeprovision());
         toSlime(node.history(), object.setArray("history"));
         ipAddressesToSlime(node.ipConfig().primary(), object.setArray("ipAddresses"));
-        ipAddressesToSlime(node.ipConfig().pool().asSet(), object.setArray("additionalIpAddresses"));
+        ipAddressesToSlime(node.ipConfig().pool().getIpSet(), object.setArray("additionalIpAddresses"));
+        addressesToSlime(node.ipConfig().pool().getAddressList(), object);
         node.reports().toSlime(object, "reports");
         node.modelName().ifPresent(modelName -> object.setString("modelName", modelName));
         node.switchHostname().ifPresent(switchHostname -> object.setString("switchHostname", switchHostname));
+        nodeRepository.archiveUris().archiveUriFor(node).ifPresent(uri -> object.setString("archiveUri", uri));
     }
 
     private void toSlime(ApplicationId id, Cursor object) {
@@ -218,15 +205,22 @@ class NodesResponse extends HttpResponse {
     // Hack: For non-docker nodes, return current docker image as default prefix + current Vespa version
     // TODO: Remove current + wanted docker image from response for non-docker types
     private Optional<DockerImage> currentDockerImage(Node node) {
-        return node.status().dockerImage()
+        return node.status().containerImage()
                    .or(() -> Optional.of(node)
                                      .filter(n -> n.flavor().getType() != Flavor.Type.DOCKER_CONTAINER)
                                      .flatMap(n -> n.status().vespaVersion()
-                                                    .map(version -> nodeRepository.dockerImage(n).withTag(version))));
+                                                    .map(version -> nodeRepository.containerImages().imageFor(n.type()).withTag(version))));
     }
 
     private void ipAddressesToSlime(Set<String> ipAddresses, Cursor array) {
         ipAddresses.forEach(array::addString);
+    }
+
+    private void addressesToSlime(List<Address> addresses, Cursor object) {
+        if (addresses.isEmpty()) return;
+        // When/if Address becomes richer: add another field (e.g. "addresses") and expand to array of objects
+        Cursor addressesArray = object.setArray("additionalHostnames");
+        addresses.forEach(address -> addressesArray.addString(address.hostname()));
     }
 
     private String lastElement(String path) {

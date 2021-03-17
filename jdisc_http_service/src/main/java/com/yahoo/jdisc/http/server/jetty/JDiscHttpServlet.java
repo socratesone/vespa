@@ -13,13 +13,14 @@ import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 import java.io.IOException;
 import java.util.Enumeration;
+import java.util.Map;
 import java.util.Set;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
-import static com.yahoo.jdisc.http.core.HttpServletRequestUtils.getConnection;
+import static com.yahoo.jdisc.http.server.jetty.HttpServletRequestUtils.getConnection;
 
 /**
  * @author Simon Thoresen Hult
@@ -128,7 +129,7 @@ class JDiscHttpServlet extends HttpServlet {
     }
 
     private static Metric.Context getMetricContext(HttpServletRequest request) {
-        return JDiscServerConnector.fromRequest(request).getRequestMetricContext(request);
+        return JDiscServerConnector.fromRequest(request).createRequestMetricContext(request, Map.of());
     }
 
     private static String formatAttributes(final HttpServletRequest request) {

@@ -5,7 +5,8 @@
 #include <cstring>
 #include <cstdint>
 #include <cstdlib>
-#include <vespa/vespalib/util/alloc.h>
+
+#define VESPA_DLL_LOCAL  __attribute__ ((visibility("hidden")))
 
 namespace vespalib {
 
@@ -120,31 +121,31 @@ public:
      *     was found, or npos if the substring could not be located
      */
     size_type rfind(const char * s, size_type e=npos) const;
-    int compare(stringref s) const { return compare(s.data(), s.size()); }
-    int compare(const char *s, size_type sz) const {
+    int compare(stringref s) const noexcept { return compare(s.data(), s.size()); }
+    int compare(const char *s, size_type sz) const noexcept {
         int diff(memcmp(_s, s, std::min(sz, size())));
         return (diff != 0) ? diff : (size() - sz);
     }
     const char & operator [] (size_t i) const { return _s[i]; }
     operator std::string () const { return std::string(_s, _sz); }
-    bool operator  <        (const char * s) const { return compare(s, strlen(s)) < 0; }
-    bool operator  < (const std::string & s) const { return compare(s.data(), s.size()) < 0; }
-    bool operator  <           (stringref s) const { return compare(s.data(), s.size()) < 0; }
-    bool operator <=        (const char * s) const { return compare(s, strlen(s)) <= 0; }
-    bool operator <= (const std::string & s) const { return compare(s.data(), s.size()) <= 0; }
-    bool operator <=           (stringref s) const { return compare(s.data(), s.size()) <= 0; }
-    bool operator !=        (const char * s) const { return compare(s, strlen(s)) != 0; }
-    bool operator != (const std::string & s) const { return compare(s.data(), s.size()) != 0; }
-    bool operator !=           (stringref s) const { return compare(s.data(), s.size()) != 0; }
-    bool operator ==        (const char * s) const { return compare(s, strlen(s)) == 0; }
-    bool operator == (const std::string & s) const { return compare(s.data(), s.size()) == 0; }
-    bool operator ==           (stringref s) const { return compare(s.data(), s.size()) == 0; }
-    bool operator >=        (const char * s) const { return compare(s, strlen(s)) >= 0; }
-    bool operator >= (const std::string & s) const { return compare(s.data(), s.size()) >= 0; }
-    bool operator >=           (stringref s) const { return compare(s.data(), s.size()) >= 0; }
-    bool operator  >        (const char * s) const { return compare(s, strlen(s)) > 0; }
-    bool operator  > (const std::string & s) const { return compare(s.data(), s.size()) > 0; }
-    bool operator  >           (stringref s) const { return compare(s.data(), s.size()) > 0; }
+    bool operator  <        (const char * s) const noexcept { return compare(s, strlen(s)) < 0; }
+    bool operator  < (const std::string & s) const noexcept { return compare(s.data(), s.size()) < 0; }
+    bool operator  <           (stringref s) const noexcept { return compare(s.data(), s.size()) < 0; }
+    bool operator <=        (const char * s) const noexcept { return compare(s, strlen(s)) <= 0; }
+    bool operator <= (const std::string & s) const noexcept { return compare(s.data(), s.size()) <= 0; }
+    bool operator <=           (stringref s) const noexcept { return compare(s.data(), s.size()) <= 0; }
+    bool operator !=        (const char * s) const noexcept { return compare(s, strlen(s)) != 0; }
+    bool operator != (const std::string & s) const noexcept { return compare(s.data(), s.size()) != 0; }
+    bool operator !=           (stringref s) const noexcept { return compare(s.data(), s.size()) != 0; }
+    bool operator ==        (const char * s) const noexcept { return compare(s, strlen(s)) == 0; }
+    bool operator == (const std::string & s) const noexcept { return compare(s.data(), s.size()) == 0; }
+    bool operator ==           (stringref s) const noexcept { return compare(s.data(), s.size()) == 0; }
+    bool operator >=        (const char * s) const noexcept { return compare(s, strlen(s)) >= 0; }
+    bool operator >= (const std::string & s) const noexcept { return compare(s.data(), s.size()) >= 0; }
+    bool operator >=           (stringref s) const noexcept { return compare(s.data(), s.size()) >= 0; }
+    bool operator  >        (const char * s) const noexcept { return compare(s, strlen(s)) > 0; }
+    bool operator  > (const std::string & s) const noexcept { return compare(s.data(), s.size()) > 0; }
+    bool operator  >           (stringref s) const noexcept { return compare(s.data(), s.size()) > 0; }
 private:
     const char *_s;
     size_type   _sz;
@@ -567,7 +568,7 @@ private:
     bool isAllocated() const { return _buf != _stack; }
     char * buffer() { return _buf; }
     const char * buffer() const { return _buf; }
-    void appendAlloc(const void * s, size_type sz) __attribute__((noinline));
+    VESPA_DLL_LOCAL void appendAlloc(const void * s, size_type sz) __attribute__((noinline));
     void init(const void *s) noexcept {
         if (__builtin_expect(_sz < StackSize, true)) {
             _bufferSize = StackSize;
@@ -629,6 +630,7 @@ template<uint32_t StackSize>
 small_string<StackSize>
 operator + (const char * a, const small_string<StackSize> & b);
 
+#if __cplusplus < 201709L || (!defined(__clang__) && defined(__GNUC__) && __GNUC__ < 10)
 template<typename T, uint32_t StackSize>
 bool
 operator == (const T& a, const small_string<StackSize>& b) noexcept
@@ -642,6 +644,7 @@ operator != (const T& a, const small_string<StackSize>& b) noexcept
 {
     return b != a;
 }
+#endif
 
 template<typename T, uint32_t StackSize>
 bool

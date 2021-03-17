@@ -59,7 +59,6 @@ import com.yahoo.vespa.hosted.controller.deployment.DeploymentTester;
 import com.yahoo.vespa.hosted.controller.deployment.DeploymentTrigger;
 import com.yahoo.vespa.hosted.controller.integration.ConfigServerMock;
 import com.yahoo.vespa.hosted.controller.integration.ZoneApiMock;
-import com.yahoo.vespa.hosted.controller.maintenance.RotationStatusUpdater;
 import com.yahoo.vespa.hosted.controller.metric.ApplicationMetrics;
 import com.yahoo.vespa.hosted.controller.restapi.ContainerTester;
 import com.yahoo.vespa.hosted.controller.restapi.ControllerContainerTest;
@@ -67,6 +66,7 @@ import com.yahoo.vespa.hosted.controller.routing.GlobalRouting;
 import com.yahoo.vespa.hosted.controller.security.AthenzCredentials;
 import com.yahoo.vespa.hosted.controller.security.AthenzTenantSpec;
 import com.yahoo.vespa.hosted.controller.tenant.AthenzTenant;
+import com.yahoo.vespa.hosted.controller.tenant.LastLoginInfo;
 import com.yahoo.vespa.hosted.controller.versions.VespaVersion;
 import com.yahoo.yolean.Exceptions;
 import org.junit.Before;
@@ -74,7 +74,6 @@ import org.junit.Test;
 
 import java.io.File;
 import java.net.URI;
-import java.time.Duration;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
@@ -113,10 +112,10 @@ public class ApplicationApiTest extends ControllerContainerTest {
                                                "z/4jKSTHwbYR8wdsOSrJGVEUPbS2nguIJ64OJH7gFnxM6sxUVj+Nm2HlXw==\n" +
                                                "-----END PUBLIC KEY-----\n";
     private static final String quotedPemPublicKey = pemPublicKey.replaceAll("\\n", "\\\\n");
+    private static final String accessDenied = "{\n  \"code\" : 403,\n  \"message\" : \"Access denied\"\n}";
 
     private static final ApplicationPackage applicationPackageDefault = new ApplicationPackageBuilder()
             .instances("default")
-            .environment(Environment.prod)
             .globalServiceId("foo")
             .region("us-central-1")
             .region("us-east-3")
@@ -126,7 +125,6 @@ public class ApplicationApiTest extends ControllerContainerTest {
 
     private static final ApplicationPackage applicationPackageInstance1 = new ApplicationPackageBuilder()
             .instances("instance1")
-            .environment(Environment.prod)
             .globalServiceId("foo")
             .region("us-central-1")
             .region("us-east-3")
@@ -141,7 +139,7 @@ public class ApplicationApiTest extends ControllerContainerTest {
     private static final UserId OTHER_USER_ID = new UserId("otheruser");
     private static final UserId HOSTED_VESPA_OPERATOR = new UserId("johnoperator");
     private static final OktaIdentityToken OKTA_IT = new OktaIdentityToken("okta-it");
-    private static final OktaAccessToken OKTA_AT = new OktaAccessToken("okta-at");
+    private static final OktaAccessToken OKTA_AT = new OktaAccessToken("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.he0ErCNloe4J7Id0Ry2SEDg09lKkZkfsRiGsdX_vgEg");
 
 
     private ContainerTester tester;
@@ -193,8 +191,10 @@ public class ApplicationApiTest extends ControllerContainerTest {
                               new File("tenant-without-applications-with-id.json"));
         // GET a tenant with property ID and contact information
         updateContactInformation();
+        tester.controller().tenants().updateLastLogin(TenantName.from("tenant2"),
+                List.of(LastLoginInfo.UserLevel.user, LastLoginInfo.UserLevel.administrator), Instant.ofEpochMilli(1234));
         tester.assertResponse(request("/application/v4/tenant/tenant2", GET).userIdentity(USER_ID),
-                              new File("tenant-with-contact-info.json"));
+                              new File("tenant2.json"));
 
         // POST (create) an application
         tester.assertResponse(request("/application/v4/tenant/tenant1/application/application1/instance/instance1", POST)
@@ -264,13 +264,13 @@ public class ApplicationApiTest extends ControllerContainerTest {
         tester.assertResponse(request("/application/v4/tenant/tenant1/application/application1/instance/otheruser/deploy/dev-us-east-1", POST)
                                       .userIdentity(OTHER_USER_ID)
                                       .data(createApplicationDeployData(applicationPackageInstance1, false)),
-                              "{\n  \"code\" : 403,\n  \"message\" : \"Access denied\"\n}",
+                              accessDenied,
                               403);
 
         // DELETE a dev deployment is not generally allowed under user instance
         tester.assertResponse(request("/application/v4/tenant/tenant1/application/application1/instance/otheruser/environment/dev/region/us-east-1", DELETE)
                                       .userIdentity(OTHER_USER_ID),
-                              "{\n  \"code\" : 403,\n  \"message\" : \"Access denied\"\n}",
+                              accessDenied,
                               403);
 
         // When the user is a tenant admin, user instances are allowed.
@@ -332,7 +332,6 @@ public class ApplicationApiTest extends ControllerContainerTest {
         ApplicationPackage applicationPackage = new ApplicationPackageBuilder()
                 .instances("instance1")
                 .globalServiceId("foo")
-                .environment(Environment.prod)
                 .region("us-west-1")
                 .region("us-east-3")
                 .allow(ValidationId.globalEndpointChange)
@@ -493,22 +492,27 @@ public class ApplicationApiTest extends ControllerContainerTest {
                               new File("application-clusters.json"));
 
         // GET logs
-        tester.assertResponse(request("/application/v4/tenant/tenant2/application/application1/environment/dev/region/us-central-1/instance/default/logs?from=1233&to=3214", GET)
+        tester.assertResponse(request("/application/v4/tenant/tenant2/application/application1/environment/dev/region/us-east-1/instance/default/logs?from=1233&to=3214", GET)
                         .userIdentity(USER_ID),
                 "INFO - All good");
 
+        // GET controller logs
+        tester.assertResponse(request("/application/v4/tenant/tenant2/application/application1/environment/prod/region/controller/instance/default/logs?from=1233&to=3214", GET)
+                                      .userIdentity(USER_ID),
+                              "INFO - All good");
+
         // Get content - root
-        tester.assertResponse(request("/application/v4/tenant/tenant2/application/application1/instance/default/environment/dev/region/us-central-1/content/", GET).userIdentity(USER_ID),
+        tester.assertResponse(request("/application/v4/tenant/tenant2/application/application1/instance/default/environment/dev/region/us-east-1/content/", GET).userIdentity(USER_ID),
                 "{\"path\":\"/\"}");
         // Get content - ignore query params
-        tester.assertResponse(request("/application/v4/tenant/tenant2/application/application1/instance/default/environment/dev/region/us-central-1/content/bar/file.json?query=param", GET).userIdentity(USER_ID),
+        tester.assertResponse(request("/application/v4/tenant/tenant2/application/application1/instance/default/environment/dev/region/us-east-1/content/bar/file.json?query=param", GET).userIdentity(USER_ID),
                 "{\"path\":\"/bar/file.json\"}");
 
 
         updateMetrics();
 
         // GET metrics
-        tester.assertResponse(request("/application/v4/tenant/tenant2/application/application1/environment/dev/region/us-central-1/instance/default/metrics", GET)
+        tester.assertJsonResponse(request("/application/v4/tenant/tenant2/application/application1/environment/dev/region/us-east-1/instance/default/metrics", GET)
                         .userIdentity(USER_ID),
                                 new File("proton-metrics.json"));
 
@@ -580,6 +584,39 @@ public class ApplicationApiTest extends ControllerContainerTest {
                                       .userIdentity(USER_ID),
                               "{\"message\":\"Triggered production-us-west-1 for tenant1.application1.instance1\"}");
 
+        // POST a 'reindex application' command
+        tester.assertResponse(request("/application/v4/tenant/tenant1/application/application1/instance/instance1/environment/prod/region/us-central-1/reindex", POST)
+                                      .userIdentity(USER_ID),
+                              "{\"message\":\"Requested reindexing of tenant1.application1.instance1 in prod.us-central-1\"}");
+
+        // POST a 'reindex application' command with cluster filter
+        tester.assertResponse(request("/application/v4/tenant/tenant1/application/application1/instance/instance1/environment/prod/region/us-central-1/reindex", POST)
+                                      .properties(Map.of("clusterId", "boo,moo"))
+                                      .userIdentity(USER_ID),
+                              "{\"message\":\"Requested reindexing of tenant1.application1.instance1 in prod.us-central-1, on clusters boo, moo\"}");
+
+        // POST a 'reindex application' command with cluster and document type filters
+        tester.assertResponse(request("/application/v4/tenant/tenant1/application/application1/instance/instance1/environment/prod/region/us-central-1/reindex", POST)
+                                      .properties(Map.of("clusterId", "boo,moo",
+                                                         "documentType", "foo,boo"))
+                                      .userIdentity(USER_ID),
+                              "{\"message\":\"Requested reindexing of tenant1.application1.instance1 in prod.us-central-1, on clusters boo, moo, for types foo, boo\"}");
+
+        // POST to enable reindexing
+        tester.assertResponse(request("/application/v4/tenant/tenant1/application/application1/instance/instance1/environment/prod/region/us-central-1/reindexing", POST)
+                                      .userIdentity(USER_ID),
+                              "{\"message\":\"Enabled reindexing of tenant1.application1.instance1 in prod.us-central-1\"}");
+
+        // DELETE to disable reindexing
+        tester.assertResponse(request("/application/v4/tenant/tenant1/application/application1/instance/instance1/environment/prod/region/us-central-1/reindexing", DELETE)
+                                      .userIdentity(USER_ID),
+                              "{\"message\":\"Disabled reindexing of tenant1.application1.instance1 in prod.us-central-1\"}");
+
+        // GET to get reindexing status
+        tester.assertResponse(request("/application/v4/tenant/tenant1/application/application1/instance/instance1/environment/prod/region/us-central-1/reindexing", GET)
+                                      .userIdentity(USER_ID),
+                              "{\"enabled\":true,\"clusters\":[{\"name\":\"cluster\",\"pending\":[{\"type\":\"type\",\"requiredGeneration\":100}],\"ready\":[{\"type\":\"type\",\"readyAtMillis\":345,\"startedAtMillis\":456,\"endedAtMillis\":567,\"state\":\"failed\",\"message\":\"(＃｀д´)ﾉ\",\"progress\":0.1}]}]}");
+
         // POST a 'restart application' command
         tester.assertResponse(request("/application/v4/tenant/tenant1/application/application1/environment/prod/region/us-central-1/instance/instance1/restart", POST)
                                       .userIdentity(USER_ID),
@@ -592,26 +629,41 @@ public class ApplicationApiTest extends ControllerContainerTest {
 
         addUserToHostedOperatorRole(HostedAthenzIdentities.from(SCREWDRIVER_ID));
 
-        // POST a 'restart application' in staging environment command
-        tester.assertResponse(request("/application/v4/tenant/tenant1/application/application1/environment/staging/region/us-central-1/instance/instance1/restart", POST)
+        // POST a 'restart application' in staging environment
+        tester.assertResponse(request("/application/v4/tenant/tenant1/application/application1/environment/staging/region/us-east-3/instance/instance1/restart", POST)
                                       .screwdriverIdentity(SCREWDRIVER_ID),
-                              "{\"message\":\"Requested restart of tenant1.application1.instance1 in staging.us-central-1\"}");
+                              "{\"message\":\"Requested restart of tenant1.application1.instance1 in staging.us-east-3\"}");
 
-        // POST a 'restart application' in staging test command
-        tester.assertResponse(request("/application/v4/tenant/tenant1/application/application1/environment/test/region/us-central-1/instance/instance1/restart", POST)
+        // POST a 'restart application' in test environment
+        tester.assertResponse(request("/application/v4/tenant/tenant1/application/application1/environment/test/region/us-east-1/instance/instance1/restart", POST)
                                       .screwdriverIdentity(SCREWDRIVER_ID),
-                              "{\"message\":\"Requested restart of tenant1.application1.instance1 in test.us-central-1\"}");
+                              "{\"message\":\"Requested restart of tenant1.application1.instance1 in test.us-east-1\"}");
 
-        // POST a 'restart application' in staging dev command
-        tester.assertResponse(request("/application/v4/tenant/tenant1/application/application1/environment/dev/region/us-central-1/instance/instance1/restart", POST)
+        // POST a 'restart application' in dev environment
+        tester.assertResponse(request("/application/v4/tenant/tenant1/application/application1/environment/dev/region/us-east-1/instance/instance1/restart", POST)
                                       .userIdentity(USER_ID),
-                              "{\"message\":\"Requested restart of tenant1.application1.instance1 in dev.us-central-1\"}");
+                              "{\"message\":\"Requested restart of tenant1.application1.instance1 in dev.us-east-1\"}");
 
         // POST a 'restart application' command with a host filter (other filters not supported yet)
         tester.assertResponse(request("/application/v4/tenant/tenant1/application/application1/environment/prod/region/us-central-1/instance/instance1/restart", POST)
                                       .properties(Map.of("hostname", "node-1-tenant-host-prod.us-central-1"))
                                       .screwdriverIdentity(SCREWDRIVER_ID),
                               "{\"message\":\"Requested restart of tenant1.application1.instance1 in prod.us-central-1\"}", 200);
+
+        // POST a 'suspend application' in dev environment
+        tester.assertResponse(request("/application/v4/tenant/tenant1/application/application1/instance/instance1/environment/dev/region/us-east-1/suspend", POST)
+                                      .userIdentity(USER_ID),
+                              "{\"message\":\"Suspended orchestration of tenant1.application1.instance1 in dev.us-east-1\"}");
+
+        // POST a 'resume application' in dev environment
+        tester.assertResponse(request("/application/v4/tenant/tenant1/application/application1/instance/instance1/environment/dev/region/us-east-1/suspend", DELETE)
+                                      .userIdentity(USER_ID),
+                              "{\"message\":\"Resumed orchestration of tenant1.application1.instance1 in dev.us-east-1\"}");
+
+        // POST a 'suspend application' in prod environment fails
+        tester.assertResponse(request("/application/v4/tenant/tenant1/application/application1/instance/instance1/environment/prod/region/us-east-3/suspend", POST)
+                                      .userIdentity(USER_ID),
+                              accessDenied, 403);
 
         // GET suspended
         tester.assertResponse(request("/application/v4/tenant/tenant1/application/application1/environment/prod/region/us-central-1/instance/instance1/suspended", GET)
@@ -676,7 +728,6 @@ public class ApplicationApiTest extends ControllerContainerTest {
         // Second attempt has a service under a different domain than the tenant of the application, and fails.
         ApplicationPackage packageWithServiceForWrongDomain = new ApplicationPackageBuilder()
                 .instances("instance1")
-                .environment(Environment.prod)
                 .athenzIdentity(com.yahoo.config.provision.AthenzDomain.from(ATHENZ_TENANT_DOMAIN_2.getName()), AthenzService.from("service"))
                 .region("us-west-1")
                 .build();
@@ -690,7 +741,6 @@ public class ApplicationApiTest extends ControllerContainerTest {
         ApplicationPackage packageWithService = new ApplicationPackageBuilder()
                 .instances("instance1")
                 .globalServiceId("foo")
-                .environment(Environment.prod)
                 .athenzIdentity(com.yahoo.config.provision.AthenzDomain.from(ATHENZ_TENANT_DOMAIN.getName()), AthenzService.from("service"))
                 .region("us-central-1")
                 .parallel("us-west-1", "us-east-3")
@@ -737,7 +787,6 @@ public class ApplicationApiTest extends ControllerContainerTest {
         // Sixth attempt has a multi-instance deployment spec, and is accepted.
         ApplicationPackage multiInstanceSpec = new ApplicationPackageBuilder()
                 .instances("instance1,instance2")
-                .environment(Environment.prod)
                 .region("us-central-1")
                 .parallel("us-west-1", "us-east-3")
                 .endpoint("default", "foo", "us-central-1", "us-west-1", "us-east-3")
@@ -901,7 +950,7 @@ public class ApplicationApiTest extends ControllerContainerTest {
         tester.assertResponse(request("/application/v4/tenant/tenant1/application/application1/instance/instance1/environment/prod/region/us-west-1/global-rotation", GET)
                                       .properties(Map.of("endpointId", "default"))
                                       .userIdentity(USER_ID),
-                              "{\"bcpStatus\":{\"rotationStatus\":\"IN\"}}",
+                              "{\"bcpStatus\":{\"rotationStatus\":\"UNKNOWN\"}}",
                               200);
 
         // GET global rotation status for us-west-1 in eu endpoint
@@ -915,7 +964,7 @@ public class ApplicationApiTest extends ControllerContainerTest {
         tester.assertResponse(request("/application/v4/tenant/tenant1/application/application1/instance/instance1/environment/prod/region/eu-west-1/global-rotation", GET)
                                       .properties(Map.of("endpointId", "eu"))
                                       .userIdentity(USER_ID),
-                              "{\"bcpStatus\":{\"rotationStatus\":\"IN\"}}",
+                              "{\"bcpStatus\":{\"rotationStatus\":\"UNKNOWN\"}}",
                               200);
     }
 
@@ -954,7 +1003,7 @@ public class ApplicationApiTest extends ControllerContainerTest {
                                       .userIdentity(HOSTED_VESPA_OPERATOR),
                               "{\"error-code\":\"BAD_REQUEST\",\"message\":\"Deployment of system applications during a system upgrade is not allowed\"}",
                               400);
-        deploymentTester.controllerTester().upgradeSystem(deploymentTester.controller().versionStatus().controllerVersion().get().versionNumber());
+        deploymentTester.controllerTester().upgradeSystem(deploymentTester.controller().readVersionStatus().controllerVersion().get().versionNumber());
         tester.assertResponse(request("/application/v4/tenant/hosted-vespa/application/routing/environment/prod/region/us-central-1/instance/default/deploy", POST)
                         .data(noAppEntity)
                         .userIdentity(HOSTED_VESPA_OPERATOR),
@@ -1028,7 +1077,7 @@ public class ApplicationApiTest extends ControllerContainerTest {
                                       .userIdentity(USER_ID)
                                       .oktaAccessToken(OKTA_AT).oktaIdentityToken(OKTA_IT)
                                       .data("{\"athensDomain\":\"domain1\", \"property\":\"property1\"}"),
-                              "{\n  \"code\" : 403,\n  \"message\" : \"Access denied\"\n}",
+                              accessDenied,
                               403);
 
         // GET non-existing tenant
@@ -1131,28 +1180,28 @@ public class ApplicationApiTest extends ControllerContainerTest {
         
         // POST (deploy) an application with an invalid application package
         MultiPartStreamer entity = createApplicationDeployData(applicationPackageInstance1, true);
-        tester.assertResponse(request("/application/v4/tenant/tenant1/application/application1/environment/dev/region/us-west-1/instance/instance1/deploy", POST)
+        tester.assertResponse(request("/application/v4/tenant/tenant1/application/application1/environment/dev/region/us-east-1/instance/instance1/deploy", POST)
                                       .data(entity)
                                       .userIdentity(USER_ID),
                               new File("deploy-failure.json"), 400);
 
         // POST (deploy) an application without available capacity
         configServer.throwOnNextPrepare(new ConfigServerException(new URI("server-url"), "Failed to prepare application", "Out of capacity", ConfigServerException.ErrorCode.OUT_OF_CAPACITY, null));
-        tester.assertResponse(request("/application/v4/tenant/tenant1/application/application1/environment/dev/region/us-west-1/instance/instance1/deploy", POST)
+        tester.assertResponse(request("/application/v4/tenant/tenant1/application/application1/environment/dev/region/us-east-1/instance/instance1/deploy", POST)
                                       .data(entity)
                                       .userIdentity(USER_ID),
                               new File("deploy-out-of-capacity.json"), 400);
 
         // POST (deploy) an application where activation fails
         configServer.throwOnNextPrepare(new ConfigServerException(new URI("server-url"), "Failed to activate application", "Activation conflict", ConfigServerException.ErrorCode.ACTIVATION_CONFLICT, null));
-        tester.assertResponse(request("/application/v4/tenant/tenant1/application/application1/environment/dev/region/us-west-1/instance/instance1/deploy", POST)
+        tester.assertResponse(request("/application/v4/tenant/tenant1/application/application1/environment/dev/region/us-east-1/instance/instance1/deploy", POST)
                                       .data(entity)
                                       .userIdentity(USER_ID),
                               new File("deploy-activation-conflict.json"), 409);
 
         // POST (deploy) an application where we get an internal server error
         configServer.throwOnNextPrepare(new ConfigServerException(new URI("server-url"), "Failed to deploy application", "Internal server error", ConfigServerException.ErrorCode.INTERNAL_SERVER_ERROR, null));
-        tester.assertResponse(request("/application/v4/tenant/tenant1/application/application1/environment/dev/region/us-west-1/instance/instance1/deploy", POST)
+        tester.assertResponse(request("/application/v4/tenant/tenant1/application/application1/environment/dev/region/us-east-1/instance/instance1/deploy", POST)
                                       .data(entity)
                                       .userIdentity(USER_ID),
                               new File("deploy-internal-server-error.json"), 500);
@@ -1184,12 +1233,13 @@ public class ApplicationApiTest extends ControllerContainerTest {
         // DELETE tenant again returns 403 as tenant access cannot be determined when the tenant does not exist
         tester.assertResponse(request("/application/v4/tenant/tenant1", DELETE)
                                       .userIdentity(USER_ID),
-                              "{\n  \"code\" : 403,\n  \"message\" : \"Access denied\"\n}",
+                              accessDenied,
                               403);
 
-        // Create legancy tenant name containing underscores
+        // Create legacy tenant name containing underscores
         tester.controller().curator().writeTenant(new AthenzTenant(TenantName.from("my_tenant"), ATHENZ_TENANT_DOMAIN,
-                                                                   new Property("property1"), Optional.empty(), Optional.empty()));
+                new Property("property1"), Optional.empty(), Optional.empty(), Instant.EPOCH, LastLoginInfo.EMPTY));
+
         // POST (add) a Athenz tenant with dashes duplicates existing one with underscores
         tester.assertResponse(request("/application/v4/tenant/my-tenant", POST)
                                       .userIdentity(USER_ID)
@@ -1239,7 +1289,7 @@ public class ApplicationApiTest extends ControllerContainerTest {
         tester.assertResponse(request("/application/v4/tenant/tenant1/application/application1/instance/instance1", POST)
                                       .userIdentity(unauthorizedUser)
                                       .oktaAccessToken(OKTA_AT).oktaIdentityToken(OKTA_IT),
-                              "{\n  \"code\" : 403,\n  \"message\" : \"Access denied\"\n}",
+                              accessDenied,
                               403);
 
         // (Create it with the right tenant id)
@@ -1254,13 +1304,13 @@ public class ApplicationApiTest extends ControllerContainerTest {
         tester.assertResponse(request("/application/v4/tenant/tenant1/application/application1/environment/prod/region/us-west-1/instance/default/deploy", POST)
                                       .data(entity)
                                       .userIdentity(USER_ID),
-                              "{\n  \"code\" : 403,\n  \"message\" : \"Access denied\"\n}",
+                              accessDenied,
                               403);
 
         // Deleting an application for an Athens domain the user is not admin for is disallowed
         tester.assertResponse(request("/application/v4/tenant/tenant1/application/application1", DELETE)
                                       .userIdentity(unauthorizedUser),
-                              "{\n  \"code\" : 403,\n  \"message\" : \"Access denied\"\n}",
+                              accessDenied,
                               403);
 
         // Create another instance under the application
@@ -1281,7 +1331,7 @@ public class ApplicationApiTest extends ControllerContainerTest {
         tester.assertResponse(request("/application/v4/tenant/tenant1", PUT)
                                       .data("{\"athensDomain\":\"domain1\", \"property\":\"property1\"}")
                                       .userIdentity(unauthorizedUser),
-                              "{\n  \"code\" : 403,\n  \"message\" : \"Access denied\"\n}",
+                              accessDenied,
                               403);
         
         // Change Athens domain
@@ -1290,13 +1340,13 @@ public class ApplicationApiTest extends ControllerContainerTest {
                                       .data("{\"athensDomain\":\"domain2\", \"property\":\"property1\"}")
                                       .userIdentity(authorizedUser)
                                       .oktaAccessToken(OKTA_AT).oktaIdentityToken(OKTA_IT),
-                              "{\"tenant\":\"tenant1\",\"type\":\"ATHENS\",\"athensDomain\":\"domain2\",\"property\":\"property1\",\"applications\":[]}",
+                              new File("tenant1.json"),
                               200);
 
         // Deleting a tenant for an Athens domain the user is not admin for is disallowed
         tester.assertResponse(request("/application/v4/tenant/tenant1", DELETE)
                                       .userIdentity(unauthorizedUser),
-                              "{\n  \"code\" : 403,\n  \"message\" : \"Access denied\"\n}",
+                              accessDenied,
                               403);
     }
 
@@ -1305,7 +1355,6 @@ public class ApplicationApiTest extends ControllerContainerTest {
         ApplicationPackage applicationPackage = new ApplicationPackageBuilder()
                 .upgradePolicy("default")
                 .athenzIdentity(com.yahoo.config.provision.AthenzDomain.from("another.domain"), com.yahoo.config.provision.AthenzService.from("service"))
-                .environment(Environment.prod)
                 .region("us-west-1")
                 .build();
         createAthenzDomainWithAdmin(ATHENZ_TENANT_DOMAIN, USER_ID);
@@ -1327,7 +1376,6 @@ public class ApplicationApiTest extends ControllerContainerTest {
         applicationPackage = new ApplicationPackageBuilder()
                 .upgradePolicy("default")
                 .athenzIdentity(com.yahoo.config.provision.AthenzDomain.from("domain1"), com.yahoo.config.provision.AthenzService.from("service"))
-                .environment(Environment.prod)
                 .region("us-west-1")
                 .build();
 
@@ -1364,7 +1412,7 @@ public class ApplicationApiTest extends ControllerContainerTest {
         tester.assertResponse(request("/application/v4/tenant/tenant1/application/application1/instance/new-user/deploy/dev-us-east-1", POST)
                                       .data(entity)
                                       .userIdentity(userId),
-                              "{\n  \"code\" : 403,\n  \"message\" : \"Access denied\"\n}",
+                              accessDenied,
                               403);
 
         // Add "new-user" to the admin role, to allow service launches.
@@ -1460,7 +1508,6 @@ public class ApplicationApiTest extends ControllerContainerTest {
         ApplicationPackage applicationPackage = new ApplicationPackageBuilder()
                 .athenzIdentity(com.yahoo.config.provision.AthenzDomain.from("domain"), AthenzService.from("service"))
                 .compileVersion(RoutingController.DIRECT_ROUTING_MIN_VERSION)
-                .environment(Environment.prod)
                 .instances("instance1")
                 .region(zone.region().value())
                 .build();
@@ -1600,7 +1647,7 @@ public class ApplicationApiTest extends ControllerContainerTest {
 
     private void setZoneInRotation(String rotationName, ZoneId zone) {
         tester.serviceRegistry().globalRoutingServiceMock().setStatus(rotationName, zone, com.yahoo.vespa.hosted.controller.api.integration.routing.RotationStatus.IN);
-        new RotationStatusUpdater(tester.controller(), Duration.ofDays(1)).run();
+        //new RotationStatusUpdater(tester.controller(), Duration.ofDays(1)).run();
     }
 
     private void updateContactInformation() {

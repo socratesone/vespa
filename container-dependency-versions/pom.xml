@@ -171,6 +171,18 @@
                 <artifactId>javax.activation</artifactId>
                 <version>1.2.0</version>
             </dependency>
+            <dependency>
+                <!-- Needed by jackson-module-jaxb-annotations -->
+                <groupId>jakarta.xml.bind</groupId>
+                <artifactId>jakarta.xml.bind-api</artifactId>
+                <version>${jakarta-xml-bind-api.version}</version>
+            </dependency>
+            <dependency>
+                <!-- Needed by jackson-module-jaxb-annotations -->
+                <groupId>jakarta.activation</groupId>
+                <artifactId>jakarta.activation-api</artifactId>
+                <version>${jakarta-activation-api.version}</version>
+            </dependency>
             <!-- jaxb end -->
 
             <dependency>
@@ -313,7 +325,7 @@
                 <artifactId>javassist</artifactId>
                 <version>${javassist.version}</version>
             </dependency>
-	    <dependency> <!-- TODO Vespa 8: upgrade to newest version. Consider removing as provided dependency -->
+	        <dependency> <!-- TODO Vespa 8: remove as provided dependency -->
                 <groupId>org.json</groupId>
                 <artifactId>json</artifactId>
                 <version>${org.json.version}</version>
@@ -446,7 +458,7 @@
         <javax.inject.version>1</javax.inject.version>
         <javax.servlet-api.version>3.1.0</javax.servlet-api.version>
         <jaxb.version>2.3.0</jaxb.version>
-        <jetty.version>9.4.32.v20200930</jetty.version>
+        <jetty.version>9.4.38.v20210224</jetty.version>
         <org.lz4.version>1.7.1</org.lz4.version>
         <org.json.version>20090211</org.json.version>
         <slf4j.version>1.7.5</slf4j.version>
@@ -458,8 +470,10 @@
         <!-- and then verify  by doing: ' ls -l vespa/vespa_jersey2/target/dependency' -->
         <hk2.version>2.5.0-b32</hk2.version>
         <hk2.osgi-resource-locator.version>1.0.1</hk2.osgi-resource-locator.version>
-        <jackson2.version>2.8.11</jackson2.version>
-        <jackson-databind.version>${jackson2.version}.6</jackson-databind.version>
+        <jackson2.version>2.12.1</jackson2.version>
+        <jackson-databind.version>${jackson2.version}</jackson-databind.version>
+        <jakarta-activation-api.version>1.2.1</jakarta-activation-api.version>
+        <jakarta-xml-bind-api.version>2.3.2</jakarta-xml-bind-api.version>
         <javassist.version>3.20.0-GA</javassist.version>
         <javax.annotation-api.version>1.2</javax.annotation-api.version>
         <javax.validation-api.version>1.1.0.Final</javax.validation-api.version>

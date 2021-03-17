@@ -24,6 +24,7 @@ public class Http extends AbstractConfigProducer<AbstractConfigProducer<?>> impl
     private final List<FilterBinding> bindings = new CopyOnWriteArrayList<>();
     private volatile JettyHttpServer httpServer;
     private volatile AccessControl accessControl;
+    private volatile boolean strictFiltering = false; // TODO Vespa 8: Enable strict filtering by default if filtering is enabled
 
     public Http(FilterChains chains) {
         super("http");
@@ -72,6 +73,8 @@ public class Http extends AbstractConfigProducer<AbstractConfigProducer<?>> impl
         return Optional.ofNullable(accessControl);
     }
 
+    public void setStrictFiltering(boolean enabled) { this.strictFiltering = enabled; }
+
     @Override
     public void getConfig(ServerConfig.Builder builder) {
         for (FilterBinding binding : bindings) {
@@ -79,6 +82,8 @@ public class Http extends AbstractConfigProducer<AbstractConfigProducer<?>> impl
                     .id(binding.chainId().stringValue())
                     .binding(binding.binding().patternString()));
         }
+        populateDefaultFiltersConfig(builder, httpServer);
+        builder.strictFiltering(strictFiltering);
     }
 
     @Override
@@ -94,6 +99,21 @@ public class Http extends AbstractConfigProducer<AbstractConfigProducer<?>> impl
         for (FilterBinding binding: bindings) {
             if (filters.getComponent(binding.chainId()) == null && chains.getComponent(binding.chainId()) == null)
                 throw new RuntimeException("Can't find filter " + binding.chainId() + " for binding " + binding.binding());
+        }
+    }
+
+    private static void populateDefaultFiltersConfig(ServerConfig.Builder builder, JettyHttpServer httpServer) {
+        if (httpServer != null) {
+            for (ConnectorFactory connector : httpServer.getConnectorFactories()) {
+                connector.getDefaultRequestFilterChain().ifPresent(
+                        filterChain -> builder.defaultFilters(new ServerConfig.DefaultFilters.Builder()
+                                .filterId(filterChain.stringValue())
+                                .localPort(connector.getListenPort())));
+                connector.getDefaultResponseFilterChain().ifPresent(
+                        filterChain -> builder.defaultFilters(new ServerConfig.DefaultFilters.Builder()
+                                .filterId(filterChain.stringValue())
+                                .localPort(connector.getListenPort())));
+            }
         }
     }
 }

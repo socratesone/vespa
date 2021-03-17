@@ -20,7 +20,7 @@ private:
     const std::shared_ptr<const document::DocumentTypeRepo>          _repo;
     std::vector<IFeedView::SP>                    _views;
     std::vector<const ISimpleDocumentMetaStore *> _metaStores;
-    IBucketStateCalculator::SP                    _calc;
+    std::shared_ptr<IBucketStateCalculator>       _calc;
     bool                                          _clusterUp;
     bool                                          _forceReady;
     document::BucketSpace                         _bucketSpace;
@@ -48,14 +48,14 @@ private:
         return _views.size() > getNotReadyFeedViewId();
     }
 
-    bool shouldBeReady(const document::BucketId &bucket) const;
-    void forceCommit(search::SerialNum serialNum, DoneCallback onDone) override;
+    vespalib::Trinary shouldBeReady(const document::BucketId &bucket) const;
+    void forceCommit(const CommitParam & param, DoneCallback onDone) override;
 public:
     typedef std::shared_ptr<CombiningFeedView> SP;
 
     CombiningFeedView(const std::vector<IFeedView::SP> &views,
                       document::BucketSpace bucketSpace,
-                      const IBucketStateCalculator::SP &calc);
+                      const std::shared_ptr<IBucketStateCalculator> &calc);
 
     ~CombiningFeedView() override;
 
@@ -74,16 +74,14 @@ public:
     void prepareDeleteBucket(DeleteBucketOperation &delOp) override;
     void handleDeleteBucket(const DeleteBucketOperation &delOp) override;
     void prepareMove(MoveOperation &putOp) override;
-    void handleMove(const MoveOperation &moveOp, std::shared_ptr<search::IDestructorCallback> moveDoneCtx) override;
+    void handleMove(const MoveOperation &moveOp, std::shared_ptr<vespalib::IDestructorCallback> moveDoneCtx) override;
     void heartBeat(search::SerialNum serialNum) override;
     void sync() override;
     void handlePruneRemovedDocuments(const PruneRemovedDocumentsOperation &pruneOp) override;
     void handleCompactLidSpace(const CompactLidSpaceOperation &op) override;
-    ILidCommitState & getUncommittedLidsTracker() override;
 
     // Called by document db executor
-    void setCalculator(const IBucketStateCalculator::SP &newCalc);
-    bool allowEarlyAck() const override;
+    void setCalculator(const std::shared_ptr<IBucketStateCalculator> &newCalc);
 };
 
 } // namespace proton

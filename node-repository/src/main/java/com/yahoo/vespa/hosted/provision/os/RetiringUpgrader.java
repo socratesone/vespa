@@ -7,13 +7,12 @@ import com.yahoo.vespa.hosted.provision.Node;
 import com.yahoo.vespa.hosted.provision.NodeList;
 import com.yahoo.vespa.hosted.provision.NodeRepository;
 import com.yahoo.vespa.hosted.provision.node.Agent;
+import com.yahoo.vespa.hosted.provision.node.filter.NodeListFilter;
 
 import java.time.Duration;
 import java.time.Instant;
-import java.util.List;
 import java.util.Optional;
 import java.util.logging.Logger;
-import java.util.stream.Collectors;
 
 /**
  * An upgrader that retires and deprovisions nodes on stale OS versions. Retirement of each node is spread out in time,
@@ -35,8 +34,9 @@ public class RetiringUpgrader implements Upgrader {
 
     @Override
     public void upgradeTo(OsVersionTarget target) {
-        NodeList activeNodes = nodeRepository.list(Node.State.active).nodeType(target.nodeType());
-        if (activeNodes.size() == 0) return; // No nodes eligible for upgrade
+        NodeList allNodes = nodeRepository.nodes().list();
+        NodeList activeNodes = allNodes.state(Node.State.active).nodeType(target.nodeType());
+        if (activeNodes.isEmpty()) return; // No nodes eligible for upgrade
 
         Instant now = nodeRepository.clock().instant();
         Duration nodeBudget = target.upgradeBudget()
@@ -50,7 +50,7 @@ public class RetiringUpgrader implements Upgrader {
                    .not().deprovisioning()
                    .byIncreasingOsVersion()
                    .first(1)
-                   .forEach(node -> retire(node, target.version(), now));
+                   .forEach(node -> upgrade(node, target.version(), now));
     }
 
     @Override
@@ -58,27 +58,15 @@ public class RetiringUpgrader implements Upgrader {
         // No action needed in this implementation.
     }
 
-    /** Retire and deprovision given host and its children */
-    private void retire(Node host, Version target, Instant now) {
-        if (!host.type().isHost()) throw new IllegalArgumentException("Cannot retire non-host " + host);
-        try (var lock = nodeRepository.lock(host)) {
-            Optional<Node> currentNode = nodeRepository.getNode(host.hostname());
-            if (currentNode.isEmpty()) return;
-            host = currentNode.get();
-            NodeType nodeType = host.type();
-            List<Node> nodesToRetire = nodeRepository.list().childrenOf(host).stream()
-                                                     .map(child -> child.withWantToRetire(true, Agent.RetiringUpgrader, now))
-                                                     .collect(Collectors.toList());
-            LOG.info("Retiring and deprovisioning " + host + ": On stale OS version " +
-                     host.status().osVersion().current().map(Version::toFullString).orElse("<unset>") +
-                     ", want " + target);
-
-            host = host.withWantToRetire(true, true, Agent.RetiringUpgrader, now);
-            host = host.with(host.status().withOsVersion(host.status().osVersion().withWanted(Optional.of(target))));
-            nodesToRetire.add(host);
-            nodeRepository.write(nodesToRetire, lock);
-            nodeRepository.osVersions().writeChange((change) -> change.withRetirementAt(now, nodeType));
-        }
+    /** Upgrade given host by retiring and deprovisioning it */
+    private void upgrade(Node host, Version target, Instant now) {
+        LOG.info("Retiring and deprovisioning " + host + ": On stale OS version " +
+                 host.status().osVersion().current().map(Version::toFullString).orElse("<unset>") +
+                 ", want " + target);
+        nodeRepository.nodes().deprovision(host, Agent.RetiringUpgrader, now);
+        nodeRepository.nodes().upgradeOs(NodeListFilter.from(host), Optional.of(target));
+        NodeType nodeType = host.type();
+        nodeRepository.osVersions().writeChange((change) -> change.withRetirementAt(now, nodeType));
     }
 
 }

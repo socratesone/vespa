@@ -2,7 +2,6 @@
 package com.yahoo.vespa.hosted.controller.maintenance;
 
 import com.yahoo.component.Version;
-import com.yahoo.config.provision.Environment;
 import com.yahoo.vespa.hosted.controller.api.integration.deployment.JobType;
 import com.yahoo.vespa.hosted.controller.api.integration.deployment.SourceRevision;
 import com.yahoo.vespa.hosted.controller.application.ApplicationPackage;
@@ -30,7 +29,6 @@ public class OutstandingChangeDeployerTest {
         DeploymentTester tester = new DeploymentTester();
         OutstandingChangeDeployer deployer = new OutstandingChangeDeployer(tester.controller(), Duration.ofMinutes(10));
         ApplicationPackage applicationPackage = new ApplicationPackageBuilder()
-                .environment(Environment.prod)
                 .region("us-west-1")
                 .build();
 

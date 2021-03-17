@@ -3,7 +3,7 @@
 #pragma once
 
 #include <vespa/searchcore/proton/common/pendinglidtracker.h>
-#include <vespa/searchlib/common/idestructorcallback.h>
+#include <vespa/vespalib/util/idestructorcallback.h>
 
 namespace vespalib { class Executor; }
 
@@ -12,6 +12,7 @@ namespace proton {
 class ForceCommitDoneTask;
 struct IDocumentMetaStore;
 class DocIdLimit;
+class IPendingGidToLidChanges;
 
 /**
  * Context class for forced commits that schedules a task when
@@ -20,9 +21,9 @@ class DocIdLimit;
  * a larger task before dropping the shared pointer, triggering the
  * callback when all worker threads have completed.
  */
-class ForceCommitContext : public search::IDestructorCallback
+class ForceCommitContext : public vespalib::IDestructorCallback
 {
-    using IDestructorCallback = search::IDestructorCallback;
+    using IDestructorCallback = vespalib::IDestructorCallback;
     vespalib::Executor                   &_executor;
     std::unique_ptr<ForceCommitDoneTask>  _task;
     uint32_t                              _committedDocIdLimit;
@@ -34,6 +35,7 @@ public:
     ForceCommitContext(vespalib::Executor &executor,
                        IDocumentMetaStore &documentMetaStore,
                        PendingLidTrackerBase::Snapshot lidsToCommit,
+                       std::unique_ptr<IPendingGidToLidChanges> pending_gid_to_lid_changes,
                        std::shared_ptr<IDestructorCallback> onDone);
 
     ~ForceCommitContext() override;

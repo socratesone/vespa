@@ -29,6 +29,9 @@ namespace document::internal { class InternalDocumenttypesType; }
 
 namespace proton {
 
+class ThreadingServiceConfig;
+class AllocConfig;
+
 class DocumentDBConfig
 {
 public:
@@ -52,6 +55,8 @@ public:
         bool storeChanged;
         bool visibilityDelayChanged;
         bool flushChanged;
+        bool threading_service_config_changed;
+        bool alloc_config_changed;
 
         ComparisonResult();
         ComparisonResult &setRankProfilesChanged(bool val) { rankProfilesChanged = val; return *this; }
@@ -84,6 +89,8 @@ public:
             }
             return *this;
         }
+        ComparisonResult &set_threading_service_config_changed(bool val) { threading_service_config_changed = val; return *this; }
+        ComparisonResult &set_alloc_config_changed(bool val) { alloc_config_changed = val; return *this; }
     };
 
     using SP = std::shared_ptr<DocumentDBConfig>;
@@ -126,6 +133,8 @@ private:
     search::index::Schema::SP        _schema;
     MaintenanceConfigSP              _maintenance;
     search::LogDocumentStore::Config _storeConfig;
+    std::shared_ptr<const ThreadingServiceConfig> _threading_service_config;
+    std::shared_ptr<const AllocConfig> _alloc_config;
     SP                               _orig;
     bool                             _delayedAttributeAspects;
 
@@ -163,8 +172,10 @@ public:
                      const search::index::Schema::SP &schema,
                      const DocumentDBMaintenanceConfig::SP &maintenance,
                      const search::LogDocumentStore::Config & storeConfig,
+                     std::shared_ptr<const ThreadingServiceConfig> threading_service_config,
+                     std::shared_ptr<const AllocConfig> alloc_config,
                      const vespalib::string &configId,
-                     const vespalib::string &docTypeName);
+                     const vespalib::string &docTypeName) noexcept;
 
     DocumentDBConfig(const DocumentDBConfig &cfg);
     ~DocumentDBConfig();
@@ -202,6 +213,10 @@ public:
     const MaintenanceConfigSP &getMaintenanceConfigSP() const { return _maintenance; }
     const search::TuneFileDocumentDB::SP &getTuneFileDocumentDBSP() const { return _tuneFileDocumentDB; }
     bool getDelayedAttributeAspects() const { return _delayedAttributeAspects; }
+    const ThreadingServiceConfig& get_threading_service_config() const { return *_threading_service_config; }
+    const std::shared_ptr<const ThreadingServiceConfig>& get_threading_service_config_shared_ptr() const { return _threading_service_config; }
+    const AllocConfig& get_alloc_config() const { return *_alloc_config; }
+    const std::shared_ptr<const AllocConfig>& get_alloc_config_shared_ptr() const { return _alloc_config; }
 
     bool operator==(const DocumentDBConfig &rhs) const;
 

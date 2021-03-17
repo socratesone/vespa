@@ -64,12 +64,8 @@ get_var() {
    ret_val=$2
 
    env_var_name=`echo $arg | tr '[:lower:]' '[:upper:]'`
-   prefixed_var_name1=services__${arg}
-   prefixed_var_name2=vespa_base__${arg}
 
    if   varhasvalue $env_var_name       ; then eval "ret_val=\${$env_var_name}"
-   elif varhasvalue $prefixed_var_name1 ; then eval "ret_val=\${$prefixed_var_name1}"
-   elif varhasvalue $prefixed_var_name2 ; then eval "ret_val=\${$prefixed_var_name2}"
    fi
    echo "$ret_val"
 }
@@ -205,7 +201,7 @@ checkjava () {
 }
 
 runvalidation() {
-    run=$vespa_base__validationscript
+    run=$VESPA_VALIDATIONSCRIPT
     if [ "$run" ]; then
 	if [ -x "$run" ]; then
 	    if $run ; then

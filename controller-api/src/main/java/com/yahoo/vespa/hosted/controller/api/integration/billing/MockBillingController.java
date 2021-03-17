@@ -1,7 +1,6 @@
 // Copyright Verizon Media. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.hosted.controller.api.integration.billing;
 
-import com.yahoo.config.provision.Environment;
 import com.yahoo.config.provision.TenantName;
 import com.yahoo.vespa.hosted.controller.api.integration.user.User;
 
@@ -9,11 +8,13 @@ import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.ZonedDateTime;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
  * @author olaa
@@ -25,6 +26,7 @@ public class MockBillingController implements BillingController {
     Map<TenantName, List<Invoice>> committedInvoices = new HashMap<>();
     Map<TenantName, Invoice> uncommittedInvoices = new HashMap<>();
     Map<TenantName, List<Invoice.LineItem>> unusedLineItems = new HashMap<>();
+    Map<TenantName, CollectionMethod> collectionMethod = new HashMap<>();
 
     @Override
     public PlanId getPlan(TenantName tenant) {
@@ -32,8 +34,20 @@ public class MockBillingController implements BillingController {
     }
 
     @Override
-    public Optional<Quota> getQuota(TenantName tenant, Environment environment) {
-        return Optional.of(Quota.unlimited().withMaxClusterSize(5));
+    public List<TenantName> tenantsWithPlan(List<TenantName> tenants, PlanId planId) {
+        return tenants.stream()
+                .filter(t -> plans.getOrDefault(t, PlanId.from("trial")).equals(planId))
+                .collect(Collectors.toList());
+    }
+
+    @Override
+    public String getPlanDisplayName(PlanId planId) {
+        return "Plan with id: " + planId.value();
+    }
+
+    @Override
+    public Quota getQuota(TenantName tenant) {
+        return Quota.unlimited().withMaxClusterSize(5);
     }
 
     @Override
@@ -48,6 +62,7 @@ public class MockBillingController implements BillingController {
         committedInvoices.computeIfAbsent(tenant, l -> new ArrayList<>())
                 .add(new Invoice(
                         invoiceId,
+                        tenant,
                         Invoice.StatusHistory.open(),
                         List.of(),
                         startTime,
@@ -129,12 +144,28 @@ public class MockBillingController implements BillingController {
     }
 
     @Override
-    public List<Invoice> getInvoices(TenantName tenant) {
+    public List<Invoice> getInvoicesForTenant(TenantName tenant) {
         return committedInvoices.getOrDefault(tenant, List.of());
     }
 
     @Override
+    public List<Invoice> getInvoices() {
+        return committedInvoices.values().stream().flatMap(Collection::stream).collect(Collectors.toList());
+    }
+
+    @Override
     public void deleteBillingInfo(TenantName tenant, Set<User> users, boolean isPrivileged) {}
+
+    @Override
+    public CollectionMethod getCollectionMethod(TenantName tenant) {
+        return collectionMethod.getOrDefault(tenant, CollectionMethod.AUTO);
+    }
+
+    @Override
+    public CollectionResult setCollectionMethod(TenantName tenant, CollectionMethod method) {
+        collectionMethod.put(tenant, method);
+        return CollectionResult.success();
+    }
 
     private PaymentInstrument createInstrument(String id) {
         return new PaymentInstrument(id,
@@ -161,6 +192,6 @@ public class MockBillingController implements BillingController {
     }
 
     private Invoice emptyInvoice() {
-        return new Invoice(Invoice.Id.of("empty"), Invoice.StatusHistory.open(), List.of(), ZonedDateTime.now(), ZonedDateTime.now());
+        return new Invoice(Invoice.Id.of("empty"), TenantName.defaultName(), Invoice.StatusHistory.open(), List.of(), ZonedDateTime.now(), ZonedDateTime.now());
     }
 }

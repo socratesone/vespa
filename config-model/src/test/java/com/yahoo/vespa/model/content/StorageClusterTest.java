@@ -75,6 +75,7 @@ public class StorageClusterTest {
         StorServerConfig config = new StorServerConfig(builder);
         assertFalse(config.is_distributor());
         assertEquals("foofighters", config.cluster_name());
+        assertEquals(4, config.content_node_bucket_db_stripe_bits());
     }
     @Test
     public void testCommunicationManagerDefaults() {
@@ -265,9 +266,8 @@ public class StorageClusterTest {
         }
     }
 
-    @Test
-    public void testFeatureFlagControlOfResponseSequencer() {
-        StorageCluster stc = parse(
+    private StorageCluster simpleCluster(ModelContext.Properties properties) {
+        return parse(
                 "<cluster id=\"bees\">\n" +
                         "    <documents/>" +
                         "  <group>" +
@@ -275,13 +275,28 @@ public class StorageClusterTest {
                         "  </group>" +
                         "</cluster>",
                 new Flavor(new FlavorsConfig.Flavor.Builder().name("test-flavor").minCpuCores(9).build()),
-                new TestProperties().setResponseNumThreads(13).setResponseSequencerType("THROUGHPUT")
-        );
+                properties);
+    }
+
+    @Test
+    public void testFeatureFlagControlOfResponseSequencer() {
         StorFilestorConfig.Builder builder = new StorFilestorConfig.Builder();
-        stc.getConfig(builder);
+        simpleCluster(new TestProperties().setResponseNumThreads(13).setResponseSequencerType("THROUGHPUT")).getConfig(builder);
         StorFilestorConfig config = new StorFilestorConfig(builder);
         assertEquals(13, config.num_response_threads());
         assertEquals(StorFilestorConfig.Response_sequencer_type.THROUGHPUT, config.response_sequencer_type());
+    }
+
+    private void verifyAsyncMessageHandlingOnSchedule(boolean expected, boolean value) {
+        StorFilestorConfig.Builder builder = new StorFilestorConfig.Builder();
+        simpleCluster(new TestProperties().setAsyncMessageHandlingOnSchedule(value)).getConfig(builder);
+        StorFilestorConfig config = new StorFilestorConfig(builder);
+        assertEquals(expected, config.use_async_message_handling_on_schedule());
+    }
+    @Test
+    public void testFeatureFlagControlOfAsyncMessageHandlingOnSchedule() {
+        verifyAsyncMessageHandlingOnSchedule(false, false);
+        verifyAsyncMessageHandlingOnSchedule(true, true);
     }
 
     @Test

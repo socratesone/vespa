@@ -20,6 +20,7 @@
 
 namespace proton {
 
+class AllocStrategy;
 struct DocumentDBTaggedMetrics;
 class DocumentMetaStoreInitializerResult;
 class FeedHandler;
@@ -50,8 +51,6 @@ public:
     void close() override { }
 };
 
-class StoreOnlyDocSubDB;
-
 /**
  * File header context used by the store-only sub database.
  *
@@ -65,8 +64,7 @@ class StoreOnlySubDBFileHeaderContext : public search::common::FileHeaderContext
     vespalib::string _subDB;
 
 public:
-    StoreOnlySubDBFileHeaderContext(StoreOnlyDocSubDB &owner,
-                                    const search::common::FileHeaderContext & parentFileHeaderContext,
+    StoreOnlySubDBFileHeaderContext(const search::common::FileHeaderContext & parentFileHeaderContext,
                                     const DocTypeName &docTypeName,
                                     const vespalib::string &baseDir);
     ~StoreOnlySubDBFileHeaderContext();
@@ -84,18 +82,17 @@ public:
 class StoreOnlyDocSubDB : public DocSubDB
 {
 public:
+    using BucketDBOwnerSP = std::shared_ptr<bucketdb::BucketDBOwner>;
     struct Config {
         const DocTypeName _docTypeName;
         const vespalib::string _subName;
         const vespalib::string _baseDir;
-        const search::GrowStrategy _attributeGrow;
-        const size_t _attributeGrowNumDocs;
         const uint32_t _subDbId;
         const SubDbType _subDbType;
 
         Config(const DocTypeName &docTypeName, const vespalib::string &subName,
-               const vespalib::string &baseDir, const search::GrowStrategy &attributeGrow,
-               size_t attributeGrowNumDocs, uint32_t subDbId, SubDbType subDbType);
+               const vespalib::string &baseDir,
+               uint32_t subDbId, SubDbType subDbType);
         ~Config();
     };
 
@@ -105,7 +102,7 @@ public:
         const IGetSerialNum &_getSerialNum;
         const search::common::FileHeaderContext &_fileHeaderContext;
         searchcorespi::index::IThreadingService &_writeService;
-        std::shared_ptr<BucketDBOwner> _bucketDB;
+        BucketDBOwnerSP _bucketDB;
         bucketdb::IBucketDBHandlerInitializer &_bucketDBHandlerInitializer;
         DocumentDBTaggedMetrics &_metrics;
         std::mutex &_configMutex;
@@ -116,7 +113,7 @@ public:
                 const IGetSerialNum &getSerialNum,
                 const search::common::FileHeaderContext &fileHeaderContext,
                 searchcorespi::index::IThreadingService &writeService,
-                std::shared_ptr<BucketDBOwner> bucketDB,
+                BucketDBOwnerSP bucketDB,
                 bucketdb::IBucketDBHandlerInitializer &
                 bucketDBHandlerInitializer,
                 DocumentDBTaggedMetrics &metrics,
@@ -130,11 +127,9 @@ protected:
     const DocTypeName             _docTypeName;
     const vespalib::string        _subName;
     const vespalib::string        _baseDir;
-    BucketDBOwner::SP             _bucketDB;
+    BucketDBOwnerSP               _bucketDB;
     bucketdb::IBucketDBHandlerInitializer &_bucketDBHandlerInitializer;
     IDocumentMetaStoreContext::SP _metaStoreCtx;
-    const search::GrowStrategy    _attributeGrow;
-    const size_t                  _attributeGrowNumDocs;
     // The following two serial numbers reflect state at program startup
     // and are used by replay logic.
     SerialNum                     _flushedDocumentMetaStoreSerialNum;
@@ -156,6 +151,7 @@ private:
     TlsSyncer                        _tlsSyncer;
     DocumentMetaStoreFlushTarget::SP _dmsFlushTarget;
     std::shared_ptr<ShrinkLidSpaceFlushTarget> _dmsShrinkTarget;
+    std::shared_ptr<PendingLidTrackerBase>     _pendingLidsForCommit;
 
     IFlushTargetList getFlushTargets() override;
 protected:
@@ -166,6 +162,7 @@ protected:
 
     std::shared_ptr<initializer::InitializerTask>
     createSummaryManagerInitializer(const search::LogDocumentStore::Config & protonSummaryCfg,
+                                    const AllocStrategy& alloc_strategy,
                                     const search::TuneFileSummary &tuneFile,
                                     search::IBucketizer::SP bucketizer,
                                     std::shared_ptr<SummaryManager::SP> result) const;
@@ -173,7 +170,8 @@ protected:
     void setupSummaryManager(SummaryManager::SP summaryManager);
 
     std::shared_ptr<initializer::InitializerTask>
-    createDocumentMetaStoreInitializer(const search::TuneFileAttributes &tuneFile,
+    createDocumentMetaStoreInitializer(const AllocStrategy& alloc_strategy,
+                                       const search::TuneFileAttributes &tuneFile,
                                        std::shared_ptr<std::shared_ptr<DocumentMetaStoreInitializerResult>> result) const;
 
     void setupDocumentMetaStore(std::shared_ptr<DocumentMetaStoreInitializerResult> dmsResult);
@@ -183,7 +181,8 @@ protected:
     StoreOnlyFeedView::PersistentParams getFeedViewPersistentParams();
     vespalib::string getSubDbName() const;
 
-    void reconfigure(const search::LogDocumentStore::Config & protonConfig);
+    void reconfigure(const search::LogDocumentStore::Config & protonConfig,
+                     const AllocStrategy& alloc_strategy);
 public:
     StoreOnlyDocSubDB(const Config &cfg, const Context &ctx);
     ~StoreOnlyDocSubDB() override;
@@ -233,6 +232,7 @@ public:
     void close() override;
     std::shared_ptr<IDocumentDBReference> getDocumentDBReference() override;
     void tearDownReferences(IDocumentDBReferenceResolver &resolver) override;
+    PendingLidTrackerBase & getUncommittedLidsTracker() override { return *_pendingLidsForCommit; }
 };
 
 }

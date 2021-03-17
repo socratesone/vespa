@@ -884,10 +884,12 @@
       "public void <init>(java.lang.String, java.lang.String)",
       "public int getTargetNumHits()",
       "public java.lang.String getIndexName()",
+      "public double getDistanceThreshold()",
       "public int getHnswExploreAdditionalHits()",
       "public boolean getAllowApproximate()",
       "public java.lang.String getQueryTensorName()",
       "public void setTargetNumHits(int)",
+      "public void setDistanceThreshold(double)",
       "public void setHnswExploreAdditionalHits(int)",
       "public void setAllowApproximate(boolean)",
       "public void setIndexName(java.lang.String)",
@@ -1556,6 +1558,7 @@
       "public static com.yahoo.prelude.query.TermType OR",
       "public static com.yahoo.prelude.query.TermType NOT",
       "public static com.yahoo.prelude.query.TermType PHRASE",
+      "public static com.yahoo.prelude.query.TermType EQUIV",
       "public static com.yahoo.prelude.query.TermType DEFAULT",
       "public final java.lang.String name"
     ]
@@ -4264,6 +4267,8 @@
       "public final java.lang.String getDefMd5()",
       "public final java.lang.String getDefName()",
       "public final java.lang.String getDefNamespace()",
+      "public final boolean getApplyOnRestart()",
+      "public final void setApplyOnRestart(boolean)",
       "public com.yahoo.search.handler.SearchWithRendererHandlerConfig build()"
     ],
     "fields": []
@@ -4505,6 +4510,8 @@
       "public final java.lang.String getDefMd5()",
       "public final java.lang.String getDefName()",
       "public final java.lang.String getDefNamespace()",
+      "public final boolean getApplyOnRestart()",
+      "public final void setApplyOnRestart(boolean)",
       "public com.yahoo.search.pagetemplates.PageTemplatesConfig build()"
     ],
     "fields": [
@@ -4567,6 +4574,8 @@
       "public final java.lang.String getDefMd5()",
       "public final java.lang.String getDefName()",
       "public final java.lang.String getDefNamespace()",
+      "public final boolean getApplyOnRestart()",
+      "public final void setApplyOnRestart(boolean)",
       "public com.yahoo.search.pagetemplates.ResolversConfig build()"
     ],
     "fields": [
@@ -5613,6 +5622,19 @@
     ],
     "fields": []
   },
+  "com.yahoo.search.query.profile.CompoundNameChildCache": {
+    "superClass": "java.lang.Object",
+    "interfaces": [],
+    "attributes": [
+      "public",
+      "final"
+    ],
+    "methods": [
+      "public void <init>()",
+      "public com.yahoo.processing.request.CompoundName append(com.yahoo.processing.request.CompoundName, java.lang.String)"
+    ],
+    "fields": []
+  },
   "com.yahoo.search.query.profile.CopyOnWriteContent": {
     "superClass": "com.yahoo.component.provider.FreezableClass",
     "interfaces": [
@@ -5759,6 +5781,7 @@
       "public void setValue(java.lang.Object)",
       "public java.util.List getDimensions()",
       "public final void setOverridable(java.lang.String, boolean, java.util.Map)",
+      "public final void setOverridable(java.lang.String, boolean, com.yahoo.search.query.profile.DimensionValues)",
       "public final java.util.Map listValues(java.lang.String)",
       "public final java.util.Map listValues(com.yahoo.processing.request.CompoundName)",
       "public final java.util.Map listValues(java.lang.String, java.util.Map)",
@@ -5868,7 +5891,9 @@
       "public com.yahoo.search.query.profile.DimensionValues getDimensionValues()",
       "public java.util.Map values()",
       "public java.util.List inherited()",
-      "public void set(java.lang.String, java.lang.Object)",
+      "public java.lang.Object set(java.lang.String, java.lang.Object)",
+      "public void setOverridable(java.lang.String, boolean)",
+      "public java.lang.Boolean isOverridable(java.lang.String)",
       "public void inherit(com.yahoo.search.query.profile.QueryProfile)",
       "public int compareTo(com.yahoo.search.query.profile.QueryProfileVariant)",
       "public boolean matches(com.yahoo.search.query.profile.DimensionValues)",
@@ -5899,6 +5924,7 @@
       "public int compareTo(com.yahoo.search.query.profile.QueryProfileVariants$FieldValue)",
       "public com.yahoo.search.query.profile.QueryProfileVariants$FieldValue clone(java.lang.String, java.util.List)",
       "public com.yahoo.search.query.profile.QueryProfileVariants$FieldValue clone()",
+      "public java.lang.String toString()",
       "public bridge synthetic java.lang.Object clone()",
       "public bridge synthetic int compareTo(java.lang.Object)"
     ],
@@ -5947,6 +5973,8 @@
       "public java.lang.Object get(java.lang.String, com.yahoo.search.query.profile.types.QueryProfileType, boolean, com.yahoo.search.query.profile.DimensionBinding)",
       "public void inherit(com.yahoo.search.query.profile.QueryProfile, com.yahoo.search.query.profile.DimensionValues)",
       "public void set(java.lang.String, com.yahoo.search.query.profile.DimensionValues, java.lang.Object)",
+      "public void setOverridable(java.lang.String, boolean, com.yahoo.search.query.profile.DimensionValues)",
+      "public java.lang.Boolean isOverridable(java.lang.String, com.yahoo.search.query.profile.DimensionValues)",
       "public java.util.List getDimensions()",
       "public java.util.Map getFieldValues()",
       "public com.yahoo.search.query.profile.QueryProfileVariants$FieldValues getInherited()",
@@ -5954,6 +5982,7 @@
       "public com.yahoo.search.query.profile.QueryProfileVariants clone()",
       "protected void ensureNotFrozen()",
       "public com.yahoo.search.query.profile.QueryProfileVariant getVariant(com.yahoo.search.query.profile.DimensionValues, boolean)",
+      "public java.lang.String toString()",
       "public bridge synthetic java.lang.Object clone()"
     ],
     "fields": []
@@ -6082,6 +6111,7 @@
       "public final java.lang.Object get(java.lang.String, java.util.Map)",
       "public final java.lang.Object get(java.lang.String, java.util.Map, com.yahoo.processing.request.Properties)",
       "public final java.lang.Object get(com.yahoo.processing.request.CompoundName, java.util.Map, com.yahoo.processing.request.Properties)",
+      "public final com.yahoo.search.query.profile.compiled.DimensionalMap getEntries()",
       "public com.yahoo.search.query.profile.compiled.CompiledQueryProfile clone()",
       "public java.lang.String toString()",
       "public bridge synthetic com.yahoo.component.AbstractComponent clone()",
@@ -6115,7 +6145,7 @@
     ],
     "methods": [
       "public void <init>()",
-      "public void put(com.yahoo.processing.request.CompoundName, com.yahoo.search.query.profile.DimensionBinding, java.lang.Object)",
+      "public void put(com.yahoo.processing.request.CompoundName, com.yahoo.search.query.profile.compiled.Binding, java.lang.Object)",
       "public com.yahoo.search.query.profile.compiled.DimensionalMap build()"
     ],
     "fields": []
@@ -6142,7 +6172,7 @@
     "methods": [
       "public void <init>()",
       "public java.lang.Object valueFor(com.yahoo.search.query.profile.compiled.Binding)",
-      "public void add(java.lang.Object, com.yahoo.search.query.profile.DimensionBinding)",
+      "public void add(java.lang.Object, com.yahoo.search.query.profile.compiled.Binding)",
       "public com.yahoo.search.query.profile.compiled.DimensionalValue build(java.util.Map)"
     ],
     "fields": []
@@ -6815,6 +6845,8 @@
       "public final java.lang.String getDefMd5()",
       "public final java.lang.String getDefName()",
       "public final java.lang.String getDefNamespace()",
+      "public final boolean getApplyOnRestart()",
+      "public final void setApplyOnRestart(boolean)",
       "public com.yahoo.search.query.rewrite.RewritesConfig build()"
     ],
     "fields": [
@@ -7966,6 +7998,18 @@
     ],
     "fields": []
   },
+  "com.yahoo.search.searchers.QueryValidator": {
+    "superClass": "com.yahoo.search.Searcher",
+    "interfaces": [],
+    "attributes": [
+      "public"
+    ],
+    "methods": [
+      "public void <init>()",
+      "public com.yahoo.search.Result search(com.yahoo.search.Query, com.yahoo.search.searchchain.Execution)"
+    ],
+    "fields": []
+  },
   "com.yahoo.search.searchers.RateLimitingSearcher": {
     "superClass": "com.yahoo.search.Searcher",
     "interfaces": [],
@@ -8053,6 +8097,8 @@
       "public final java.lang.String getDefMd5()",
       "public final java.lang.String getDefName()",
       "public final java.lang.String getDefNamespace()",
+      "public final boolean getApplyOnRestart()",
+      "public final void setApplyOnRestart(boolean)",
       "public com.yahoo.search.statistics.MeasureQpsConfig build()"
     ],
     "fields": []
@@ -8247,6 +8293,8 @@
       "public final java.lang.String getDefMd5()",
       "public final java.lang.String getDefName()",
       "public final java.lang.String getDefNamespace()",
+      "public final boolean getApplyOnRestart()",
+      "public final void setApplyOnRestart(boolean)",
       "public com.yahoo.search.statistics.TimingSearcherConfig build()"
     ],
     "fields": [

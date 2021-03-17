@@ -3,6 +3,9 @@
 #include "btree_bucket_database.h"
 #include "generic_btree_bucket_database.hpp"
 #include <vespa/vespalib/datastore/array_store.hpp>
+#include <vespa/vespalib/datastore/buffer_type.hpp>
+#include <vespa/vespalib/util/memory_allocator.h>
+#include <vespa/vespalib/util/size_literals.h>
 #include <iostream>
 
 /*
@@ -35,7 +38,7 @@ using document::BucketId;
 template <typename ReplicaStore>
 vespalib::datastore::ArrayStoreConfig make_default_array_store_config() {
     return ReplicaStore::optimizedConfigForHugePage(1023, vespalib::alloc::MemoryAllocator::HUGEPAGE_SIZE,
-                                                    4 * 1024, 8 * 1024, 0.2).enable_free_lists(true);
+                                                    4_Ki, 8_Ki, 0.2).enable_free_lists(true);
 }
 
 namespace {
@@ -139,6 +142,12 @@ void BTreeBucketDatabase::update(const Entry& newEntry) {
     _impl->update(newEntry.getBucketId(), newEntry);
 }
 
+void
+BTreeBucketDatabase::process_update(const document::BucketId& bucket, EntryUpdateProcessor &processor, bool create_if_nonexisting)
+{
+    _impl->process_update(bucket, processor, create_if_nonexisting);
+}
+
 // TODO need snapshot read with guarding
 // FIXME semantics of for-each in judy and bit tree DBs differ, former expects lbound, latter ubound..!
 // FIXME but bit-tree code says "lowerBound" in impl and "after" in declaration???
@@ -195,7 +204,9 @@ vespalib::MemoryUsage BTreeBucketDatabase::memory_usage() const noexcept {
     return _impl->memory_usage();
 }
 
-class BTreeBucketDatabase::ReadGuardImpl final : public bucketdb::ReadGuard<Entry> {
+class BTreeBucketDatabase::ReadGuardImpl final
+    : public bucketdb::ReadGuard<Entry, ConstEntryRef>
+{
     ImplType::ReadSnapshot _snapshot;
 public:
     explicit ReadGuardImpl(const BTreeBucketDatabase& db);
@@ -204,6 +215,7 @@ public:
     std::vector<Entry> find_parents_and_self(const document::BucketId& bucket) const override;
     std::vector<Entry> find_parents_self_and_children(const document::BucketId& bucket) const override;
     void for_each(std::function<void(uint64_t, const Entry&)> func) const override;
+    std::unique_ptr<bucketdb::ConstIterator<ConstEntryRef>> create_iterator() const override;
     [[nodiscard]] uint64_t generation() const noexcept override;
 };
 
@@ -235,11 +247,17 @@ void BTreeBucketDatabase::ReadGuardImpl::for_each(std::function<void(uint64_t, c
     _snapshot.for_each<ByValue>(std::move(func));
 }
 
+std::unique_ptr<bucketdb::ConstIterator<ConstEntryRef>>
+BTreeBucketDatabase::ReadGuardImpl::create_iterator() const {
+    return _snapshot.create_iterator(); // TODO test
+}
+
 uint64_t BTreeBucketDatabase::ReadGuardImpl::generation() const noexcept {
     return _snapshot.generation();
 }
 
-std::unique_ptr<bucketdb::ReadGuard<Entry>> BTreeBucketDatabase::acquire_read_guard() const {
+std::unique_ptr<bucketdb::ReadGuard<Entry, ConstEntryRef>>
+BTreeBucketDatabase::acquire_read_guard() const {
     return std::make_unique<ReadGuardImpl>(*this);
 }
 

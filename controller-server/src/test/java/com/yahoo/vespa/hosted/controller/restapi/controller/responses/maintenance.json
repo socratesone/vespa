@@ -7,10 +7,19 @@
       "name": "ApplicationOwnershipConfirmer"
     },
     {
+      "name": "ArchiveUriUpdater"
+    },
+    {
+      "name": "ChangeRequestMaintainer"
+    },
+    {
       "name": "CloudEventReporter"
     },
     {
       "name": "ContactInformationMaintainer"
+    },
+    {
+      "name": "ContainerImageExpirer"
     },
     {
       "name": "CostReportMaintainer"
@@ -28,6 +37,12 @@
       "name": "DeploymentMetricsMaintainer"
     },
     {
+      "name": "EndpointCertificateMaintainer"
+    },
+    {
+      "name": "HostSwitchUpdater"
+    },
+    {
       "name": "JobRunner"
     },
     {
@@ -35,6 +50,9 @@
     },
     {
       "name": "NameServiceDispatcher"
+    },
+    {
+      "name": "OsUpgradeScheduler"
     },
     {
       "name": "OsVersionStatusUpdater"
@@ -46,19 +64,25 @@
       "name": "ReadyJobsTrigger"
     },
     {
+      "name": "ReindexingTriggerer"
+    },
+    {
       "name": "ResourceMeterMaintainer"
     },
     {
       "name": "ResourceTagMaintainer"
     },
     {
-      "name": "RotationStatusUpdater"
-    },
-    {
       "name": "SystemRoutingPolicyMaintainer"
     },
     {
       "name": "SystemUpgrader"
+    },
+    {
+      "name":"TenantRoleMaintainer"
+    },
+    {
+      "name": "TrafficShareUpdater"
     },
     {
       "name": "Upgrader"

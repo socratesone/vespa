@@ -5,11 +5,13 @@ import com.yahoo.config.provision.ApplicationId;
 import com.yahoo.config.provision.DockerImage;
 import com.yahoo.config.provision.zone.ZoneId;
 import com.yahoo.vespa.athenz.api.AthenzDomain;
-import com.yahoo.vespa.hosted.controller.api.integration.aws.ApplicationRoles;
+import com.yahoo.vespa.hosted.controller.api.integration.aws.TenantRoles;
 import com.yahoo.vespa.hosted.controller.api.integration.billing.Quota;
 import com.yahoo.vespa.hosted.controller.api.integration.certificates.EndpointCertificateMetadata;
 import com.yahoo.vespa.hosted.controller.api.integration.configserver.ContainerEndpoint;
+import com.yahoo.vespa.hosted.controller.api.integration.secrets.TenantSecretStore;
 
+import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 
@@ -30,16 +32,18 @@ public class DeploymentData {
     private final Optional<EndpointCertificateMetadata> endpointCertificateMetadata;
     private final Optional<DockerImage> dockerImageRepo;
     private final Optional<AthenzDomain> athenzDomain;
-    private final Optional<ApplicationRoles> applicationRoles;
-    private final Optional<Quota> quota;
+    private final Optional<TenantRoles> tenantRoles;
+    private final Quota quota;
+    private final List<TenantSecretStore> tenantSecretStores;
 
     public DeploymentData(ApplicationId instance, ZoneId zone, byte[] applicationPackage, Version platform,
                           Set<ContainerEndpoint> containerEndpoints,
                           Optional<EndpointCertificateMetadata> endpointCertificateMetadata,
                           Optional<DockerImage> dockerImageRepo,
                           Optional<AthenzDomain> athenzDomain,
-                          Optional<ApplicationRoles> applicationRoles,
-                          Optional<Quota> quota) {
+                          Optional<TenantRoles> tenantRoles,
+                          Quota quota,
+                          List<TenantSecretStore> tenantSecretStores) {
         this.instance = requireNonNull(instance);
         this.zone = requireNonNull(zone);
         this.applicationPackage = requireNonNull(applicationPackage);
@@ -48,8 +52,9 @@ public class DeploymentData {
         this.endpointCertificateMetadata = requireNonNull(endpointCertificateMetadata);
         this.dockerImageRepo = requireNonNull(dockerImageRepo);
         this.athenzDomain = athenzDomain;
-        this.applicationRoles = applicationRoles;
+        this.tenantRoles = tenantRoles;
         this.quota = quota;
+        this.tenantSecretStores = tenantSecretStores;
     }
 
     public ApplicationId instance() {
@@ -84,12 +89,16 @@ public class DeploymentData {
         return athenzDomain;
     }
 
-    public Optional<ApplicationRoles> applicationRoles() {
-        return applicationRoles;
+    public Optional<TenantRoles> tenantRoles() {
+        return tenantRoles;
     }
 
-    public Optional<Quota> quota() {
+    public Quota quota() {
         return quota;
+    }
+
+    public List<TenantSecretStore> tenantSecretStores() {
+        return tenantSecretStores;
     }
 
 }

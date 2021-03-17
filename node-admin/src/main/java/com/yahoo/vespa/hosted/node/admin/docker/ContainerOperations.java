@@ -3,9 +3,13 @@ package com.yahoo.vespa.hosted.node.admin.docker;
 
 import com.yahoo.config.provision.DockerImage;
 import com.yahoo.vespa.hosted.dockerapi.Container;
+import com.yahoo.vespa.hosted.dockerapi.ContainerId;
+import com.yahoo.vespa.hosted.dockerapi.ContainerName;
 import com.yahoo.vespa.hosted.dockerapi.ContainerResources;
 import com.yahoo.vespa.hosted.dockerapi.ContainerStats;
 import com.yahoo.vespa.hosted.dockerapi.ProcessResult;
+import com.yahoo.vespa.hosted.dockerapi.RegistryCredentials;
+import com.yahoo.vespa.hosted.node.admin.component.TaskContext;
 import com.yahoo.vespa.hosted.node.admin.nodeagent.ContainerData;
 import com.yahoo.vespa.hosted.node.admin.nodeagent.NodeAgentContext;
 import com.yahoo.vespa.hosted.node.admin.task.util.process.CommandResult;
@@ -13,7 +17,12 @@ import com.yahoo.vespa.hosted.node.admin.task.util.process.CommandResult;
 import java.time.Duration;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 
+/**
+ * @author hakonhall
+ */
+// TODO(mpolden): Clean up this interface when ContainerOperationsImpl, DockerEngine and friends can be removed
 public interface ContainerOperations {
 
     void createContainer(NodeAgentContext context, ContainerData containerData, ContainerResources containerResources);
@@ -22,11 +31,11 @@ public interface ContainerOperations {
 
     void removeContainer(NodeAgentContext context, Container container);
 
-    void updateContainer(NodeAgentContext context, ContainerResources containerResources);
+    void updateContainer(NodeAgentContext context, ContainerId containerId, ContainerResources containerResources);
 
     Optional<Container> getContainer(NodeAgentContext context);
 
-    boolean pullImageAsyncIfNeeded(DockerImage dockerImage);
+    boolean pullImageAsyncIfNeeded(TaskContext context, DockerImage dockerImage, RegistryCredentials registryCredentials);
 
     ProcessResult executeCommandInContainerAsRoot(NodeAgentContext context, String... command);
 
@@ -53,8 +62,16 @@ public interface ContainerOperations {
 
     Optional<ContainerStats> getContainerStats(NodeAgentContext context);
 
-    boolean noManagedContainersRunning();
+    boolean noManagedContainersRunning(TaskContext context);
+
+    /**
+     * Stops and removes all managed containers except the ones given in {@code containerNames}.
+     *
+     * @return true if any containers were removed
+     */
+    boolean retainManagedContainers(TaskContext context, Set<ContainerName> containerNames);
 
     /** Deletes the local images that are currently not in use by any container and not recently used. */
-    boolean deleteUnusedContainerImages(List<DockerImage> excludes, Duration minImageAgeToDelete);
+    boolean deleteUnusedContainerImages(TaskContext context, List<DockerImage> excludes, Duration minImageAgeToDelete);
+
 }

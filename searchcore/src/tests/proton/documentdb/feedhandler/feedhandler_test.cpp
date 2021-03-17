@@ -5,8 +5,11 @@
 #include <vespa/document/update/assignvalueupdate.h>
 #include <vespa/document/repo/documenttyperepo.h>
 #include <vespa/document/update/documentupdate.h>
+#include <vespa/document/update/clearvalueupdate.h>
+#include <vespa/document/update/removefieldpathupdate.h>
+#include <vespa/eval/eval/simple_value.h>
+#include <vespa/eval/eval/tensor_spec.h>
 #include <vespa/eval/eval/value.h>
-#include <vespa/eval/tensor/test/test_utils.h>
 #include <vespa/searchcore/proton/bucketdb/bucketdbhandler.h>
 #include <vespa/searchcore/proton/test/bucketfactory.h>
 #include <vespa/searchcore/proton/common/feedtoken.h>
@@ -17,6 +20,7 @@
 #include <vespa/searchcore/proton/feedoperation/updateoperation.h>
 #include <vespa/searchcore/proton/persistenceengine/i_resource_write_filter.h>
 #include <vespa/searchcore/proton/server/configstore.h>
+#include <vespa/document/util/feed_reject_helper.h>
 #include <vespa/searchcore/proton/server/ddbstate.h>
 #include <vespa/searchcore/proton/server/executorthreadingservice.h>
 #include <vespa/searchcore/proton/server/feedhandler.h>
@@ -43,7 +47,7 @@ using document::DocumentUpdate;
 using document::GlobalId;
 using document::TensorDataType;
 using document::TensorFieldValue;
-using search::IDestructorCallback;
+using vespalib::IDestructorCallback;
 using search::SerialNum;
 using search::index::schema::CollectionType;
 using search::index::schema::DataType;
@@ -56,11 +60,10 @@ using storage::spi::Timestamp;
 using storage::spi::UpdateResult;
 using vespalib::ThreadStackExecutor;
 using vespalib::ThreadStackExecutorBase;
-using vespalib::makeClosure;
+using vespalib::eval::SimpleValue;
 using vespalib::eval::TensorSpec;
 using vespalib::eval::Value;
 using vespalib::eval::ValueType;
-using vespalib::tensor::test::makeTensor;
 
 using namespace proton;
 using namespace search::index;
@@ -75,20 +78,20 @@ struct Rendezvous {
     vespalib::Gate gone;
     typedef std::unique_ptr<Rendezvous> UP;
     Rendezvous() : enter(), leave(), gone() {}
-    bool run(uint32_t timeout = 80000) {
+    bool run(vespalib::duration timeout = 80s) {
         enter.countDown();
         bool retval = leave.await(timeout);
         gone.countDown();
         return retval;
     }
-    bool waitForEnter(uint32_t timeout = 80000) {
+    bool waitForEnter(vespalib::duration timeout = 80s) {
         return enter.await(timeout);
     }
-    bool leaveAndWait(uint32_t timeout = 80000) {
+    bool leaveAndWait(vespalib::duration timeout = 80s) {
         leave.countDown();
         return gone.await(timeout);
     }
-    bool await(uint32_t timeout = 80000) {
+    bool await(vespalib::duration timeout = 80s) {
         if (waitForEnter(timeout)) {
             return leaveAndWait(timeout);
         }
@@ -277,7 +280,7 @@ struct SchemaContext {
 };
 
 SchemaContext::SchemaContext()
-    : schema(new Schema()),
+    : schema(std::make_shared<Schema>()),
       builder()
 {
     schema->addAttributeField(Schema::AttributeField("tensor", DataType::TENSOR, CollectionType::SINGLE, "tensor(x{},y{})"));
@@ -319,7 +322,7 @@ struct UpdateContext {
     DocumentUpdate::SP update;
     BucketId           bucketId;
     UpdateContext(const vespalib::string &docId, DocBuilder &builder) :
-        update(new DocumentUpdate(*builder.getDocumentTypeRepo(), builder.getDocumentType(), DocumentId(docId))),
+        update(std::make_shared<DocumentUpdate>(*builder.getDocumentTypeRepo(), builder.getDocumentType(), DocumentId(docId))),
         bucketId(BucketFactory::getBucketId(update->getId()))
     {
     }
@@ -329,13 +332,13 @@ struct UpdateContext {
         auto fieldValue = field.createValue();
         if (fieldName == "tensor") {
             dynamic_cast<TensorFieldValue &>(*fieldValue) =
-                makeTensor<Value>(TensorSpec("tensor(x{},y{})").
-                                   add({{"x","8"},{"y","9"}}, 11));
+                SimpleValue::from_spec(TensorSpec("tensor(x{},y{})").
+                                       add({{"x","8"},{"y","9"}}, 11));
         } else if (fieldName == "tensor2") {
             auto tensorFieldValue = std::make_unique<TensorFieldValue>(tensor1DType);
             *tensorFieldValue =
-                makeTensor<Value>(TensorSpec("tensor(x{})").
-                                   add({{"x","8"}}, 11));
+                SimpleValue::from_spec(TensorSpec("tensor(x{})").
+                                       add({{"x","8"}}, 11));
             fieldValue = std::move(tensorFieldValue);
         } else {
             fieldValue->assign(document::StringFieldValue("new value"));
@@ -370,7 +373,7 @@ struct FeedTokenContext {
 
     FeedTokenContext();
     ~FeedTokenContext();
-    bool await(uint32_t timeout = 80000) { return transport.gate.await(timeout); }
+    bool await(vespalib::duration timeout = 80s) { return transport.gate.await(timeout); }
     const Result *getResult() {
         if (transport.result.get()) {
             return transport.result.get();
@@ -395,36 +398,6 @@ struct PutContext {
         docCtx(docId, builder)
     {}
 };
-
-
-struct PutHandler {
-    FeedHandler &handler;
-    DocBuilder &builder;
-    Timestamp timestamp;
-    std::vector<PutContext::SP> puts;
-    PutHandler(FeedHandler &fh, DocBuilder &db) :
-        handler(fh),
-        builder(db),
-        timestamp(0),
-        puts()
-    {}
-    void put(const vespalib::string &docId) {
-        PutContext::SP pc(new PutContext(docId, builder));
-        FeedOperation::UP op(new PutOperation(pc->docCtx.bucketId, timestamp, pc->docCtx.doc));
-        handler.handleOperation(pc->tokenCtx.token, std::move(op));
-        timestamp = Timestamp(timestamp + 1);
-        puts.push_back(pc);
-    }
-    bool await(uint32_t timeout = 80000) {
-        for (const auto & put : puts) {
-            if (!put->tokenCtx.await(timeout)) {
-                return false;
-            }
-        }
-        return true;
-    }
-};
-
 
 struct MyTlsWriter : TlsWriter {
     int store_count;
@@ -455,7 +428,7 @@ struct FeedHandlerFixture
     MyReplayConfig               replayConfig;
     MyFeedView                   feedView;
     MyTlsWriter                  tls_writer;
-    BucketDBOwner                _bucketDB;
+    bucketdb::BucketDBOwner      _bucketDB;
     bucketdb::BucketDBHandler    _bucketDBHandler;
     FeedHandler                  handler;
     FeedHandlerFixture()
@@ -682,6 +655,7 @@ TEST_F("require that update is rejected if resource limit is reached", FeedHandl
     f.writeFilter._message = "Attribute resource limit reached";
 
     UpdateContext updCtx("id:test:searchdocument::foo", *f.schema.builder);
+    updCtx.addFieldUpdate("tensor");
     auto op = std::make_unique<UpdateOperation>(updCtx.bucketId, Timestamp(10), updCtx.update);
     FeedTokenContext token;
     f.handler.performOperation(std::move(token.token), std::move(op));
@@ -803,6 +777,26 @@ TEST_F("require that put with different document type repo is ok", FeedHandlerFi
     f.handler.performOperation(std::move(token_context.token), std::move(op));
     EXPECT_EQUAL(1, f.feedView.put_count);
     EXPECT_EQUAL(1, f.tls_writer.store_count);
+}
+
+using namespace document;
+
+TEST_F("require that update with a fieldpath update will be rejected", SchemaContext) {
+    const DocumentType *docType = f.getRepo()->getDocumentType(f.getDocType().getName());
+    auto docUpdate = std::make_unique<DocumentUpdate>(*f.getRepo(), *docType, DocumentId("id:ns:" + docType->getName() + "::1"));
+    docUpdate->addFieldPathUpdate(FieldPathUpdate::CP(std::make_unique<RemoveFieldPathUpdate>()));
+    EXPECT_TRUE(FeedRejectHelper::mustReject(*docUpdate));
+}
+
+TEST_F("require that all value updates will be inspected before rejected", SchemaContext) {
+    const DocumentType *docType = f.getRepo()->getDocumentType(f.getDocType().getName());
+    auto docUpdate = std::make_unique<DocumentUpdate>(*f.getRepo(), *docType, DocumentId("id:ns:" + docType->getName() + "::1"));
+    docUpdate->addUpdate(FieldUpdate(docType->getField("i1")).addUpdate(ClearValueUpdate()));
+    EXPECT_FALSE(FeedRejectHelper::mustReject(*docUpdate));
+    docUpdate->addUpdate(FieldUpdate(docType->getField("i1")).addUpdate(ClearValueUpdate()));
+    EXPECT_FALSE(FeedRejectHelper::mustReject(*docUpdate));
+    docUpdate->addUpdate(FieldUpdate(docType->getField("i1")).addUpdate(AssignValueUpdate(StringFieldValue())));
+    EXPECT_TRUE(FeedRejectHelper::mustReject(*docUpdate));
 }
 
 }  // namespace

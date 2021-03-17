@@ -2,7 +2,6 @@
 package com.yahoo.vespa.hosted.controller.deployment;
 
 import com.yahoo.component.Version;
-import com.yahoo.config.provision.Environment;
 import com.yahoo.config.provision.SystemName;
 import com.yahoo.config.provision.zone.RoutingMethod;
 import com.yahoo.config.provision.zone.ZoneId;
@@ -24,6 +23,7 @@ import java.time.Instant;
 import java.util.Collection;
 import java.util.EnumSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.stream.Collectors;
@@ -71,7 +71,6 @@ public class DeploymentTriggerTest {
     public void testTriggerFailing() {
         ApplicationPackage applicationPackage = new ApplicationPackageBuilder()
                 .upgradePolicy("default")
-                .environment(Environment.prod)
                 .region("us-west-1")
                 .build();
 
@@ -153,7 +152,6 @@ public class DeploymentTriggerTest {
     public void deploymentSpecWithDelays() {
         ApplicationPackage applicationPackage = new ApplicationPackageBuilder()
                 .systemTest()
-                .environment(Environment.prod)
                 .delay(Duration.ofSeconds(30))
                 .region("us-west-1")
                 .delay(Duration.ofMinutes(2))
@@ -211,7 +209,6 @@ public class DeploymentTriggerTest {
     @Test
     public void deploymentSpecWithParallelDeployments() {
         ApplicationPackage applicationPackage = new ApplicationPackageBuilder()
-                .environment(Environment.prod)
                 .region("us-central-1")
                 .parallel("us-west-1", "us-east-3")
                 .region("eu-west-1")
@@ -250,14 +247,13 @@ public class DeploymentTriggerTest {
     public void testNoOtherChangesDuringSuspension() {
         // Application is deployed in 3 regions:
         ApplicationPackage applicationPackage = new ApplicationPackageBuilder()
-                .environment(Environment.prod)
                 .region("us-central-1")
                 .parallel("us-west-1", "us-east-3")
                 .build();
         var application = tester.newDeploymentContext().submit().deploy();
 
         // The first production zone is suspended:
-        tester.configServer().setSuspended(application.deploymentIdIn(ZoneId.from("prod", "us-central-1")), true);
+        tester.configServer().setSuspension(application.deploymentIdIn(ZoneId.from("prod", "us-central-1")), true);
 
         // A new change needs to be pushed out, but should not go beyond the suspended zone:
         application.submit()
@@ -269,7 +265,7 @@ public class DeploymentTriggerTest {
         application.assertNotRunning(productionUsWest1);
 
         // The zone is unsuspended so jobs start:
-        tester.configServer().setSuspended(application.deploymentIdIn(ZoneId.from("prod", "us-central-1")), false);
+        tester.configServer().setSuspension(application.deploymentIdIn(ZoneId.from("prod", "us-central-1")), false);
         tester.triggerJobs();
         application.runJob(productionUsWest1).runJob(productionUsEast3);
         assertEquals(Change.empty(), application.instance().change());
@@ -412,7 +408,6 @@ public class DeploymentTriggerTest {
     @Test
     public void applicationVersionIsNotDowngraded() {
         ApplicationPackage applicationPackage = new ApplicationPackageBuilder()
-                .environment(Environment.prod)
                 .region("us-central-1")
                 .region("eu-west-1")
                 .build();
@@ -455,7 +450,6 @@ public class DeploymentTriggerTest {
         var app1 = tester.newDeploymentContext("tenant1", "app1", "default");
         var app2 = tester.newDeploymentContext("tenant1", "app2", "default");
         ApplicationPackage applicationPackage = new ApplicationPackageBuilder()
-                .environment(Environment.prod)
                 .region("us-central-1")
                 .region("eu-west-1")
                 .build();
@@ -526,7 +520,6 @@ public class DeploymentTriggerTest {
     @Test
     public void eachParallelDeployTargetIsTested() {
         ApplicationPackage applicationPackage = new ApplicationPackageBuilder()
-                .environment(Environment.prod)
                 .parallel("eu-west-1", "us-east-3")
                 .build();
         // Application version 1 and platform version 6.1.
@@ -574,7 +567,6 @@ public class DeploymentTriggerTest {
     @Test
     public void retriesFailingJobs() {
         ApplicationPackage applicationPackage = new ApplicationPackageBuilder()
-                .environment(Environment.prod)
                 .region("us-central-1")
                 .build();
 
@@ -625,10 +617,9 @@ public class DeploymentTriggerTest {
     public void testPlatformVersionSelection() {
         // Setup system
         ApplicationPackage applicationPackage = new ApplicationPackageBuilder()
-                .environment(Environment.prod)
                 .region("us-west-1")
                 .build();
-        Version version1 = tester.controller().versionStatus().systemVersion().get().versionNumber();
+        Version version1 = tester.controller().readSystemVersion();
         var app1 = tester.newDeploymentContext();
 
         // First deployment: An application change
@@ -647,7 +638,6 @@ public class DeploymentTriggerTest {
         tester.controllerTester().upgradeSystem(version2);
 
         applicationPackage = new ApplicationPackageBuilder()
-                .environment(Environment.prod)
                 .region("us-west-1")
                 .region("us-east-3")
                 .build();
@@ -667,7 +657,6 @@ public class DeploymentTriggerTest {
     @Test
     public void requeueOutOfCapacityStagingJob() {
         ApplicationPackage applicationPackage = new ApplicationPackageBuilder()
-                .environment(Environment.prod)
                 .region("us-east-3")
                 .build();
 
@@ -776,7 +765,6 @@ public class DeploymentTriggerTest {
     public void testMultipleInstances() {
         ApplicationPackage applicationPackage = new ApplicationPackageBuilder()
                 .instances("instance1,instance2")
-                .environment(Environment.prod)
                 .region("us-east-3")
                 .build();
         var app = tester.newDeploymentContext("tenant1", "application1", "instance1").submit(applicationPackage); // TODO jonmv: support instances in deployment context>
@@ -1214,6 +1202,44 @@ public class DeploymentTriggerTest {
         app.runJob(stagingTest);
         tester.triggerJobs();
         app.assertNotRunning(stagingTest);
+    }
+
+    @Test
+    public void testTriggeringOfIdleTestJobsWhenFirstDeploymentIsOnNewerVersionThanChange() {
+        ApplicationPackage applicationPackage = new ApplicationPackageBuilder().systemTest()
+                                                                               .stagingTest()
+                                                                               .region("us-east-3")
+                                                                               .region("us-west-1")
+                                                                               .build();
+        var app = tester.newDeploymentContext().submit(applicationPackage).deploy();
+        var appToAvoidVersionGC = tester.newDeploymentContext("g", "c", "default").submit().deploy();
+
+        Version version2 = new Version("7.8.9");
+        Version version3 = new Version("8.9.10");
+        tester.controllerTester().upgradeSystem(version2);
+        tester.deploymentTrigger().triggerChange(appToAvoidVersionGC.instanceId(), Change.of(version2));
+        appToAvoidVersionGC.deployPlatform(version2);
+
+        // app upgrades first zone to version3, and then the other two to version2.
+        tester.controllerTester().upgradeSystem(version3);
+        tester.deploymentTrigger().triggerChange(app.instanceId(), Change.of(version3));
+        app.runJob(systemTest).runJob(stagingTest);
+        tester.triggerJobs();
+        tester.upgrader().overrideConfidence(version3, VespaVersion.Confidence.broken);
+        tester.controllerTester().computeVersionStatus();
+        tester.upgrader().run();
+        assertEquals(Optional.of(version2), app.instance().change().platform());
+
+        app.runJob(systemTest)
+           .runJob(productionUsEast3)
+           .runJob(stagingTest)
+           .runJob(productionUsWest1);
+
+        assertEquals(version3, app.instanceJobs().get(productionUsEast3).lastSuccess().get().versions().targetPlatform());
+        assertEquals(version2, app.instanceJobs().get(productionUsWest1).lastSuccess().get().versions().targetPlatform());
+        assertEquals(Map.of(), app.deploymentStatus().jobsToRun());
+        assertEquals(Change.empty(), app.instance().change());
+        assertEquals(List.of(), tester.jobs().active());
     }
 
 }

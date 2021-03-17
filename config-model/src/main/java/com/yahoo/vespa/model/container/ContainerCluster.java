@@ -3,7 +3,7 @@ package com.yahoo.vespa.model.container;
 
 import com.yahoo.cloud.config.ClusterInfoConfig;
 import com.yahoo.cloud.config.ConfigserverConfig;
-import com.yahoo.cloud.config.RoutingProviderConfig;
+import com.yahoo.cloud.config.CuratorConfig;
 import com.yahoo.component.ComponentId;
 import com.yahoo.config.application.api.ApplicationMetaData;
 import com.yahoo.config.docproc.DocprocConfig;
@@ -50,6 +50,7 @@ import com.yahoo.vespa.model.container.component.SimpleComponent;
 import com.yahoo.vespa.model.container.component.StatisticsComponent;
 import com.yahoo.vespa.model.container.component.SystemBindingPattern;
 import com.yahoo.vespa.model.container.component.chain.ProcessingHandler;
+import com.yahoo.vespa.model.container.configserver.ConfigserverCluster;
 import com.yahoo.vespa.model.container.docproc.ContainerDocproc;
 import com.yahoo.vespa.model.container.docproc.DocprocChains;
 import com.yahoo.vespa.model.container.http.Http;
@@ -69,6 +70,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.OptionalDouble;
 import java.util.Set;
 
 /**
@@ -98,8 +100,8 @@ public abstract class ContainerCluster<CONTAINER extends Container>
         SemanticRulesConfig.Producer,
         DocprocConfig.Producer,
         ClusterInfoConfig.Producer,
-        RoutingProviderConfig.Producer,
-        ConfigserverConfig.Producer
+        ConfigserverConfig.Producer,
+        CuratorConfig.Producer
 {
 
     /**
@@ -146,6 +148,7 @@ public abstract class ContainerCluster<CONTAINER extends Container>
     private final List<String> endpointAliases = new ArrayList<>();
     private final ComponentGroup<Component<?, ?>> componentGroup;
     private final boolean isHostedVespa;
+    private final boolean zooKeeperLocalhostAffinity;
 
     private final Map<String, String> concreteDocumentTypes = new LinkedHashMap<>();
 
@@ -160,17 +163,18 @@ public abstract class ContainerCluster<CONTAINER extends Container>
 
     private boolean deferChangesUntilRestart = false;
 
-    public ContainerCluster(AbstractConfigProducer<?> parent, String configSubId, String clusterId, DeployState deployState) {
+    public ContainerCluster(AbstractConfigProducer<?> parent, String configSubId, String clusterId, DeployState deployState, boolean zooKeeperLocalhostAffinity) {
         super(parent, configSubId);
         this.name = clusterId;
         this.isHostedVespa = stateIsHosted(deployState);
         this.zone = (deployState != null) ? deployState.zone() : Zone.defaultZone();
+        this.zooKeeperLocalhostAffinity = zooKeeperLocalhostAffinity;
 
         componentGroup = new ComponentGroup<>(this, "component");
 
         addComponent(new StatisticsComponent());
-        addSimpleComponent(AccessLog.class);
-        addComponent(new DefaultThreadpoolProvider(this, deployState));
+        addSimpleComponent(AccessLog.class.getName(), null, "jdisc_http_service");
+        addComponent(new DefaultThreadpoolProvider(this));
         addSimpleComponent(com.yahoo.concurrent.classlock.ClassLocking.class);
         addSimpleComponent(SecurityFilterInvoker.class);
         addSimpleComponent("com.yahoo.container.jdisc.metric.MetricConsumerProviderProvider");
@@ -183,6 +187,7 @@ public abstract class ContainerCluster<CONTAINER extends Container>
         addSimpleComponent("com.yahoo.container.jdisc.ContainerThreadFactory");
         addSimpleComponent("com.yahoo.container.handler.VipStatus");
         addSimpleComponent(com.yahoo.container.handler.ClustersStatus.class.getName());
+        addSimpleComponent("com.yahoo.container.jdisc.DisabledConnectionLogProvider");
         addJaxProviders();
     }
 
@@ -407,6 +412,7 @@ public abstract class ContainerCluster<CONTAINER extends Container>
 
     @Override
     public void getConfig(ComponentsConfig.Builder builder) {
+        builder.setApplyOnRestart(getDeferChangesUntilRestart()); //  Sufficient to set on one config
         builder.components.addAll(ComponentsConfigGenerator.generate(getAllComponents()));
         builder.components(new ComponentsConfig.Components.Builder().id("com.yahoo.container.core.config.HandlersConfigurerDi$RegistriesHack"));
     }
@@ -481,7 +487,7 @@ public abstract class ContainerCluster<CONTAINER extends Container>
                 .availableProcessors(2)
                 .compressedClassSpaceSize(32)
                 .minHeapsize(32)
-                .heapsize(512)
+                .heapsize(256)
                 .heapSizeAsPercentageOfPhysicalMemory(0)
                 .gcopts(Objects.requireNonNullElse(jvmGCOptions, G1GC));
         if (environmentVars != null) {
@@ -524,7 +530,8 @@ public abstract class ContainerCluster<CONTAINER extends Container>
     }
 
     public void addDefaultSearchAccessLog() {
-        addComponent(new AccessLogComponent(AccessLogComponent.AccessLogType.jsonAccessLog, getName(), isHostedVespa));
+        var compressionType = isHostedVespa ? AccessLogComponent.CompressionType.ZSTD : AccessLogComponent.CompressionType.GZIP;
+        addComponent(new AccessLogComponent(this, AccessLogComponent.AccessLogType.jsonAccessLog, compressionType, getName(), isHostedVespa));
     }
 
     @Override
@@ -551,7 +558,7 @@ public abstract class ContainerCluster<CONTAINER extends Container>
 
     /**
      * Returns a config server config containing the right zone settings (and defaults for the rest).
-     * This is useful to allow applications to find out in which zone they are runnung by having the Zone
+     * This is useful to allow applications to find out in which zone they are running by having the Zone
      * object (which is constructed from this config) injected.
      */
     @Override
@@ -559,6 +566,15 @@ public abstract class ContainerCluster<CONTAINER extends Container>
         builder.system(zone.system().value());
         builder.environment(zone.environment().value());
         builder.region(zone.region().value());
+    }
+
+    @Override
+    public void getConfig(CuratorConfig.Builder builder) {
+        if (getParent() instanceof ConfigserverCluster) return; // Produces its own config
+        for (var container : containers) {
+            builder.server(new CuratorConfig.Server.Builder().hostname(container.getHostResource().getHostname()));
+        }
+        builder.zookeeperLocalhostAffinity(zooKeeperLocalhostAffinity);
     }
 
     private List<ClusterInfoConfig.Services.Ports.Builder> getPorts(Service service) {
@@ -575,11 +591,6 @@ public abstract class ContainerCluster<CONTAINER extends Container>
 
     public boolean isHostedVespa() {
         return isHostedVespa;
-    }
-
-    @Override
-    public void getConfig(RoutingProviderConfig.Builder builder) {
-        builder.enabled(isHostedVespa);
     }
 
     public Map<String, String> concreteDocumentTypes() { return concreteDocumentTypes; }
@@ -602,6 +613,8 @@ public abstract class ContainerCluster<CONTAINER extends Container>
     public void setJvmGCOptions(String opts) { this.jvmGCOptions = opts; }
 
     public void setEnvironmentVars(String environmentVars) { this.environmentVars = environmentVars; }
+
+    public String getEnvironmentVars() { return environmentVars; }
 
     public Optional<String> getJvmGCOptions() { return Optional.ofNullable(jvmGCOptions); }
 
@@ -629,5 +642,13 @@ public abstract class ContainerCluster<CONTAINER extends Container>
     }
 
     public boolean getDeferChangesUntilRestart() { return deferChangesUntilRestart; }
+
+    /** Effective vcpu for the containers in cluster. Use this value as scale factor for performance/resource tuning. **/
+    public OptionalDouble vcpu() {
+        return getContainers().stream()
+                .filter(c -> c.getHostResource() != null && c.getHostResource().realResources() != null)
+                .mapToDouble(c -> c.getHostResource().realResources().vcpu())
+                .max(); // Use highest vcpu as scale factor
+    }
 
 }

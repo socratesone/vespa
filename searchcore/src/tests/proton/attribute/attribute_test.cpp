@@ -7,8 +7,9 @@
 #include <vespa/document/update/arithmeticvalueupdate.h>
 #include <vespa/document/update/assignvalueupdate.h>
 #include <vespa/document/update/documentupdate.h>
-#include <vespa/eval/eval/engine_or_factory.h>
 #include <vespa/eval/eval/value.h>
+#include <vespa/eval/eval/simple_value.h>
+#include <vespa/eval/eval/tensor_spec.h>
 #include <vespa/eval/eval/test/value_compare.h>
 #include <vespa/searchcommon/attribute/attributecontent.h>
 #include <vespa/searchcommon/attribute/iattributevector.h>
@@ -29,8 +30,7 @@
 #include <vespa/searchlib/attribute/imported_attribute_vector_factory.h>
 #include <vespa/searchlib/attribute/integerbase.h>
 #include <vespa/searchlib/attribute/predicate_attribute.h>
-#include <vespa/searchlib/attribute/singlenumericattribute.hpp>
-#include <vespa/searchlib/common/idestructorcallback.h>
+#include <vespa/vespalib/util/idestructorcallback.h>
 #include <vespa/searchlib/index/docbuilder.h>
 #include <vespa/searchlib/index/dummyfileheadercontext.h>
 #include <vespa/searchlib/predicate/predicate_hash.h>
@@ -82,20 +82,20 @@ using std::string;
 using vespalib::ForegroundTaskExecutor;
 using vespalib::ForegroundThreadExecutor;
 using vespalib::SequencedTaskExecutorObserver;
-using vespalib::eval::EngineOrFactory;
+using vespalib::eval::SimpleValue;
 using vespalib::eval::TensorSpec;
 using vespalib::eval::Value;
 using vespalib::eval::ValueType;
+using vespalib::IDestructorCallback;
 
 using AVBasicType = search::attribute::BasicType;
 using AVCollectionType = search::attribute::CollectionType;
 using AVConfig = search::attribute::Config;
-using Int32AttributeVector = SingleValueNumericAttribute<IntegerAttributeTemplate<int32_t> >;
 using LidVector = LidVectorContext::LidVector;
 
 namespace {
 
-const uint64_t createSerialNum = 42u;
+constexpr uint64_t createSerialNum = 42u;
 
 }
 
@@ -169,29 +169,34 @@ public:
         _mgr->addAttribute(attr->getName(), std::move(attr));
         allocAttributeWriter();
     }
-    void put(SerialNum serialNum, const Document &doc, DocumentIdT lid,
-             bool immediateCommit = true) {
-        _aw->put(serialNum, doc, lid, immediateCommit, emptyCallback);
+    void put(SerialNum serialNum, const Document &doc, DocumentIdT lid) {
+        _aw->put(serialNum, doc, lid, emptyCallback);
+        commit(serialNum);
     }
     void update(SerialNum serialNum, const DocumentUpdate &upd,
-                DocumentIdT lid, bool immediateCommit, IFieldUpdateCallback & onUpdate) {
-        _aw->update(serialNum, upd, lid, immediateCommit, emptyCallback, onUpdate);
+                DocumentIdT lid, IFieldUpdateCallback & onUpdate) {
+        _aw->update(serialNum, upd, lid, emptyCallback, onUpdate);
+        commit(serialNum);
     }
-    void update(SerialNum serialNum, const Document &doc,
-                DocumentIdT lid, bool immediateCommit) {
-        _aw->update(serialNum, doc, lid, immediateCommit, emptyCallback);
+    void update(SerialNum serialNum, const Document &doc, DocumentIdT lid) {
+        _aw->update(serialNum, doc, lid, emptyCallback);
+        commit(serialNum);
     }
-    void remove(SerialNum serialNum, DocumentIdT lid, bool immediateCommit = true) {
-        _aw->remove(serialNum, lid, immediateCommit, emptyCallback);
+    void remove(SerialNum serialNum, DocumentIdT lid) {
+        _aw->remove(serialNum, lid, emptyCallback);
+        commit(serialNum);
     }
-    void remove(const LidVector &lidVector, SerialNum serialNum, bool immediateCommit = true) {
-        _aw->remove(lidVector, serialNum, immediateCommit, emptyCallback);
+    void remove(const LidVector &lidVector, SerialNum serialNum) {
+        _aw->remove(lidVector, serialNum, emptyCallback);
+        commit(serialNum);
     }
     void commit(SerialNum serialNum) {
         _aw->forceCommit(serialNum, emptyCallback);
     }
     void assertExecuteHistory(std::vector<uint32_t> expExecuteHistory) {
-        EXPECT_EQ(expExecuteHistory, _attributeFieldWriter->getExecuteHistory());
+        auto includeCommit = expExecuteHistory;
+        includeCommit.insert(includeCommit.end(), expExecuteHistory.begin(), expExecuteHistory.end());
+        EXPECT_EQ(includeCommit, _attributeFieldWriter->getExecuteHistory());
     }
     SerialNum test_force_commit(AttributeVector &attr, SerialNum serialNum) {
         commit(serialNum);
@@ -400,29 +405,29 @@ TEST_F(AttributeWriterTest, visibility_delay_is_honoured)
     EXPECT_EQ(2u, a1->getNumDocs());
     EXPECT_EQ(3u, a1->getStatus().getLastSyncToken());
     AttributeWriter awDelayed(_mgr);
-    awDelayed.put(4, *doc, 2, false, emptyCallback);
+    awDelayed.put(4, *doc, 2, emptyCallback);
     EXPECT_EQ(3u, a1->getNumDocs());
     EXPECT_EQ(3u, a1->getStatus().getLastSyncToken());
-    awDelayed.put(5, *doc, 4, false, emptyCallback);
+    awDelayed.put(5, *doc, 4, emptyCallback);
     EXPECT_EQ(5u, a1->getNumDocs());
     EXPECT_EQ(3u, a1->getStatus().getLastSyncToken());
     awDelayed.forceCommit(6, emptyCallback);
     EXPECT_EQ(6u, a1->getStatus().getLastSyncToken());
 
     AttributeWriter awDelayedShort(_mgr);
-    awDelayedShort.put(7, *doc, 2, false, emptyCallback);
+    awDelayedShort.put(7, *doc, 2, emptyCallback);
     EXPECT_EQ(6u, a1->getStatus().getLastSyncToken());
-    awDelayedShort.put(8, *doc, 2, false, emptyCallback);
+    awDelayedShort.put(8, *doc, 2, emptyCallback);
     awDelayedShort.forceCommit(8, emptyCallback);
     EXPECT_EQ(8u, a1->getStatus().getLastSyncToken());
 
     verifyAttributeContent(*a1, 2, "10");
     awDelayed.put(9, *idb.startDocument("id:ns:searchdocument::1").startAttributeField("a1").addStr("11").endField().endDocument(),
-            2, false, emptyCallback);
+            2, emptyCallback);
     awDelayed.put(10, *idb.startDocument("id:ns:searchdocument::1").startAttributeField("a1").addStr("20").endField().endDocument(),
-            2, false, emptyCallback);
+            2, emptyCallback);
     awDelayed.put(11, *idb.startDocument("id:ns:searchdocument::1").startAttributeField("a1").addStr("30").endField().endDocument(),
-            2, false, emptyCallback);
+            2, emptyCallback);
     EXPECT_EQ(8u, a1->getStatus().getLastSyncToken());
     verifyAttributeContent(*a1, 2, "10");
     awDelayed.forceCommit(12, emptyCallback);
@@ -472,8 +477,7 @@ TEST_F(AttributeWriterTest, handles_update)
                   .addUpdate(ArithmeticValueUpdate(ArithmeticValueUpdate::Add, 10)));
 
     DummyFieldUpdateCallback onUpdate;
-    bool immediateCommit = true;
-    update(2, upd, 1, immediateCommit, onUpdate);
+    update(2, upd, 1, onUpdate);
 
     attribute::IntegerContent ibuf;
     ibuf.fill(*a1, 1);
@@ -483,9 +487,9 @@ TEST_F(AttributeWriterTest, handles_update)
     EXPECT_EQ(1u, ibuf.size());
     EXPECT_EQ(30u, ibuf[0]);
 
-    update(2, upd, 1, immediateCommit, onUpdate); // same sync token as previous
+    update(2, upd, 1, onUpdate); // same sync token as previous
     try {
-        update(1, upd, 1, immediateCommit, onUpdate); // lower sync token than previous
+        update(1, upd, 1, onUpdate); // lower sync token than previous
         EXPECT_TRUE(true);  // update is ignored
     } catch (vespalib::IllegalStateException & e) {
         LOG(info, "Got expected exception: '%s'", e.getMessage().c_str());
@@ -517,9 +521,8 @@ TEST_F(AttributeWriterTest, handles_predicate_update)
     PredicateIndex &index = static_cast<PredicateAttribute &>(*a1).getIndex();
     EXPECT_EQ(1u, index.getZeroConstraintDocs().size());
     EXPECT_FALSE(index.getIntervalIndex().lookup(PredicateHash::hash64("foo=bar")).valid());
-    bool immediateCommit = true;
     DummyFieldUpdateCallback onUpdate;
-    update(2, upd, 1, immediateCommit, onUpdate);
+    update(2, upd, 1, onUpdate);
     EXPECT_EQ(0u, index.getZeroConstraintDocs().size());
     EXPECT_TRUE(index.getIntervalIndex().lookup(PredicateHash::hash64("foo=bar")).valid());
 }
@@ -530,7 +533,7 @@ public:
     AttributeCollectionSpecFactory _factory;
     AttributeCollectionSpecTest(bool fastAccessOnly)
         : _builder(),
-          _factory(search::GrowStrategy(), 100, fastAccessOnly)
+          _factory(AllocStrategy(search::GrowStrategy(), search::CompactionStrategy(), 100), fastAccessOnly)
     {
         addAttribute("a1", false);
         addAttribute("a2", true);
@@ -641,7 +644,7 @@ TEST_F(FilterAttributeManagerTest, readable_attribute_vector_filters_attributes)
 namespace {
 
 Value::UP make_tensor(const TensorSpec &spec) {
-    return EngineOrFactory::get().from_spec(spec);
+    return SimpleValue::from_spec(spec);
 }
 
 const vespalib::string sparse_tensor = "tensor(x{},y{})";
@@ -665,7 +668,7 @@ Document::UP
 createTensorPutDoc(DocBuilder &builder, const Value &tensor) {
     return builder.startDocument("id:ns:searchdocument::1").
         startAttributeField("a1").
-        addTensor(EngineOrFactory::get().copy(tensor)).endField().endDocument();
+        addTensor(SimpleValue::from_value(tensor)).endField().endDocument();
 }
 
 }
@@ -709,12 +712,11 @@ TEST_F(AttributeWriterTest, handles_tensor_assign_update)
                                   .add({{"x", "8"}, {"y", "9"}}, 11));
     TensorDataType xySparseTensorDataType(vespalib::eval::ValueType::from_spec(sparse_tensor));
     TensorFieldValue new_value(xySparseTensorDataType);
-    new_value = EngineOrFactory::get().copy(*new_tensor);
+    new_value = SimpleValue::from_value(*new_tensor);
     upd.addUpdate(FieldUpdate(upd.getType().getField("a1"))
                   .addUpdate(AssignValueUpdate(new_value)));
-    bool immediateCommit = true;
     DummyFieldUpdateCallback onUpdate;
-    update(2, upd, 1, immediateCommit, onUpdate);
+    update(2, upd, 1, onUpdate);
     EXPECT_EQ(2u, a1->getNumDocs());
     EXPECT_TRUE(tensorAttribute != nullptr);
     tensor2 = tensorAttribute->getTensor(1);
@@ -931,7 +933,7 @@ TEST_F(TwoPhasePutTest, handles_put_in_two_phases_when_specified_for_tensor_attr
 TEST_F(TwoPhasePutTest, put_is_ignored_when_serial_number_is_older_or_equal_to_attribute)
 {
     auto doc = make_doc();
-    attr->commit(7, 7);
+    attr->commit(CommitParam(7));
     put(7, *doc, 1);
     expect_tensor_attr_calls(0, 0);
     expect_shared_executor_tasks(1);
@@ -1078,7 +1080,7 @@ TEST_F(StructArrayWriterTest, update_with_doc_argument_updates_struct_field_attr
     put(10, *doc, 1);
     checkAttrs(1, 10, {11, 12});
     doc = makeDoc(20, {21});
-    update(11, *doc, 1, true);
+    update(11, *doc, 1);
     checkAttrs(1, 10, {21});
 }
 
@@ -1135,7 +1137,7 @@ TEST_F(StructMapWriterTest, update_with_doc_argument_updates_struct_field_attrib
     put(10, *doc, 1);
     checkAttrs(1, 10, {{1, 11}, {2, 12}});
     doc = makeDoc(20, {{42, 21}});
-    update(11, *doc, 1, true);
+    update(11, *doc, 1);
     checkAttrs(1, 10, {{42, 21}});
 }
 

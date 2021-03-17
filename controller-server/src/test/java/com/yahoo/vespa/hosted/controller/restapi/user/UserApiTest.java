@@ -6,6 +6,7 @@ import com.yahoo.config.provision.SystemName;
 import com.yahoo.config.provision.TenantName;
 import com.yahoo.vespa.flags.Flags;
 import com.yahoo.vespa.flags.InMemoryFlagSource;
+import com.yahoo.vespa.flags.PermanentFlags;
 import com.yahoo.vespa.hosted.controller.ControllerTester;
 import com.yahoo.vespa.hosted.controller.api.integration.user.User;
 import com.yahoo.vespa.hosted.controller.api.role.Role;
@@ -172,6 +173,20 @@ public class UserApiTest extends ControllerContainerCloudTest {
                                       .data("{\"key\":\"" + pemPublicKey + "\"}"),
                               new File("second-developer-key.json"));
 
+        // PUT in a new secret store for the tenant
+        tester.assertResponse(request("/application/v4/tenant/my-tenant/secret-store/secret-foo", PUT)
+                        .principal("developer@tenant")
+                        .roles(Set.of(Role.developer(id.tenant())))
+                        .data("{\"awsId\":\"123\",\"role\":\"secret-role\",\"externalId\":\"abc\"}"),
+                "{\"secretStores\":[{\"name\":\"secret-foo\",\"awsId\":\"123\",\"role\":\"secret-role\"}]}",
+                200);
+
+        // GET a tenant with secret stores configured
+        tester.assertResponse(request("/application/v4/tenant/my-tenant")
+                        .principal("reader@tenant")
+                        .roles(Set.of(Role.reader(id.tenant()))),
+                new File("tenant-with-secrets.json"));
+
         // DELETE an application is available to developers.
         tester.assertResponse(request("/application/v4/tenant/my-tenant/application/my-app", DELETE)
                              .roles(Set.of(Role.developer(id.tenant()))),
@@ -203,7 +218,7 @@ public class UserApiTest extends ControllerContainerCloudTest {
     public void userMetadataTest() {
         ContainerTester tester = new ContainerTester(container, responseFiles);
         ((InMemoryFlagSource) tester.controller().flagSource())
-                .withBooleanFlag(Flags.ENABLE_PUBLIC_SIGNUP_FLOW.id(), true);
+                .withBooleanFlag(PermanentFlags.ENABLE_PUBLIC_SIGNUP_FLOW.id(), true);
         ControllerTester controller = new ControllerTester(tester);
         Set<Role> operator = Set.of(Role.hostedOperator(), Role.hostedSupporter(), Role.hostedAccountant());
         User user = new User("dev@domail", "Joe Developer", "dev", null);
@@ -244,5 +259,22 @@ public class UserApiTest extends ControllerContainerCloudTest {
                                 Role.reader(TenantName.from("sandbox"))))
                         .user(user),
                 new File("user-with-applications-cloud.json"));
+    }
+
+    @Test
+    public void maxTrialTenants() {
+        ContainerTester tester = new ContainerTester(container, responseFiles);
+        ((InMemoryFlagSource) tester.controller().flagSource())
+                .withIntFlag(Flags.MAX_TRIAL_TENANTS.id(), 1)
+                .withBooleanFlag(PermanentFlags.ENABLE_PUBLIC_SIGNUP_FLOW.id(), true);
+        ControllerTester controller = new ControllerTester(tester);
+        Set<Role> operator = Set.of(Role.hostedOperator(), Role.hostedSupporter(), Role.hostedAccountant());
+        User user = new User("dev@domail", "Joe Developer", "dev", null);
+
+        controller.createTenant("tenant1", Tenant.Type.cloud);
+
+        tester.assertResponse(
+                request("/api/user/v1/user").user(user),
+                new File("user-without-trial-capacity-cloud.json"));
     }
 }

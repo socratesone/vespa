@@ -194,7 +194,7 @@ public class VdsVisit {
                 .longOpt("fieldset")
                 .hasArg(true)
                 .argName("fieldset")
-                .desc("Retrieve the specified fields only (see https://docs.vespa.ai/documentation/documents.html#fieldsets). Default is [all].")
+                .desc("Retrieve the specified fields only (see https://docs.vespa.ai/en/documents.html#fieldsets). Default is [all].")
                 .build());
 
         options.addOption(Option.builder()
@@ -600,7 +600,7 @@ public class VdsVisit {
                                                names + ". Please use the -c option to select one of them as a target for visiting.");
         }
 
-        return "[Storage:cluster=" + found.getName() + ";clusterconfigid=" + found.getConfigId() + "]";
+        return found.getRoute();
     }
 
     protected static void verbosePrintParameters(VdsVisitParameters vdsParams, PrintStream out) {

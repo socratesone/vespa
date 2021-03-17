@@ -20,8 +20,12 @@ import org.w3c.dom.Node;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.function.Function;
+import java.util.stream.Collectors;
+
+import static java.util.stream.Collectors.toList;
 
 /**
  * A common utility class to represent a requirement for nodes during model building.
@@ -183,6 +187,30 @@ public class NodesSpecification {
                                       Optional.empty());
     }
 
+    /**
+     * Returns a requirement for {@code count} shared nodes with {@code required} taken as
+     * the OR over all content clusters, and with the given resources.
+     */
+    public static NodesSpecification requiredFromSharedParents(int count, NodeResources resources,
+                                                               ModelElement element, ConfigModelContext context) {
+        List<NodesSpecification> allContent = findParentByTag("services", element.getXml()).map(services -> XML.getChildren(services, "content"))
+                                                                                           .orElse(List.of())
+                                                                                           .stream()
+                                                                                           .map(content -> new ModelElement(content).child("nodes"))
+                                                                                           .filter(nodes -> nodes != null && nodes.stringAttribute("count") != null)
+                                                                                           .map(nodes -> from(nodes, context))
+                                                                                           .collect(toList());
+        return new NodesSpecification(new ClusterResources(count, 1, resources),
+                                      new ClusterResources(count, 1, resources),
+                                      true,
+                                      context.getDeployState().getWantedNodeVespaVersion(),
+                                      allContent.stream().anyMatch(content -> content.required),
+                                      ! context.getDeployState().getProperties().isBootstrap(),
+                                      false,
+                                      context.getDeployState().getWantedDockerImageRepo(),
+                                      Optional.empty());
+    }
+
     public ClusterResources minResources() { return min; }
     public ClusterResources maxResources() { return max; }
 
@@ -202,15 +230,17 @@ public class NodesSpecification {
     public Map<HostResource, ClusterMembership> provision(HostSystem hostSystem,
                                                           ClusterSpec.Type clusterType,
                                                           ClusterSpec.Id clusterId,
-                                                          DeployLogger logger) {
+                                                          DeployLogger logger,
+                                                          boolean stateful) {
         if (combinedId.isPresent())
             clusterType = ClusterSpec.Type.combined;
         ClusterSpec cluster = ClusterSpec.request(clusterType, clusterId)
-                .vespaVersion(version)
-                .exclusive(exclusive)
-                .combinedId(combinedId.map(ClusterSpec.Id::from))
-                .dockerImageRepository(dockerImageRepo)
-                .build();
+                                         .vespaVersion(version)
+                                         .exclusive(exclusive)
+                                         .combinedId(combinedId.map(ClusterSpec.Id::from))
+                                         .dockerImageRepository(dockerImageRepo)
+                                         .stateful(stateful)
+                                         .build();
         return hostSystem.allocateHosts(cluster, Capacity.from(min, max, required, canFail), logger);
     }
 

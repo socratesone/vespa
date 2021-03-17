@@ -12,6 +12,8 @@
 #include <vespa/searchlib/fef/feature_type.h>
 #include <vespa/vespalib/objects/nbostream.h>
 #include <vespa/eval/eval/value_type.h>
+#include <vespa/eval/eval/value_codec.h>
+#include <vespa/eval/eval/fast_value.h>
 #include <vespa/vespalib/locale/c.h>
 #include <cerrno>
 
@@ -119,7 +121,7 @@ createTensorExecutor(const IQueryEnvironment &env,
     if (prop.found() && !prop.get().empty()) {
         const vespalib::string &value = prop.get();
         vespalib::nbostream stream(value.data(), value.size());
-        auto tensor = vespalib::eval::EngineOrFactory::get().decode(stream);
+        auto tensor = vespalib::eval::decode_value(stream, vespalib::eval::FastValueBuilderFactory::get());
         if (!TensorDataType::isAssignableType(valueType, tensor->type())) {
             LOG(warning, "Query feature type is '%s' but other tensor type is '%s'",
                 valueType.to_spec().c_str(), tensor->type().to_spec().c_str());
@@ -135,7 +137,7 @@ createTensorExecutor(const IQueryEnvironment &env,
 FeatureExecutor &
 QueryBlueprint::createExecutor(const IQueryEnvironment &env, vespalib::Stash &stash) const
 {
-    if (_valueType.is_tensor()) {
+    if (_valueType.has_dimensions()) {
         return createTensorExecutor(env, _key, _valueType, stash);
     } else {
         std::vector<feature_t> values;

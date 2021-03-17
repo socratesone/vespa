@@ -2,12 +2,14 @@
 package com.yahoo.vespa.model.application.validation;
 
 import com.yahoo.config.application.api.DeployLogger;
+import com.yahoo.config.application.api.ValidationId;
 import com.yahoo.config.application.api.ValidationOverrides;
 import com.yahoo.config.model.api.ConfigChangeAction;
 import com.yahoo.config.model.api.Model;
 import com.yahoo.config.model.api.ValidationParameters;
 import com.yahoo.config.model.deploy.DeployState;
 import com.yahoo.config.provision.ClusterSpec;
+import com.yahoo.container.QrConfig;
 import com.yahoo.vespa.model.VespaModel;
 import com.yahoo.vespa.model.application.validation.change.ChangeValidator;
 import com.yahoo.vespa.model.application.validation.change.ClusterSizeReductionValidator;
@@ -23,16 +25,25 @@ import com.yahoo.vespa.model.application.validation.change.ResourcesReductionVal
 import com.yahoo.vespa.model.application.validation.change.StartupCommandChangeValidator;
 import com.yahoo.vespa.model.application.validation.change.StreamingSearchClusterChangeValidator;
 import com.yahoo.vespa.model.application.validation.first.AccessControlOnFirstDeploymentValidator;
+import com.yahoo.vespa.model.container.ApplicationContainerCluster;
+import com.yahoo.vespa.model.container.Container;
 
 import java.time.Instant;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.Collections;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
 
+import static java.util.stream.Collectors.groupingBy;
+import static java.util.stream.Collectors.mapping;
+import static java.util.stream.Collectors.toCollection;
 import static java.util.stream.Collectors.toList;
+import static java.util.stream.Collectors.toSet;
 
 /**
  * Executor of validators. This defines the right order of validator execution.
@@ -99,9 +110,17 @@ public class Validation {
                 new ContainerRestartValidator(),
                 new NodeResourceChangeValidator()
         };
-        return Arrays.stream(validators)
-                .flatMap(v -> v.validate(currentModel, nextModel, overrides, now).stream())
-                .collect(toList());
+        List<ConfigChangeAction> actions = Arrays.stream(validators)
+                                                 .flatMap(v -> v.validate(currentModel, nextModel, overrides, now).stream())
+                                                 .collect(toList());
+
+        Map<ValidationId, Collection<String>> disallowableActions = actions.stream()
+                                                                           .filter(action -> action.validationId().isPresent())
+                                                                           .collect(groupingBy(action -> action.validationId().orElseThrow(),
+                                                                                               mapping(ConfigChangeAction::getMessage,
+                                                                                                       toCollection(LinkedHashSet::new))));
+        overrides.invalid(disallowableActions, now);
+        return actions;
     }
 
     private static void validateFirstTimeDeployment(VespaModel model, DeployState deployState) {
@@ -111,7 +130,6 @@ public class Validation {
     private static void deferConfigChangesForClustersToBeRestarted(List<ConfigChangeAction> actions, VespaModel model) {
         Set<ClusterSpec.Id> clustersToBeRestarted = actions.stream()
                                                            .filter(action -> action.getType() == ConfigChangeAction.Type.RESTART)
-                                                           .filter(action -> action.clusterId() != null) // TODO: Remove this line after October 2020
                                                            .map(action -> action.clusterId())
                                                            .collect(Collectors.toSet());
         for (var clusterToRestart : clustersToBeRestarted) {

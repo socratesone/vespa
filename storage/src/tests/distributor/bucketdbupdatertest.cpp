@@ -144,8 +144,7 @@ public:
         api::RequestBucketInfoReply::EntryVector &vec = sreply->getBucketInfo();
 
         for (uint32_t i=0; i<bucketCount + invalidBucketCount; i++) {
-            if (!getBucketDBUpdater().getDistributorComponent()
-                .ownsBucketInState(state, makeDocumentBucket(document::BucketId(16, i)))) {
+            if (!getDistributorBucketSpace().owns_bucket_in_state(state, document::BucketId(16, i))) {
                 continue;
             }
 
@@ -392,7 +391,8 @@ public:
     }
 
     api::StorageMessageAddress storageAddress(uint16_t node) {
-        return api::StorageMessageAddress("storage", lib::NodeType::STORAGE, node);
+        static vespalib::string _storage("storage");
+        return api::StorageMessageAddress(&_storage, lib::NodeType::STORAGE, node);
     }
 
     std::string getSentNodes(const std::string& oldClusterState,
@@ -1474,14 +1474,6 @@ TEST_F(BucketDBUpdaterTest, pending_cluster_state_send_messages) {
               getSentNodes("distributor:10 storage:2",
                            "distributor:10 .1.s:d storage:2"));
 
-    EXPECT_EQ(getNodeList({1}),
-              getSentNodes("distributor:2 storage:2",
-                           "distributor:2 storage:2 .1.d:3 .1.d.1.s:d"));
-
-    EXPECT_EQ(getNodeList({1}),
-              getSentNodes("distributor:2 storage:2 .1.s:d",
-                           "distributor:2 storage:2 .1.d:3 .1.d.1.s:d"));
-
     EXPECT_EQ(std::string(""),
               getSentNodes("distributor:2 storage:2",
                            "distributor:3 .2.s:i storage:2"));
@@ -1723,16 +1715,6 @@ TEST_F(BucketDBUpdaterTest, pending_cluster_state_merge) {
                     "",
                     "0:1,2,4,5|1:2,3,4,6|2:1,3,5,6"));
 
-    // Node came up with fewer buckets (lost disk)
-    EXPECT_EQ(
-            std::string("4:1|2:0,1|6:1,2|1:2,0|5:2|3:2,1|"),
-            mergeBucketLists(
-                    lib::ClusterState("distributor:1 storage:3"),
-                    "0:1,2,4,5|1:2,3,4,6|2:1,3,5,6",
-                    lib::ClusterState("distributor:1 storage:3 .0.d:3 .0.d.1.s:d"),
-                    "0:1,2")
-            );
-
     // New node came up
     EXPECT_EQ(
             std::string("4:0,1|2:0,1|6:1,2,3|1:0,2,3|5:2,0,3|3:2,1,3|"),
@@ -1748,27 +1730,6 @@ TEST_F(BucketDBUpdaterTest, pending_cluster_state_merge) {
             mergeBucketLists(
                     "0:1,2,4,5|1:2,3,4,6|2:1,3,5,6",
                     "0:1,2,6,8"));
-
-    // Node came up with no buckets
-    EXPECT_EQ(
-            std::string("4:1|2:1|6:1,2|1:2|5:2|3:2,1|"),
-            mergeBucketLists(
-                    lib::ClusterState("distributor:1 storage:3"),
-                    "0:1,2,4,5|1:2,3,4,6|2:1,3,5,6",
-                    lib::ClusterState("distributor:1 storage:3 .0.d:3 .0.d.1.s:d"),
-                    "0:")
-            );
-
-    // One node lost a disk, another was just reasked (distributor
-    // change)
-    EXPECT_EQ(
-            std::string("2:0,1|6:1,2|1:2,0|5:2|3:2,1|"),
-            mergeBucketLists(
-                    lib::ClusterState("distributor:1 storage:3"),
-                    "0:1,2,4,5|1:2,3,6|2:1,3,5,6",
-                    lib::ClusterState("distributor:1 storage:3 .0.d:3 .0.d.1.s:d"),
-                    "0:1,2|1:2,3")
-            );
 
     // Bucket info format is "bucketid/checksum/count/size"
     // Node went from initializing to up and invalid bucket went to empty.
@@ -1817,8 +1778,7 @@ TEST_F(BucketDBUpdaterTest, no_db_resurrection_for_bucket_not_owned_in_current_s
         uint32_t expectedMsgs = messageCount(2), dummyBucketsToReturn = 1;
         ASSERT_NO_FATAL_FAILURE(setAndEnableClusterState(stateAfter, expectedMsgs, dummyBucketsToReturn));
     }
-    EXPECT_FALSE(getBucketDBUpdater().getDistributorComponent()
-                 .ownsBucketInCurrentState(makeDocumentBucket(bucket)));
+    EXPECT_FALSE(getDistributorBucketSpace().get_bucket_ownership_flags(bucket).owned_in_current_state());
 
     ASSERT_NO_FATAL_FAILURE(sendFakeReplyForSingleBucketRequest(*rbi));
 
@@ -1844,10 +1804,8 @@ TEST_F(BucketDBUpdaterTest, no_db_resurrection_for_bucket_not_owned_in_pending_s
     lib::ClusterState stateAfter("distributor:3 storage:3");
     // Set, but _don't_ enable cluster state. We want it to be pending.
     setSystemState(stateAfter);
-    EXPECT_TRUE(getBucketDBUpdater().getDistributorComponent()
-                .ownsBucketInCurrentState(makeDocumentBucket(bucket)));
-    EXPECT_FALSE(getBucketDBUpdater()
-                 .checkOwnershipInPendingState(makeDocumentBucket(bucket)).isOwned());
+    EXPECT_TRUE(getDistributorBucketSpace().get_bucket_ownership_flags(bucket).owned_in_current_state());
+    EXPECT_FALSE(getDistributorBucketSpace().get_bucket_ownership_flags(bucket).owned_in_pending_state());
 
     ASSERT_NO_FATAL_FAILURE(sendFakeReplyForSingleBucketRequest(*rbi));
 
@@ -1967,8 +1925,7 @@ TEST_F(BucketDBUpdaterTest, changed_distribution_config_does_not_elide_bucket_db
     setDistribution(getDistConfig6Nodes2Groups());
 
     getBucketDatabase().forEach(*func_processor([&](const auto& e) {
-        EXPECT_TRUE(getBucketDBUpdater()
-                .checkOwnershipInPendingState(makeDocumentBucket(e.getBucketId())).isOwned());
+        EXPECT_TRUE(getDistributorBucketSpace().get_bucket_ownership_flags(e.getBucketId()).owned_in_pending_state());
     }));
 }
 
@@ -2166,14 +2123,6 @@ TEST_F(BucketDBUpdaterTest, DISABLED_cluster_config_downsize_only_sends_to_avail
     sortSentMessagesByIndex(_sender);
 
     EXPECT_EQ((nodeVec{0, 1, 2}), getSendSet());
-}
-
-TEST_F(BucketDBUpdaterTest, changed_disk_set_triggers_re_fetch) {
-    // Same number of online disks, but the set of disks has changed.
-    EXPECT_EQ(
-            getNodeList({1}),
-            getSentNodes("distributor:2 storage:2 .1.d:3 .1.d.2.s:d",
-                         "distributor:2 storage:2 .1.d:3 .1.d.1.s:d"));
 }
 
 /**
@@ -2436,8 +2385,7 @@ TEST_F(BucketDBUpdaterTest, non_owned_buckets_moved_to_read_only_db_on_ownership
 
     std::unordered_set<Bucket, Bucket::hash> buckets_not_owned_in_pending_state;
     for_each_bucket(mutable_repo(), [&](const auto& space, const auto& entry) {
-        if (!getBucketDBUpdater().getDistributorComponent()
-                .ownsBucketInState(pending_state, makeDocumentBucket(entry.getBucketId()))) {
+        if (!getDistributorBucketSpace().owns_bucket_in_state(pending_state, entry.getBucketId())) {
             buckets_not_owned_in_pending_state.insert(Bucket(space, entry.getBucketId()));
         }
     });

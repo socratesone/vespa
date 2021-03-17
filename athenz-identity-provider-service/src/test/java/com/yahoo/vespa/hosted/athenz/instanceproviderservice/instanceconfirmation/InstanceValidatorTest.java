@@ -21,8 +21,10 @@ import com.yahoo.vespa.athenz.identityprovider.api.VespaUniqueInstanceId;
 import com.yahoo.vespa.athenz.identityprovider.client.IdentityDocumentSigner;
 import com.yahoo.vespa.hosted.athenz.instanceproviderservice.KeyProvider;
 import com.yahoo.vespa.hosted.provision.Node;
+import com.yahoo.vespa.hosted.provision.NodeList;
 import com.yahoo.vespa.hosted.provision.NodeRepository;
 import com.yahoo.vespa.hosted.provision.node.IP;
+import com.yahoo.vespa.hosted.provision.node.Nodes;
 import com.yahoo.vespa.hosted.provision.testutils.MockNodeFlavors;
 import org.junit.Test;
 
@@ -119,12 +121,14 @@ public class InstanceValidatorTest {
     @Test
     public void accepts_valid_refresh_requests() {
         NodeRepository nodeRepository = mock(NodeRepository.class);
+        Nodes nodes = mock(Nodes.class);
+        when(nodeRepository.nodes()).thenReturn(nodes);
         InstanceValidator instanceValidator = new InstanceValidator(null, null, nodeRepository, new IdentityDocumentSigner(), vespaTenantDomain);
 
         List<Node> nodeList = createNodes(10);
         Node node = nodeList.get(0);
         nodeList = allocateNode(nodeList, node, applicationId);
-        when(nodeRepository.getNodes()).thenReturn(nodeList);
+        when(nodes.list()).thenReturn(NodeList.copyOf(nodeList));
         String nodeIp = node.ipConfig().primary().stream().findAny().orElseThrow(() -> new RuntimeException("No ipaddress for mocked node"));
         InstanceConfirmation instanceConfirmation = createRefreshInstanceConfirmation(applicationId, domain, service, ImmutableList.of(nodeIp));
 
@@ -134,12 +138,15 @@ public class InstanceValidatorTest {
     @Test
     public void rejects_refresh_on_ip_mismatch() {
         NodeRepository nodeRepository = mock(NodeRepository.class);
+        Nodes nodes = mock(Nodes.class);
+        when(nodeRepository.nodes()).thenReturn(nodes);
+
         InstanceValidator instanceValidator = new InstanceValidator(null, null, nodeRepository, new IdentityDocumentSigner(), vespaTenantDomain);
 
         List<Node> nodeList = createNodes(10);
         Node node = nodeList.get(0);
         nodeList = allocateNode(nodeList, node, applicationId);
-        when(nodeRepository.getNodes()).thenReturn(nodeList);
+        when(nodes.list()).thenReturn(NodeList.copyOf(nodeList));
         String nodeIp = node.ipConfig().primary().stream().findAny().orElseThrow(() -> new RuntimeException("No ipaddress for mocked node"));
 
         // Add invalid ip to list of ip addresses
@@ -151,10 +158,14 @@ public class InstanceValidatorTest {
     @Test
     public void rejects_refresh_when_node_is_not_allocated() {
         NodeRepository nodeRepository = mock(NodeRepository.class);
+        Nodes nodes = mock(Nodes.class);
+        when(nodeRepository.nodes()).thenReturn(nodes);
+
         InstanceValidator instanceValidator = new InstanceValidator(null, null, nodeRepository, new IdentityDocumentSigner(), vespaTenantDomain);
 
         List<Node> nodeList = createNodes(10);
-        when(nodeRepository.getNodes()).thenReturn(nodeList);
+
+        when(nodes.list()).thenReturn(NodeList.copyOf(nodeList));
         InstanceConfirmation instanceConfirmation = createRefreshInstanceConfirmation(applicationId, domain, service, ImmutableList.of("::11"));
 
         assertFalse(instanceValidator.isValidRefresh(instanceConfirmation));
@@ -224,14 +235,8 @@ public class InstanceValidatorTest {
         MockNodeFlavors flavors = new MockNodeFlavors();
         List<Node> nodeList = new ArrayList<>();
         for (int i = 0; i < num; i++) {
-            Node node = Node.create("foo" + i,
-                                    new IP.Config(Set.of("::1" + i, "::2" + i, "::3" + i), Set.of()),
-                                    "foo" + i,
-                                    Optional.empty(),
-                                    Optional.empty(),
-                                    flavors.getFlavorOrThrow("default"),
-                                    Optional.empty(),
-                                    NodeType.tenant, Optional.empty());
+            Node node = Node.create("foo" + i, new IP.Config(Set.of("::1" + i, "::2" + i, "::3" + i), Set.of()),
+                    "foo" + i, flavors.getFlavorOrThrow("default"), NodeType.tenant).build();
             nodeList.add(node);
         }
         return nodeList;

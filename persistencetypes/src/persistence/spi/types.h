@@ -2,8 +2,9 @@
 
 #pragma once
 
-#include <vector>
 #include <vespa/vespalib/stllike/string.h>
+#include <vector>
+#include <memory>
 
 namespace vespalib {
     class nbostream;
@@ -61,12 +62,6 @@ namespace storage::spi {
  * \ingroup spi
  */
 DEFINE_PRIMITIVE_WRAPPER(uint16_t, NodeIndex);
-
-/**
- * \class storage::spi::PartitionId
- * \ingroup spi
- */
-DEFINE_PRIMITIVE_WRAPPER(uint16_t, PartitionId);
 
 /**
  * \class storage::spi::IteratorId

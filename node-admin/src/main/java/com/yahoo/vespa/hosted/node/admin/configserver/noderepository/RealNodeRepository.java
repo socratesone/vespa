@@ -16,6 +16,7 @@ import com.yahoo.vespa.hosted.node.admin.configserver.noderepository.bindings.Ge
 import com.yahoo.vespa.hosted.node.admin.configserver.noderepository.bindings.NodeMessageResponse;
 import com.yahoo.vespa.hosted.node.admin.configserver.noderepository.bindings.NodeRepositoryNode;
 
+import java.net.URI;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
@@ -152,6 +153,7 @@ public class RealNodeRepository implements NodeRepository {
         NodeReports reports = NodeReports.fromMap(Optional.ofNullable(node.reports).orElseGet(Map::of));
         return new NodeSpec(
                 node.hostname,
+                Optional.ofNullable(node.openStackId),
                 Optional.ofNullable(node.wantedDockerImage).map(DockerImage::fromString),
                 Optional.ofNullable(node.currentDockerImage).map(DockerImage::fromString),
                 nodeState,
@@ -161,7 +163,7 @@ public class RealNodeRepository implements NodeRepository {
                 Optional.ofNullable(node.vespaVersion).map(Version::fromString),
                 Optional.ofNullable(node.wantedOsVersion).map(Version::fromString),
                 Optional.ofNullable(node.currentOsVersion).map(Version::fromString),
-                Optional.ofNullable(node.allowedToBeDown),
+                Optional.ofNullable(node.orchestratorStatus).map(OrchestratorStatus::fromString).orElse(OrchestratorStatus.NO_REMARKS),
                 Optional.ofNullable(node.owner).map(o -> ApplicationId.from(o.tenant, o.application, o.instance)),
                 membership,
                 Optional.ofNullable(node.restartGeneration),
@@ -181,7 +183,9 @@ public class RealNodeRepository implements NodeRepository {
                 node.ipAddresses,
                 node.additionalIpAddresses,
                 reports,
-                Optional.ofNullable(node.parentHostname));
+                Optional.ofNullable(node.parentHostname),
+                Optional.ofNullable(node.archiveUri).map(URI::create),
+                Optional.ofNullable(node.exclusiveTo).map(ApplicationId::fromSerializedForm));
     }
 
     private static NodeResources.DiskSpeed diskSpeedFromString(String diskSpeed) {
@@ -224,7 +228,7 @@ public class RealNodeRepository implements NodeRepository {
 
     private static NodeRepositoryNode nodeRepositoryNodeFromAddNode(AddNode addNode) {
         NodeRepositoryNode node = new NodeRepositoryNode();
-        node.openStackId = "fake-" + addNode.hostname;
+        node.openStackId = addNode.id.orElse("fake-" + addNode.hostname);
         node.hostname = addNode.hostname;
         node.parentHostname = addNode.parentHostname.orElse(null);
         addNode.nodeFlavor.ifPresent(f -> node.flavor = f);
@@ -249,6 +253,7 @@ public class RealNodeRepository implements NodeRepository {
 
     public static NodeRepositoryNode nodeRepositoryNodeFromNodeAttributes(NodeAttributes nodeAttributes) {
         NodeRepositoryNode node = new NodeRepositoryNode();
+        node.openStackId = nodeAttributes.getHostId().orElse(null);
         node.currentDockerImage = nodeAttributes.getDockerImage().map(DockerImage::asString).orElse(null);
         node.currentRestartGeneration = nodeAttributes.getRestartGeneration().orElse(null);
         node.currentRebootGeneration = nodeAttributes.getRebootGeneration().orElse(null);

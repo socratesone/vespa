@@ -86,9 +86,8 @@ public class MetricsProxyContainerCluster extends ContainerCluster<MetricsProxyC
     private final AbstractConfigProducer<?> parent;
     private final ApplicationId applicationId;
 
-
     public MetricsProxyContainerCluster(AbstractConfigProducer<?> parent, String name, DeployState deployState) {
-        super(parent, name, name, deployState);
+        super(parent, name, name, deployState, true);
         this.parent = parent;
         applicationId = deployState.getProperties().applicationId();
 
@@ -97,6 +96,7 @@ public class MetricsProxyContainerCluster extends ContainerCluster<MetricsProxyC
 
         addPlatformBundle(METRICS_PROXY_BUNDLE_FILE);
         addClusterComponents();
+        setJvmGCOptions(deployState.getProperties().jvmGCOptions());
     }
 
     private void addClusterComponents() {

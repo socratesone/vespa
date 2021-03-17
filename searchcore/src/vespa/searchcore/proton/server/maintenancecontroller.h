@@ -15,7 +15,7 @@ namespace vespalib {
     class SyncableThreadExecutor;
     class Executor;
 }
-namespace searchcorespi { namespace index { struct IThreadService; }}
+namespace searchcorespi::index { struct IThreadService; }
 
 namespace proton {
 
@@ -34,10 +34,11 @@ public:
     using DocumentDBMaintenanceConfigSP = std::shared_ptr<DocumentDBMaintenanceConfig>;
     using JobList = std::vector<std::shared_ptr<MaintenanceJobRunner>>;
     using UP = std::unique_ptr<MaintenanceController>;
+    enum class State {INITIALIZING, STARTED, PAUSED, STOPPING};
 
     MaintenanceController(IThreadService &masterThread, vespalib::SyncableThreadExecutor & defaultExecutor, const DocTypeName &docTypeName);
 
-    virtual ~MaintenanceController();
+    ~MaintenanceController() override;
     void registerJobInMasterThread(IMaintenanceJob::UP job);
     void registerJobInDefaultPool(IMaintenanceJob::UP job);
 
@@ -51,6 +52,7 @@ public:
     void stop();
     void start(const DocumentDBMaintenanceConfigSP &config);
     void newConfig(const DocumentDBMaintenanceConfigSP &config);
+    void updateMetrics(DocumentDBTaggedMetrics & metrics);
 
     void
     syncSubDBs(const MaintenanceDocumentSubDB &readySubDB,
@@ -63,12 +65,14 @@ public:
     operator const IFrozenBucketHandler &() const { return _frozenBuckets; }
     operator IFrozenBucketHandler &() { return _frozenBuckets; }
 
-    bool  getStarted() const { return _started; }
-    bool getStopping() const { return _stopping; }
+    bool  getStarted() const { return _state >= State::STARTED; }
+    bool getStopping() const { return _state == State::STOPPING; }
+    bool getPaused() const { return _state == State::PAUSED; }
 
     const MaintenanceDocumentSubDB &    getReadySubDB() const { return _readySubDB; }
     const MaintenanceDocumentSubDB &      getRemSubDB() const { return _remSubDB; }
     const MaintenanceDocumentSubDB & getNotReadySubDB() const { return _notReadySubDB; }
+    IThreadService & masterThread() { return _masterThread; }
 private:
     using Mutex = std::mutex;
     using Guard = std::lock_guard<Mutex>;
@@ -81,8 +85,7 @@ private:
     std::unique_ptr<vespalib::ScheduledExecutor>  _periodicTimer;
     DocumentDBMaintenanceConfigSP     _config;
     FrozenBuckets                     _frozenBuckets;
-    bool                              _started;
-    bool                              _stopping;
+    State                             _state;
     const DocTypeName                &_docTypeName;
     JobList                           _jobs;
     mutable Mutex                     _jobsLock;
@@ -94,6 +97,4 @@ private:
     void registerJob(vespalib::Executor & executor, IMaintenanceJob::UP job);
 };
 
-
 } // namespace proton
-

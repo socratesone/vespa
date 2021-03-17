@@ -177,6 +177,11 @@ public class AthenzCredentialsMaintainer implements CredentialsMaintainer {
         }
     }
 
+    @Override
+    public String name() {
+        return "node-certificate";
+    }
+
     private boolean shouldRefreshCredentials(Duration age) {
         return age.compareTo(REFRESH_PERIOD) >= 0;
     }
@@ -198,7 +203,7 @@ public class AthenzCredentialsMaintainer implements CredentialsMaintainer {
         HostnameVerifier ztsHostNameVerifier = useInternalZts
                 ? new AthenzIdentityVerifier(Set.of(configserverIdentity))
                 : null;
-        try (ZtsClient ztsClient = new DefaultZtsClient(ztsEndpoint, hostIdentityProvider, ztsHostNameVerifier)) {
+        try (ZtsClient ztsClient = new DefaultZtsClient.Builder(ztsEndpoint).withIdentityProvider(hostIdentityProvider).withHostnameVerifier(ztsHostNameVerifier).build()) {
             InstanceIdentity instanceIdentity =
                     ztsClient.registerInstance(
                             configserverIdentity,
@@ -227,7 +232,7 @@ public class AthenzCredentialsMaintainer implements CredentialsMaintainer {
             HostnameVerifier ztsHostNameVerifier = useInternalZts
                     ? new AthenzIdentityVerifier(Set.of(configserverIdentity))
                     : null;
-            try (ZtsClient ztsClient = new DefaultZtsClient(ztsEndpoint, containerIdentitySslContext, ztsHostNameVerifier)) {
+            try (ZtsClient ztsClient = new DefaultZtsClient.Builder(ztsEndpoint).withSslContext(containerIdentitySslContext).withHostnameVerifier(ztsHostNameVerifier).build()) {
                 InstanceIdentity instanceIdentity =
                         ztsClient.refreshInstance(
                                 configserverIdentity,

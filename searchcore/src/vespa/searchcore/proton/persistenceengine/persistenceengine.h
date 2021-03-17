@@ -5,15 +5,19 @@
 #include "i_resource_write_filter.h"
 #include "persistence_handler_map.h"
 #include "ipersistencehandler.h"
+#include "resource_usage_tracker.h"
 #include <vespa/persistence/spi/abstractpersistenceprovider.h>
+#include <vespa/persistence/spi/bucketexecutor.h>
 #include <mutex>
 #include <shared_mutex>
 
 namespace proton {
 
 class IPersistenceEngineOwner;
+class IDiskMemUsageNotifier;
 
-class PersistenceEngine : public storage::spi::AbstractPersistenceProvider {
+class PersistenceEngine : public storage::spi::AbstractPersistenceProvider,
+                          public storage::spi::BucketExecutor {
 private:
     using PersistenceHandlerSequence = PersistenceHandlerMap::PersistenceHandlerSequence;
     using HandlerSnapshot = PersistenceHandlerMap::HandlerSnapshot;
@@ -27,6 +31,7 @@ private:
     using CreateIteratorResult = storage::spi::CreateIteratorResult;
     using GetResult = storage::spi::GetResult;
     using IncludedVersions = storage::spi::IncludedVersions;
+    using IResourceUsageListener = storage::spi::IResourceUsageListener;
     using IterateResult = storage::spi::IterateResult;
     using IteratorId = storage::spi::IteratorId;
     using RemoveResult = storage::spi::RemoveResult;
@@ -36,6 +41,8 @@ private:
     using TimestampList = storage::spi::TimestampList;
     using UpdateResult = storage::spi::UpdateResult;
     using OperationComplete = storage::spi::OperationComplete;
+    using BucketExecutor = storage::spi::BucketExecutor;
+    using BucketTask = storage::spi::BucketTask;
 
     struct IteratorEntry {
         PersistenceHandlerSequence  handler_sequence;
@@ -68,7 +75,9 @@ private:
     const IResourceWriteFilter             &_writeFilter;
     std::unordered_map<BucketSpace, ClusterState::SP, BucketSpace::hash> _clusterStates;
     mutable ExtraModifiedBuckets            _extraModifiedBuckets;
-    mutable std::shared_mutex         _rwMutex;
+    mutable std::shared_mutex               _rwMutex;
+    std::shared_ptr<ResourceUsageTracker>   _resource_usage_tracker;
+    std::weak_ptr<BucketExecutor>           _bucket_executor;
 
     using ReadGuard = std::shared_lock<std::shared_mutex>;
     using WriteGuard = std::unique_lock<std::shared_mutex>;
@@ -80,11 +89,12 @@ private:
 
     void saveClusterState(BucketSpace bucketSpace, const ClusterState &calc);
     ClusterState::SP savedClusterState(BucketSpace bucketSpace) const;
+    std::shared_ptr<BucketExecutor> get_bucket_executor() noexcept { return _bucket_executor.lock(); }
 
 public:
     typedef std::unique_ptr<PersistenceEngine> UP;
 
-    PersistenceEngine(IPersistenceEngineOwner &owner, const IResourceWriteFilter &writeFilter,
+    PersistenceEngine(IPersistenceEngineOwner &owner, const IResourceWriteFilter &writeFilter, IDiskMemUsageNotifier &disk_mem_usage_notifier,
                       ssize_t defaultSerializedSize, bool ignoreMaxBytes);
     ~PersistenceEngine() override;
 
@@ -111,12 +121,15 @@ public:
     BucketIdListResult getModifiedBuckets(BucketSpace bucketSpace) const override;
     Result split(const Bucket& source, const Bucket& target1, const Bucket& target2, Context&) override;
     Result join(const Bucket& source1, const Bucket& source2, const Bucket& target, Context&) override;
-
+    std::unique_ptr<vespalib::IDestructorCallback> register_resource_usage_listener(IResourceUsageListener& listener) override;
+    std::unique_ptr<vespalib::IDestructorCallback> register_executor(std::shared_ptr<BucketExecutor>) override;
     void destroyIterators();
     void propagateSavedClusterState(BucketSpace bucketSpace, IPersistenceHandler &handler);
     void grabExtraModifiedBuckets(BucketSpace bucketSpace, IPersistenceHandler &handler);
     void populateInitialBucketDB(const WriteGuard & guard, BucketSpace bucketSpace, IPersistenceHandler &targetHandler);
     WriteGuard getWLock() const;
+    ResourceUsageTracker &get_resource_usage_tracker() noexcept { return *_resource_usage_tracker; }
+    void execute(const Bucket &bucket, std::unique_ptr<BucketTask> task) override;
 };
 
 }

@@ -4,6 +4,7 @@
 #include <vespa/vespalib/stllike/string.h>
 #include <vespa/vespalib/stllike/hash_set.h>
 #include <vespa/vespalib/stllike/asciistream.h>
+#include <vespa/vespalib/util/size_literals.h>
 #include <vespa/fastlib/io/bufferedfile.h>
 #include <vespa/fastos/app.h>
 #include <iostream>
@@ -66,7 +67,7 @@ shafile(const string &baseDir,
     string fullFile(prependBaseDir(baseDir, file));
     FastOS_File f;
     std::ostringstream os;
-    Alloc buf = Alloc::alloc(65536, MemoryAllocator::HUGEPAGE_SIZE, 0x1000);
+    Alloc buf = Alloc::alloc_aligned(64_Ki, 0x1000);
     f.EnableDirectIO();
     bool openres = f.OpenReadOnly(fullFile.c_str());
     if (!openres) {
@@ -219,12 +220,12 @@ class ConstTextFieldGenerator : public FieldGenerator
 {
     string _value;
 public:
-    ConstTextFieldGenerator(std::vector<string> argv);
+    ConstTextFieldGenerator(std::vector<string> argv) noexcept;
     virtual ~ConstTextFieldGenerator() override;
     virtual void generateValue(vespalib::asciistream &doc, uint32_t id) override;
 };
 
-ConstTextFieldGenerator::ConstTextFieldGenerator(std::vector<string> argv)
+ConstTextFieldGenerator::ConstTextFieldGenerator(std::vector<string> argv) noexcept
     : FieldGenerator(argv[0]),
       _value()
 {

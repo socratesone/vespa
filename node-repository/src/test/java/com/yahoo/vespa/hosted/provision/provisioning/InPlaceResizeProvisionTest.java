@@ -13,6 +13,7 @@ import com.yahoo.config.provision.Zone;
 import com.yahoo.vespa.flags.InMemoryFlagSource;
 import com.yahoo.vespa.hosted.provision.Node;
 import com.yahoo.vespa.hosted.provision.NodeList;
+import com.yahoo.vespa.hosted.provision.NodeMutex;
 import com.yahoo.vespa.hosted.provision.node.Agent;
 import org.junit.Test;
 
@@ -60,8 +61,8 @@ public class InPlaceResizeProvisionTest {
     private final ProvisioningTester tester = new ProvisioningTester.Builder()
             .flagSource(flagSource)
             .zone(new Zone(Environment.prod, RegionName.from("us-east"))).build();
-    private final ApplicationId infraApp = ProvisioningTester.makeApplicationId();
-    private final ApplicationId app = ProvisioningTester.makeApplicationId();
+    private final ApplicationId infraApp = ProvisioningTester.applicationId();
+    private final ApplicationId app = ProvisioningTester.applicationId();
 
     @Test
     public void single_group_same_cluster_size_resource_increase() {
@@ -128,7 +129,7 @@ public class InPlaceResizeProvisionTest {
         addParentHosts(4, new NodeResources(8, 16, 320, 8, fast, local));
 
         // Allocate 2 nodes for one app that leaves exactly enough capacity for mediumResources left on the host
-        new PrepareHelper(tester, ProvisioningTester.makeApplicationId()).prepare(container1, 2, 1, mediumResources).activate();
+        new PrepareHelper(tester, ProvisioningTester.applicationId()).prepare(container1, 2, 1, mediumResources).activate();
 
         // Allocate 4 nodes for another app. After this, 2 hosts should be completely full
         new PrepareHelper(tester, app).prepare(container1, 4, 1, mediumResources).activate();
@@ -197,7 +198,7 @@ public class InPlaceResizeProvisionTest {
         // Failing one of the new nodes should cause another new node to be allocated rather than
         // unretiring one of the existing nodes, to avoid resizing during unretiring
         Node nodeToFail = listCluster(content1).not().retired().asList().get(0);
-        tester.nodeRepository().fail(nodeToFail.hostname(), Agent.system, "testing");
+        tester.nodeRepository().nodes().fail(nodeToFail.hostname(), Agent.system, "testing");
         new PrepareHelper(tester, app).prepare(content1, 8, 1, halvedResources).activate();
         assertFalse(listCluster(content1).stream().anyMatch(n -> n.equals(nodeToFail)));
         assertSizeAndResources(listCluster(content1).retired(), 4, resources);
@@ -205,8 +206,10 @@ public class InPlaceResizeProvisionTest {
 
         // ... same with setting a node to want to retire
         Node nodeToWantoToRetire = listCluster(content1).not().retired().asList().get(0);
-        tester.nodeRepository().write(nodeToWantoToRetire.withWantToRetire(true, Agent.system, tester.clock().instant()),
-                                      tester.nodeRepository().lock(nodeToWantoToRetire));
+        try (NodeMutex lock = tester.nodeRepository().nodes().lockAndGetRequired(nodeToWantoToRetire)) {
+            tester.nodeRepository().nodes().write(lock.node().withWantToRetire(true, Agent.system,
+                    tester.clock().instant()), lock);
+        }
         new PrepareHelper(tester, app).prepare(content1, 8, 1, halvedResources).activate();
         assertTrue(listCluster(content1).retired().stream().anyMatch(n -> n.equals(nodeToWantoToRetire)));
         assertEquals(5, listCluster(content1).retired().size());

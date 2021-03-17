@@ -173,6 +173,7 @@ EvalSpec::add_tensor_operation_cases() {
     add_rule({"a", -1.0, 1.0}, "reduce(a,prod)", [](double a){ return a; });
     add_rule({"a", -1.0, 1.0}, "reduce(a,sum)", [](double a){ return a; });
     add_rule({"a", -1.0, 1.0}, "reduce(a,max)", [](double a){ return a; });
+    add_rule({"a", -1.0, 1.0}, "reduce(a,median)", [](double a){ return a; });
     add_rule({"a", -1.0, 1.0}, "reduce(a,min)", [](double a){ return a; });
     add_expression({"a"}, "rename(a,x,y)");
     add_expression({"a"}, "rename(a,(x,y),(y,x))");
@@ -180,6 +181,7 @@ EvalSpec::add_tensor_operation_cases() {
     add_expression({}, "tensor(x[10],y[10])(x==y)");
     add_expression({"a","b"}, "concat(a,b,x)");
     add_expression({"a","b"}, "concat(a,b,y)");
+    add_expression({"a"}, "cell_cast(a,float)");
     add_expression({}, "tensor(x[3]):{{x:0}:0,{x:1}:1,{x:2}:2}");
     add_expression({"a"}, "a{x:3}");
 }

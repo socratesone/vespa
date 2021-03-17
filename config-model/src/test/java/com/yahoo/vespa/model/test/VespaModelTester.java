@@ -13,8 +13,12 @@ import com.yahoo.config.model.provision.Hosts;
 import com.yahoo.config.model.provision.InMemoryProvisioner;
 import com.yahoo.config.model.provision.SingleNodeProvisioner;
 import com.yahoo.config.provision.ApplicationId;
+import com.yahoo.config.provision.Capacity;
+import com.yahoo.config.provision.ClusterSpec;
 import com.yahoo.config.provision.Flavor;
+import com.yahoo.config.provision.HostSpec;
 import com.yahoo.config.provision.NodeResources;
+import com.yahoo.config.provision.ProvisionLogger;
 import com.yahoo.config.provision.Zone;
 import com.yahoo.vespa.model.VespaModel;
 import com.yahoo.vespa.model.test.utils.ApplicationPackageUtils;
@@ -45,20 +49,21 @@ public class VespaModelTester {
     private final ConfigModelRegistry configModelRegistry;
 
     private boolean hosted = true;
-    private Map<NodeResources, Collection<Host>> hostsByResources = new HashMap<>();
+    private final Map<NodeResources, Collection<Host>> hostsByResources = new HashMap<>();
     private ApplicationId applicationId = ApplicationId.defaultId();
     private boolean useDedicatedNodeForLogserver = false;
+    private boolean dedicatedClusterControllerCluster = true;
 
     public VespaModelTester() {
         this(new NullConfigModelRegistry());
     }
-    
+
     public VespaModelTester(ConfigModelRegistry configModelRegistry) {
         this.configModelRegistry = configModelRegistry;
     }
-    
-    /** Adds some nodes with resources 1, 3, 9 */
-    public Hosts addHosts(int count) { return addHosts(new NodeResources(1, 3, 9, 1), count); }
+
+    /** Adds some nodes with resources 1, 3, 10 */
+    public Hosts addHosts(int count) { return addHosts(InMemoryProvisioner.defaultResources, count); }
 
     public Hosts addHosts(NodeResources resources, int count) {
         return addHosts(Optional.of(new Flavor(resources)), resources, count);
@@ -66,7 +71,7 @@ public class VespaModelTester {
 
     private Hosts addHosts(Optional<Flavor> flavor, NodeResources resources, int count) {
         List<Host> hosts = new ArrayList<>();
-        
+
         for (int i = 0; i < count; ++i) {
             // Let host names sort in the opposite order of the order the hosts are added
             // This allows us to test index vs. name order selection when subsets of hosts are selected from a cluster
@@ -97,6 +102,10 @@ public class VespaModelTester {
         this.useDedicatedNodeForLogserver = useDedicatedNodeForLogserver;
     }
 
+    public void dedicatedClusterControllerCluster(boolean dedicatedClusterControllerCluster) {
+        this.dedicatedClusterControllerCluster = dedicatedClusterControllerCluster;
+    }
+
     /** Creates a model which uses 0 as start index and fails on out of capacity */
     public VespaModel createModel(String services, String ... retiredHostNames) {
         return createModel(Zone.defaultZone(), services, true, retiredHostNames);
@@ -104,22 +113,38 @@ public class VespaModelTester {
 
     /** Creates a model which uses 0 as start index */
     public VespaModel createModel(String services, boolean failOnOutOfCapacity, String ... retiredHostNames) {
-        return createModel(Zone.defaultZone(), services, failOnOutOfCapacity, false, 0, retiredHostNames);
+        return createModel(Zone.defaultZone(), services, failOnOutOfCapacity, false, 0,
+                           Optional.empty(), new DeployState.Builder(), retiredHostNames);
+    }
+
+    /** Creates a model which uses 0 as start index */
+    public VespaModel createModel(String services, boolean failOnOutOfCapacity, DeployState.Builder builder) {
+        return createModel(Zone.defaultZone(), services, failOnOutOfCapacity, false, 0, Optional.empty(), builder);
     }
 
     /** Creates a model which uses 0 as start index */
     public VespaModel createModel(String services, boolean failOnOutOfCapacity, boolean useMaxResources, String ... retiredHostNames) {
-        return createModel(Zone.defaultZone(), services, failOnOutOfCapacity, useMaxResources, 0, retiredHostNames);
+        return createModel(Zone.defaultZone(), services, failOnOutOfCapacity, useMaxResources, 0,
+                           Optional.empty(), new DeployState.Builder(), retiredHostNames);
     }
 
     /** Creates a model which uses 0 as start index */
     public VespaModel createModel(String services, boolean failOnOutOfCapacity, int startIndexForClusters, String ... retiredHostNames) {
-        return createModel(Zone.defaultZone(), services, failOnOutOfCapacity, false, startIndexForClusters, retiredHostNames);
+        return createModel(Zone.defaultZone(), services, failOnOutOfCapacity, false, startIndexForClusters,
+                           Optional.empty(), new DeployState.Builder(), retiredHostNames);
     }
 
     /** Creates a model which uses 0 as start index */
     public VespaModel createModel(Zone zone, String services, boolean failOnOutOfCapacity, String ... retiredHostNames) {
-        return createModel(zone, services, failOnOutOfCapacity, false, 0, retiredHostNames);
+        return createModel(zone, services, failOnOutOfCapacity, false, 0,
+                           Optional.empty(), new DeployState.Builder(), retiredHostNames);
+    }
+
+    /** Creates a model which uses 0 as start index */
+    public VespaModel createModel(Zone zone, String services, boolean failOnOutOfCapacity,
+                                  DeployState.Builder deployStateBuilder, String ... retiredHostNames) {
+        return createModel(zone, services, failOnOutOfCapacity, false, 0,
+                           Optional.empty(), deployStateBuilder, retiredHostNames);
     }
 
     /**
@@ -132,28 +157,55 @@ public class VespaModelTester {
      * @return the resulting model
      */
     public VespaModel createModel(Zone zone, String services, boolean failOnOutOfCapacity, boolean useMaxResources,
-                                  int startIndexForClusters, String ... retiredHostNames) {
+                                  int startIndexForClusters, Optional<VespaModel> previousModel,
+                                  DeployState.Builder deployStatebuilder, String ... retiredHostNames) {
         VespaModelCreatorWithMockPkg modelCreatorWithMockPkg = new VespaModelCreatorWithMockPkg(null, services, ApplicationPackageUtils.generateSearchDefinition("type1"));
         ApplicationPackage appPkg = modelCreatorWithMockPkg.appPkg;
 
         HostProvisioner provisioner = hosted ?
-                                      new InMemoryProvisioner(hostsByResources, failOnOutOfCapacity, useMaxResources,
-                                                              false,
-                                                              startIndexForClusters, retiredHostNames) :
+                                      new ProvisionerAdapter(new InMemoryProvisioner(hostsByResources,
+                                                                                     failOnOutOfCapacity,
+                                                                                     useMaxResources,
+                                                                                     false,
+                                                                                     startIndexForClusters,
+                                                                                     retiredHostNames)) :
                                       new SingleNodeProvisioner();
 
         TestProperties properties = new TestProperties()
                 .setMultitenant(true)
                 .setHostedVespa(hosted)
                 .setApplicationId(applicationId)
-                .setUseDedicatedNodeForLogserver(useDedicatedNodeForLogserver);
+                .setUseDedicatedNodeForLogserver(useDedicatedNodeForLogserver)
+                .setDedicatedClusterControllerCluster(dedicatedClusterControllerCluster);
 
-        DeployState deployState = new DeployState.Builder()
+        DeployState.Builder deployState = deployStatebuilder
                 .applicationPackage(appPkg)
                 .modelHostProvisioner(provisioner)
                 .properties(properties)
-                .zone(zone)
-                .build();
-        return modelCreatorWithMockPkg.create(false, deployState, configModelRegistry);
+                .zone(zone);
+        previousModel.ifPresent(deployState::previousModel);
+        return modelCreatorWithMockPkg.create(false, deployState.build(), configModelRegistry);
+    }
+
+    /** To verify that we don't call allocateHost(alias) in hosted environments */
+    private static class ProvisionerAdapter implements HostProvisioner {
+
+        private final HostProvisioner provisioner;
+
+        public ProvisionerAdapter(HostProvisioner provisioner) {
+            this.provisioner = provisioner;
+        }
+
+        @Override
+        public HostSpec allocateHost(String alias) {
+            throw new UnsupportedOperationException("Allocating hosts using <node> tags is not supported in hosted environments, " +
+                                                    "use <nodes count='N'> instead, see https://cloud.vespa.ai/en/reference/services");
+        }
+
+        @Override
+        public List<HostSpec> prepare(ClusterSpec cluster, Capacity capacity, ProvisionLogger logger) {
+            return provisioner.prepare(cluster, capacity, logger);
+        }
+
     }
 }

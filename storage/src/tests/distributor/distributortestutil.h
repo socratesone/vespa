@@ -2,14 +2,14 @@
 #pragma once
 
 #include "distributor_message_sender_stub.h"
-#include <tests/common/teststorageapp.h>
-#include <tests/common/testhelper.h>
 #include <tests/common/dummystoragelink.h>
+#include <tests/common/testhelper.h>
+#include <tests/common/teststorageapp.h>
 #include <vespa/storage/common/hostreporter/hostinfo.h>
 #include <vespa/storage/frameworkimpl/component/distributorcomponentregisterimpl.h>
 #include <vespa/storage/storageutil/utils.h>
-#include <vespa/storageframework/defaultimplementation/clock/fakeclock.h>
 #include <vespa/storageapi/message/state.h>
+#include <vespa/storageframework/defaultimplementation/clock/fakeclock.h>
 
 namespace storage {
 
@@ -21,6 +21,7 @@ class BucketDBUpdater;
 class Distributor;
 class DistributorBucketSpace;
 class DistributorBucketSpaceRepo;
+class DistributorComponent;
 class IdealStateManager;
 class ExternalOperationHandler;
 class Operation;
@@ -111,6 +112,7 @@ public:
     BucketDBUpdater& getBucketDBUpdater();
     IdealStateManager& getIdealStateManager();
     ExternalOperationHandler& getExternalOperationHandler();
+    storage::distributor::DistributorComponent& distributor_component();
 
     Distributor& getDistributor() {
         return *_distributor;
@@ -139,7 +141,7 @@ public:
     // "End to end" distribution change trigger, which will invoke the bucket
     // DB updater as expected based on the previous and new cluster state
     // and config.
-    void triggerDistributionChange(lib::Distribution::SP distr);
+    void triggerDistributionChange(std::shared_ptr<lib::Distribution> distr);
     
     framework::defaultimplementation::FakeClock& getClock() { return _node->getClock(); }
     DistributorComponentRegister& getComponentRegister() { return _node->getComponentRegister(); }
@@ -159,6 +161,12 @@ public:
                           uint32_t earlyReturn = false,
                           bool requirePrimaryToBeWritten = true);
 
+    void setup_distributor(int redundancy,
+                           int node_count,
+                           const lib::ClusterStateBundle& state,
+                           uint32_t early_return = false,
+                           bool require_primary_to_be_written = true);
+
     void setRedundancy(uint32_t redundancy);
 
     void notifyDoneInitializing() override {}
@@ -175,6 +183,9 @@ public:
     BucketDatabase::Entry getBucket(const document::BucketId& bId) const;
 
     std::vector<document::BucketSpace> getBucketSpaces() const;
+
+    DistributorMessageSenderStub& sender() noexcept { return _sender; }
+    const DistributorMessageSenderStub& sender() const noexcept { return _sender; }
 protected:
     vdstestlib::DirConfig _config;
     std::unique_ptr<TestDistributorApp> _node;
@@ -201,6 +212,7 @@ protected:
     MessageSenderImpl _messageSender;
 
     void enableDistributorClusterState(vespalib::stringref state);
+    void enable_distributor_cluster_state(const lib::ClusterStateBundle& state);
 };
 
 }

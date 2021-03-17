@@ -735,7 +735,7 @@ public class MessageBusVisitorSession implements VisitorSession {
                     String msg = "Got exception of type " + e.getClass().getName() +
                             " with message '" + e.getMessage() +
                             "' while processing reply in visitor session";
-                    e.printStackTrace();
+                    log.log(Level.WARNING, msg, e);
                     transitionTo(new StateDescription(State.FAILED, msg));
                 } catch (Throwable t) {
                     // We can't reliably handle this; take a nosedive
@@ -772,8 +772,8 @@ public class MessageBusVisitorSession implements VisitorSession {
     }
 
     private void handleMessageProcessingException(Reply reply, Exception e, String what) {
-        final String errorDesc = formatProcessingException(e, what);
-        final String fullMsg = formatIdentifyingVisitorErrorString(errorDesc);
+        String errorDesc = formatProcessingException(e, what);
+        String fullMsg = formatIdentifyingVisitorErrorString(errorDesc);
         log.log(Level.SEVERE, fullMsg, e);
         int errorCode;
         synchronized (progress.getToken()) {
@@ -917,7 +917,7 @@ public class MessageBusVisitorSession implements VisitorSession {
             }
         }
         if (isErrorOfType(reply, DocumentProtocol.ERROR_WRONG_DISTRIBUTION)) {
-            handleWrongDistributionReply((WrongDistributionReply)reply);
+            handleWrongDistributionReply((WrongDistributionReply) reply);
         } else {
             if (shouldReportError(reply)) {
                 reportVisitorError(message);
@@ -1036,7 +1036,11 @@ public class MessageBusVisitorSession implements VisitorSession {
         params.getControlHandler().onProgress(progress.getToken());
         statistics.add(reply.getVisitorStatistics());
         params.getControlHandler().onVisitorStatistics(statistics);
-        trace.getRoot().addChild(reply.getTrace().getRoot());
+        // A visitor session might be long lived so we need a safeguard against blowing the memory if tracing
+        // has been enabled.
+        if ( ! reply.getTrace().getRoot().isEmpty() && (trace.getRoot().getNumChildren() < 1000)) {
+            trace.getRoot().addChild(reply.getTrace().getRoot());
+        }
 
         if (params.getDynamicallyIncreaseMaxBucketsPerVisitor()
                 && (reply.getVisitorStatistics().getDocumentsReturned()
@@ -1166,7 +1170,7 @@ public class MessageBusVisitorSession implements VisitorSession {
                 }
             }
         } catch (InterruptedException e) {
-            e.printStackTrace();
+            log.log(Level.WARNING, "Interrupted waiting for visitor session to be destroyed");
         } finally {
             try {
                 sender.destroy();

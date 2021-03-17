@@ -1,11 +1,13 @@
 // Copyright 2017 Yahoo Holdings. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 #include "distributortestutil.h"
+#include <vespa/config-stor-distribution.h>
+#include <vespa/document/test/make_bucket_space.h>
+#include <vespa/document/test/make_document_bucket.h>
 #include <vespa/storage/distributor/distributor.h>
 #include <vespa/storage/distributor/distributor_bucket_space.h>
-#include <vespa/config-stor-distribution.h>
+#include <vespa/storage/distributor/distributorcomponent.h>
+#include <vespa/vdslib/distribution/distribution.h>
 #include <vespa/vespalib/text/stringtokenizer.h>
-#include <vespa/document/test/make_document_bucket.h>
-#include <vespa/document/test/make_bucket_space.h>
 
 using document::test::makeBucketSpace;
 using document::test::makeDocumentBucket;
@@ -26,6 +28,7 @@ DistributorTestUtil::createLinks()
     _threadPool = framework::TickingThreadPool::createDefault("distributor");
     _distributor.reset(new Distributor(
             _node->getComponentRegister(),
+            _node->node_identity(),
             *_threadPool,
             *this,
             true,
@@ -41,14 +44,24 @@ DistributorTestUtil::setupDistributor(int redundancy,
                                       uint32_t earlyReturn,
                                       bool requirePrimaryToBeWritten)
 {
+    setup_distributor(redundancy, nodeCount, lib::ClusterStateBundle(lib::ClusterState(systemState)), earlyReturn, requirePrimaryToBeWritten);
+}
+
+void
+DistributorTestUtil::setup_distributor(int redundancy,
+                                       int node_count,
+                                       const lib::ClusterStateBundle& state,
+                                       uint32_t early_return,
+                                       bool require_primary_to_be_written)
+{
     lib::Distribution::DistributionConfigBuilder config(
-            lib::Distribution::getDefaultDistributionConfig(redundancy, nodeCount).get());
+            lib::Distribution::getDefaultDistributionConfig(redundancy, node_count).get());
     config.redundancy = redundancy;
-    config.initialRedundancy = earlyReturn;
-    config.ensurePrimaryPersisted = requirePrimaryToBeWritten;
+    config.initialRedundancy = early_return;
+    config.ensurePrimaryPersisted = require_primary_to_be_written;
     auto distribution = std::make_shared<lib::Distribution>(config);
     _node->getComponentRegister().setDistribution(distribution);
-    enableDistributorClusterState(systemState);
+    enable_distributor_cluster_state(state);
     // This is for all intents and purposes a hack to avoid having the
     // distributor treat setting the distribution explicitly as a signal that
     // it should send RequestBucketInfo to all configured nodes.
@@ -133,7 +146,7 @@ DistributorTestUtil::getNodes(document::BucketId id)
 std::string
 DistributorTestUtil::getIdealStr(document::BucketId id, const lib::ClusterState& state)
 {
-    if (!getExternalOperationHandler().ownsBucketInState(state, makeDocumentBucket(id))) {
+    if (!getDistributorBucketSpace().owns_bucket_in_state(state, id)) {
         return id.toString();
     }
 
@@ -244,7 +257,7 @@ DistributorTestUtil::removeFromBucketDB(const document::BucketId& id)
 void
 DistributorTestUtil::addIdealNodes(const document::BucketId& id)
 {
-    addIdealNodes(*getExternalOperationHandler().getClusterStateBundle().getBaselineClusterState(), id);
+    addIdealNodes(*distributor_component().getClusterStateBundle().getBaselineClusterState(), id);
 }
 
 void
@@ -276,7 +289,7 @@ DistributorTestUtil::insertBucketInfo(document::BucketId id,
     if (active) {
         info2.setActive();
     }
-    BucketCopy copy(getExternalOperationHandler().getUniqueTimestamp(), node, info2);
+    BucketCopy copy(distributor_component().getUniqueTimestamp(), node, info2);
 
     entry->addNode(copy.setTrusted(trusted), toVector<uint16_t>(0));
 
@@ -334,6 +347,11 @@ DistributorTestUtil::getIdealStateManager() {
 ExternalOperationHandler&
 DistributorTestUtil::getExternalOperationHandler() {
     return _distributor->_externalOperationHandler;
+}
+
+storage::distributor::DistributorComponent&
+DistributorTestUtil::distributor_component() {
+    return _distributor->_component;
 }
 
 bool
@@ -418,6 +436,12 @@ DistributorTestUtil::enableDistributorClusterState(vespalib::stringref state)
 {
     getBucketDBUpdater().simulate_cluster_state_bundle_activation(
             lib::ClusterStateBundle(lib::ClusterState(state)));
+}
+
+void
+DistributorTestUtil::enable_distributor_cluster_state(const lib::ClusterStateBundle& state)
+{
+    getBucketDBUpdater().simulate_cluster_state_bundle_activation(state);
 }
 
 }

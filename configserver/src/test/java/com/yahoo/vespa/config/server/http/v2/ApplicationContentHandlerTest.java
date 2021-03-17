@@ -10,13 +10,13 @@ import com.yahoo.container.jdisc.HttpResponse;
 import com.yahoo.jdisc.Response;
 import com.yahoo.vespa.config.server.ApplicationRepository;
 import com.yahoo.vespa.config.server.MockProvisioner;
-import com.yahoo.vespa.config.server.TestComponentRegistry;
 import com.yahoo.vespa.config.server.application.OrchestratorMock;
 import com.yahoo.vespa.config.server.http.ContentHandlerTestBase;
 import com.yahoo.vespa.config.server.session.PrepareParams;
 import com.yahoo.vespa.config.server.session.Session;
 import com.yahoo.vespa.config.server.tenant.Tenant;
 import com.yahoo.vespa.config.server.tenant.TenantRepository;
+import com.yahoo.vespa.config.server.tenant.TestTenantRepository;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -24,7 +24,6 @@ import org.junit.rules.TemporaryFolder;
 
 import java.io.File;
 import java.io.IOException;
-import java.time.Clock;
 
 import static org.hamcrest.Matchers.is;
 import static org.junit.Assert.assertNotNull;
@@ -36,14 +35,12 @@ import static org.junit.Assert.assertThat;
 public class ApplicationContentHandlerTest extends ContentHandlerTestBase {
 
     private static final File testApp = new File("src/test/apps/content");
-    private static final File testApp2 = new File("src/test/apps/content2");
 
     private final TenantName tenantName1 = TenantName.from("mofet");
     private final TenantName tenantName2 = TenantName.from("bla");
     private final String baseServer = "http://foo:1337";
 
     private final ApplicationId appId1 = new ApplicationId.Builder().tenant(tenantName1).applicationName("foo").instanceName("quux").build();
-    private final ApplicationId appId2 = new ApplicationId.Builder().tenant(tenantName2).applicationName("foo").instanceName("quux").build();
 
     private ApplicationRepository applicationRepository;
     private ApplicationHandler handler;
@@ -53,18 +50,15 @@ public class ApplicationContentHandlerTest extends ContentHandlerTestBase {
 
     @Before
     public void setupHandler() throws IOException {
-
         ConfigserverConfig configserverConfig = new ConfigserverConfig.Builder()
                 .configServerDBDir(temporaryFolder.newFolder("serverdb").getAbsolutePath())
                 .configDefinitionsDir(temporaryFolder.newFolder("configdefinitions").getAbsolutePath())
                 .fileReferencesDir(temporaryFolder.newFolder().getAbsolutePath())
                 .build();
-        TestComponentRegistry componentRegistry = new TestComponentRegistry.Builder()
-                .configServerConfig(configserverConfig)
-                .build();
-        Clock clock = componentRegistry.getClock();
 
-        TenantRepository tenantRepository = new TenantRepository(componentRegistry);
+        TenantRepository tenantRepository = new TestTenantRepository.Builder()
+                .withConfigserverConfig(configserverConfig)
+                .build();
         tenantRepository.addTenant(tenantName1);
         tenantRepository.addTenant(tenantName2);
 
@@ -72,13 +66,10 @@ public class ApplicationContentHandlerTest extends ContentHandlerTestBase {
                 .withTenantRepository(tenantRepository)
                 .withProvisioner(new MockProvisioner())
                 .withOrchestrator(new OrchestratorMock())
-                .withClock(clock)
                 .withConfigserverConfig(configserverConfig)
                 .build();
 
         applicationRepository.deploy(testApp, prepareParams(appId1));
-        applicationRepository.deploy(testApp2, prepareParams(appId2));
-
         handler = new ApplicationHandler(ApplicationHandler.testOnlyContext(),
                                          Zone.defaultZone(),
                                          applicationRepository);
@@ -110,14 +101,6 @@ public class ApplicationContentHandlerTest extends ContentHandlerTestBase {
                                                                              .tenant("unknown")
                                                                              .applicationName("notexist").instanceName("baz").build(), Zone.defaultZone()),
                                                      com.yahoo.jdisc.http.HttpRequest.Method.GET));
-    }
-
-    @Test
-    public void require_that_multiple_tenants_are_handled() throws IOException {
-        assertContent("/test.txt", "foo\n");
-        pathPrefix = createPath(appId2, Zone.defaultZone());
-        baseUrl = baseServer + pathPrefix;
-        assertContent("/test.txt", "bar\n");
     }
 
     @Test

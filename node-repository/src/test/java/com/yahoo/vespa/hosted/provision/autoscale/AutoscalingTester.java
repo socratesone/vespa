@@ -1,7 +1,7 @@
 // Copyright Verizon Media. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.hosted.provision.autoscale;
 
-import com.yahoo.component.Version;
+import com.yahoo.collections.Pair;
 import com.yahoo.config.provision.ApplicationId;
 import com.yahoo.config.provision.Capacity;
 import com.yahoo.config.provision.ClusterResources;
@@ -16,31 +16,37 @@ import com.yahoo.config.provision.Zone;
 import com.yahoo.test.ManualClock;
 import com.yahoo.transaction.Mutex;
 import com.yahoo.vespa.hosted.provision.Node;
+import com.yahoo.vespa.hosted.provision.NodeList;
 import com.yahoo.vespa.hosted.provision.NodeRepository;
 import com.yahoo.vespa.hosted.provision.Nodelike;
 import com.yahoo.vespa.hosted.provision.applications.Application;
+import com.yahoo.vespa.hosted.provision.applications.Cluster;
+import com.yahoo.vespa.hosted.provision.applications.ScalingEvent;
 import com.yahoo.vespa.hosted.provision.node.Agent;
 import com.yahoo.vespa.hosted.provision.node.IP;
-import com.yahoo.vespa.hosted.provision.provisioning.FatalProvisioningException;
-import com.yahoo.vespa.hosted.provision.provisioning.HostProvisioner;
 import com.yahoo.vespa.hosted.provision.provisioning.HostResourcesCalculator;
-import com.yahoo.vespa.hosted.provision.provisioning.ProvisionedHost;
 import com.yahoo.vespa.hosted.provision.provisioning.ProvisioningTester;
 
 import java.time.Duration;
-import java.util.ArrayList;
+import java.time.Instant;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.function.IntFunction;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
+/**
+ * @author bratseth
+ */
 class AutoscalingTester {
 
     private final ProvisioningTester provisioningTester;
     private final Autoscaler autoscaler;
-    private final NodeMetricsDb db;
+    private final MemoryMetricsDb db;
     private final MockHostResourcesCalculator hostResourcesCalculator;
 
     /** Creates an autoscaling tester with a single host type ready */
@@ -63,13 +69,15 @@ class AutoscalingTester {
         provisioningTester = new ProvisioningTester.Builder().zone(zone)
                                                              .flavors(flavors)
                                                              .resourcesCalculator(resourcesCalculator)
-                                                             .hostProvisioner(new MockHostProvisioner(flavors))
+                                                             .hostProvisioner(zone.getCloud().dynamicProvisioning() ? new MockHostProvisioner(flavors) : null)
                                                              .build();
 
         hostResourcesCalculator = new MockHostResourcesCalculator(zone);
-        db = new NodeMetricsDb(provisioningTester.nodeRepository());
+        db = MetricsDb.createTestInstance(provisioningTester.nodeRepository());
         autoscaler = new Autoscaler(db, nodeRepository());
     }
+
+    public ProvisioningTester provisioning() { return provisioningTester; }
 
     public ApplicationId applicationId(String applicationName) {
         return ApplicationId.from("tenant1", applicationName, "instance1");
@@ -84,7 +92,11 @@ class AutoscalingTester {
     }
 
     public List<HostSpec> deploy(ApplicationId application, ClusterSpec cluster, int nodes, int groups, NodeResources resources) {
-        List<HostSpec> hosts = provisioningTester.prepare(application, cluster, Capacity.from(new ClusterResources(nodes, groups, resources)));
+        return deploy(application, cluster, Capacity.from(new ClusterResources(nodes, groups, resources)));
+    }
+
+    public List<HostSpec> deploy(ApplicationId application, ClusterSpec cluster, Capacity capacity) {
+        List<HostSpec> hosts = provisioningTester.prepare(application, cluster, capacity);
         for (HostSpec host : hosts)
             makeReady(host.hostname());
         provisioningTester.activateTenantHosts();
@@ -93,19 +105,19 @@ class AutoscalingTester {
     }
 
     public void makeReady(String hostname) {
-        Node node = nodeRepository().getNode(hostname).get();
+        Node node = nodeRepository().nodes().node(hostname).get();
         provisioningTester.patchNode(node, (n) -> n.with(new IP.Config(Set.of("::" + 0 + ":0"), Set.of())));
-        Node host = nodeRepository().getNode(node.parentHostname().get()).get();
+        Node host = nodeRepository().nodes().node(node.parentHostname().get()).get();
         host = host.with(new IP.Config(Set.of("::" + 0 + ":0"), Set.of("::" + 0 + ":2")));
         if (host.state() == Node.State.provisioned)
-            nodeRepository().setReady(List.of(host), Agent.system, getClass().getSimpleName());
+            nodeRepository().nodes().setReady(List.of(host), Agent.system, getClass().getSimpleName());
     }
 
     public void deactivateRetired(ApplicationId application, ClusterSpec cluster, ClusterResources resources) {
-        try (Mutex lock = nodeRepository().lock(application)){
-            for (Node node : nodeRepository().getNodes(application, Node.State.active)) {
+        try (Mutex lock = nodeRepository().nodes().lock(application)){
+            for (Node node : nodeRepository().nodes().list(Node.State.active).owner(application)) {
                 if (node.allocation().get().membership().retired())
-                    nodeRepository().write(node.with(node.allocation().get().removable(true)), lock);
+                    nodeRepository().nodes().write(node.with(node.allocation().get().removable(true)), lock);
             }
         }
         deploy(application, cluster, resources);
@@ -117,59 +129,161 @@ class AutoscalingTester {
      * (I.e we adjust to measure a bit lower load than "naively" wanted to offset for the autoscaler
      * wanting to see the ideal load with one node missing.)
      *
-     * @param resource the resource we are explicitly setting the value of
      * @param otherResourcesLoad the load factor relative to ideal to use for other resources
      * @param count the number of measurements
      * @param applicationId the application we're adding measurements for all nodes of
      */
-    public void addMeasurements(Resource resource, float value, float otherResourcesLoad,
-                                int count, ApplicationId applicationId) {
-        List<Node> nodes = nodeRepository().getNodes(applicationId, Node.State.active);
+    public void addCpuMeasurements(float value, float otherResourcesLoad,
+                                   int count, ApplicationId applicationId) {
+        NodeList nodes = nodeRepository().nodes().list(Node.State.active).owner(applicationId);
         float oneExtraNodeFactor = (float)(nodes.size() - 1.0) / (nodes.size());
         for (int i = 0; i < count; i++) {
             clock().advance(Duration.ofMinutes(1));
             for (Node node : nodes) {
-                for (Resource r : Resource.values()) {
-                    float effectiveValue = (r == resource ? value : (float) r.idealAverageLoad() * otherResourcesLoad)
-                                           * oneExtraNodeFactor;
-                    db.add(List.of(new NodeMetrics.MetricValue(node.hostname(),
-                                                               Metric.from(r).fullName(),
-                                                               clock().instant().toEpochMilli(),
-                                                               effectiveValue * 100))); // the metrics are in %
-                }
+                float cpu = value * oneExtraNodeFactor;
+                float memory  = (float) Resource.memory.idealAverageLoad() * otherResourcesLoad * oneExtraNodeFactor;
+                float disk = (float) Resource.disk.idealAverageLoad() * otherResourcesLoad * oneExtraNodeFactor;
+                db.addNodeMetrics(List.of(new Pair<>(node.hostname(), new NodeMetricSnapshot(clock().instant(),
+                                                                                             cpu,
+                                                                                             memory,
+                                                                                             disk,
+                                                                                             0,
+                                                                                             true,
+                                                                                             true,
+                                                                                             0.0))));
             }
         }
     }
 
-    public void addMeasurements(Resource resource, float value, int count, ApplicationId applicationId) {
-        List<Node> nodes = nodeRepository().getNodes(applicationId, Node.State.active);
+    /**
+     * Adds measurements with the given resource value and ideal values for the other resources,
+     * scaled to take one node redundancy into account.
+     * (I.e we adjust to measure a bit lower load than "naively" wanted to offset for the autoscaler
+     * wanting to see the ideal load with one node missing.)
+     *
+     * @param otherResourcesLoad the load factor relative to ideal to use for other resources
+     * @param count the number of measurements
+     * @param applicationId the application we're adding measurements for all nodes of
+     */
+    public void addMemMeasurements(float value, float otherResourcesLoad,
+                                   int count, ApplicationId applicationId) {
+        NodeList nodes = nodeRepository().nodes().list(Node.State.active).owner(applicationId);
+        float oneExtraNodeFactor = (float)(nodes.size() - 1.0) / (nodes.size());
         for (int i = 0; i < count; i++) {
             clock().advance(Duration.ofMinutes(1));
             for (Node node : nodes) {
-                db.add(List.of(new NodeMetrics.MetricValue(node.hostname(),
-                                                           Metric.from(resource).fullName(),
-                                                           clock().instant().toEpochMilli(),
-                                                           value * 100))); // the metrics are in %
+                float cpu  = (float) 0.2 * otherResourcesLoad * oneExtraNodeFactor;
+                float memory = value * oneExtraNodeFactor;
+                float disk = (float) Resource.disk.idealAverageLoad() * otherResourcesLoad * oneExtraNodeFactor;
+                db.addNodeMetrics(List.of(new Pair<>(node.hostname(), new NodeMetricSnapshot(clock().instant(),
+                                                                                             cpu,
+                                                                                             memory,
+                                                                                             disk,
+                                                                                             0,
+                                                                                             true,
+                                                                                             true,
+                                                                                             0.0))));
             }
         }
     }
 
-    public Optional<ClusterResources> autoscale(ApplicationId applicationId, ClusterSpec.Id clusterId,
-                                                           ClusterResources min, ClusterResources max) {
-        Application application = nodeRepository().applications().get(applicationId).orElse(new Application(applicationId))
-                                                  .withCluster(clusterId, false, min, max);
-        nodeRepository().applications().put(application, nodeRepository().lock(applicationId));
-        return autoscaler.autoscale(application.clusters().get(clusterId),
-                                    nodeRepository().getNodes(applicationId, Node.State.active));
+    public void addMeasurements(float cpu, float memory, float disk, int generation, int count, ApplicationId applicationId)  {
+        addMeasurements(cpu, memory, disk, generation, true, true, count, applicationId);
     }
 
-    public Optional<ClusterResources> suggest(ApplicationId applicationId, ClusterSpec.Id clusterId,
+    public void addMeasurements(float cpu, float memory, float disk, int generation, boolean inService, boolean stable,
+                                int count, ApplicationId applicationId) {
+        NodeList nodes = nodeRepository().nodes().list(Node.State.active).owner(applicationId);
+        for (int i = 0; i < count; i++) {
+            clock().advance(Duration.ofMinutes(1));
+            for (Node node : nodes) {
+                db.addNodeMetrics(List.of(new Pair<>(node.hostname(), new NodeMetricSnapshot(clock().instant(),
+                                                                                             cpu,
+                                                                                             memory,
+                                                                                             disk,
+                                                                                             generation,
+                                                                                             inService,
+                                                                                             stable,
+                                                                                             0.0))));
+            }
+        }
+    }
+
+    public void storeReadShare(double currentReadShare, double maxReadShare, ApplicationId applicationId) {
+        Application application = nodeRepository().applications().require(applicationId);
+        application = application.with(application.status().withCurrentReadShare(currentReadShare)
+                                                           .withMaxReadShare(maxReadShare));
+        nodeRepository().applications().put(application, nodeRepository().nodes().lock(applicationId));
+    }
+
+    /** Creates a single redeployment event with bogus data except for the given duration */
+    public void setScalingDuration(ApplicationId applicationId, ClusterSpec.Id clusterId, Duration duration) {
+        Application application = nodeRepository().applications().require(applicationId);
+        Cluster cluster = application.cluster(clusterId).get();
+        cluster = new Cluster(clusterId,
+                              cluster.exclusive(),
+                              cluster.minResources(),
+                              cluster.maxResources(),
+                              cluster.suggestedResources(),
+                              cluster.targetResources(),
+                              List.of(), // Remove scaling events
+                              cluster.autoscalingStatus());
+        cluster = cluster.with(ScalingEvent.create(cluster.minResources(), cluster.minResources(),
+                                                   0,
+                                                   clock().instant().minus(Duration.ofDays(1).minus(duration))).withCompletion(clock().instant().minus(Duration.ofDays(1))));
+        application = application.with(cluster);
+        nodeRepository().applications().put(application, nodeRepository().nodes().lock(applicationId));
+    }
+
+    /** Creates the given number of measurements, spaced 5 minutes between, using the given function */
+    public void addLoadMeasurements(ApplicationId application,
+                                    ClusterSpec.Id cluster,
+                                    int measurements,
+                                    IntFunction<Double> queryRate,
+                                    IntFunction<Double> writeRate) {
+        Instant time = clock().instant();
+        for (int i = 0; i < measurements; i++) {
+            db.addClusterMetrics(application, Map.of(cluster, new ClusterMetricSnapshot(time, queryRate.apply(i), writeRate.apply(i))));
+            time = time.plus(Duration.ofMinutes(5));
+        }
+    }
+
+    /** Creates the given number of measurements, spaced 5 minutes between, using the given function */
+    public void addQueryRateMeasurements(ApplicationId application,
+                                         ClusterSpec.Id cluster,
+                                         int measurements,
+                                         IntFunction<Double> queryRate) {
+        Instant time = clock().instant();
+        for (int i = 0; i < measurements; i++) {
+            db.addClusterMetrics(application, Map.of(cluster, new ClusterMetricSnapshot(time, queryRate.apply(i), 0.0)));
+            time = time.plus(Duration.ofMinutes(5));
+        }
+    }
+
+    public void clearQueryRateMeasurements(ApplicationId application, ClusterSpec.Id cluster) {
+        db.clearClusterMetrics(application, cluster);
+    }
+
+    public Autoscaler.Advice autoscale(ApplicationId applicationId, ClusterSpec.Id clusterId,
                                                            ClusterResources min, ClusterResources max) {
-        Application application = nodeRepository().applications().get(applicationId).orElse(new Application(applicationId))
+        Application application = nodeRepository().applications().get(applicationId).orElse(Application.empty(applicationId))
                                                   .withCluster(clusterId, false, min, max);
-        nodeRepository().applications().put(application, nodeRepository().lock(applicationId));
-        return autoscaler.suggest(application.clusters().get(clusterId),
-                                  nodeRepository().getNodes(applicationId, Node.State.active));
+        try (Mutex lock = nodeRepository().nodes().lock(applicationId)) {
+            nodeRepository().applications().put(application, lock);
+        }
+        return autoscaler.autoscale(application, application.clusters().get(clusterId),
+                                    nodeRepository().nodes().list(Node.State.active).owner(applicationId));
+    }
+
+    public Autoscaler.Advice suggest(ApplicationId applicationId, ClusterSpec.Id clusterId,
+                                                           ClusterResources min, ClusterResources max) {
+        Application application = nodeRepository().applications().get(applicationId).orElse(Application.empty(applicationId))
+                                                  .withCluster(clusterId, false, min, max);
+        try (Mutex lock = nodeRepository().nodes().lock(applicationId)) {
+            nodeRepository().applications().put(application, lock);
+        }
+        return autoscaler.suggest(application, application.clusters().get(clusterId),
+                                  nodeRepository().nodes().list(Node.State.active).owner(applicationId));
     }
 
     public ClusterResources assertResources(String message,
@@ -195,7 +309,7 @@ class AutoscalingTester {
         return provisioningTester.nodeRepository();
     }
 
-    public NodeMetricsDb nodeMetricsDb() { return db; }
+    public MetricsDb nodeMetricsDb() { return db; }
 
     private static class MockHostResourcesCalculator implements HostResourcesCalculator {
 
@@ -206,7 +320,7 @@ class AutoscalingTester {
         }
 
         @Override
-        public NodeResources realResourcesOf(Nodelike node, NodeRepository nodeRepository) {
+        public NodeResources realResourcesOf(Nodelike node, NodeRepository nodeRepository, boolean exclusive) {
             if (zone.getCloud().dynamicProvisioning())
                 return node.resources().withMemoryGb(node.resources().memoryGb() - 3);
             else
@@ -222,53 +336,28 @@ class AutoscalingTester {
         }
 
         @Override
-        public NodeResources requestToReal(NodeResources resources) {
+        public NodeResources requestToReal(NodeResources resources, boolean exclusive) {
             return resources.withMemoryGb(resources.memoryGb() - 3);
         }
 
         @Override
-        public NodeResources realToRequest(NodeResources resources) {
+        public NodeResources realToRequest(NodeResources resources, boolean exclusive) {
             return resources.withMemoryGb(resources.memoryGb() + 3);
         }
 
+        @Override
+        public long thinPoolSizeInBase2Gb(NodeType nodeType, boolean sharedHost) { return 0; }
+
     }
 
-    private class MockHostProvisioner implements HostProvisioner {
+    private class MockHostProvisioner extends com.yahoo.vespa.hosted.provision.testutils.MockHostProvisioner {
 
-        private final List<Flavor> hostFlavors;
-
-        public MockHostProvisioner(List<Flavor> hostFlavors) {
-            this.hostFlavors = hostFlavors;
+        public MockHostProvisioner(List<Flavor> flavors) {
+            super(flavors);
         }
 
         @Override
-        public List<ProvisionedHost> provisionHosts(List<Integer> provisionIndexes, NodeResources resources, ApplicationId applicationId, Version osVersion) {
-            Flavor hostFlavor = hostFlavors.stream().filter(f -> matches(f, resources)).findAny()
-                                           .orElseThrow(() -> new RuntimeException("No flavor matching " + resources + ". Flavors: " + hostFlavors));
-
-            List<ProvisionedHost> hosts = new ArrayList<>();
-            for (int index : provisionIndexes) {
-                hosts.add(new ProvisionedHost("host" + index,
-                                              "hostname" + index,
-                                              hostFlavor,
-                                              "nodename" + index,
-                                              resources,
-                                              osVersion));
-            }
-            return hosts;
-        }
-
-        @Override
-        public List<Node> provision(Node host, Set<Node> children) throws FatalProvisioningException {
-            throw new RuntimeException("Not implemented");
-        }
-
-        @Override
-        public void deprovision(Node host) {
-            throw new RuntimeException("Not implemented");
-        }
-
-        private boolean matches(Flavor flavor, NodeResources resources) {
+        public boolean compatible(Flavor flavor, NodeResources resources) {
             NodeResources flavorResources = hostResourcesCalculator.advertisedResourcesOf(flavor);
             if (flavorResources.storageType() == NodeResources.StorageType.remote
                 && resources.diskGb() <= flavorResources.diskGb())

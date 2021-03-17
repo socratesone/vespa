@@ -19,7 +19,7 @@ private:
     BucketSpaceMap _map;
 
 public:
-    explicit ContentBucketSpaceRepo(bool use_btree_db = false);
+    explicit ContentBucketSpaceRepo(const ContentBucketDbOptions&);
     ContentBucketSpace &get(document::BucketSpace bucketSpace) const;
     BucketSpaceMap::const_iterator begin() const { return _map.begin(); }
     BucketSpaceMap::const_iterator end() const { return _map.end(); }
@@ -28,25 +28,9 @@ public:
     size_t getBucketMemoryUsage() const;
 
     template <typename Functor>
-    void forEachBucket(Functor &functor,
-                       const char *clientId) const {
-        for (const auto &elem : _map) {
-            elem.second->bucketDatabase().for_each(std::ref(functor), clientId);
-        }
-    }
-
-    template <typename Functor>
-    void forEachBucketChunked(Functor &functor,
-                              const char *clientId) const {
-        for (const auto &elem : _map) {
-            elem.second->bucketDatabase().for_each_chunked(std::ref(functor), clientId);
-        }
-    }
-
-    template <typename Functor>
     void for_each_bucket(Functor functor) const {
         for (const auto& elem : _map) {
-            elem.second->bucketDatabase().acquire_read_guard()->for_each(std::move(functor));
+            elem.second->bucketDatabase().acquire_read_guard()->for_each(functor);
         }
     }
 

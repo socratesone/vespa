@@ -5,6 +5,7 @@ import com.yahoo.config.provision.HostName;
 import com.yahoo.config.provision.NodeType;
 import com.yahoo.vespa.flags.InMemoryFlagSource;
 import com.yahoo.vespa.hosted.dockerapi.ContainerEngine;
+import com.yahoo.vespa.hosted.dockerapi.RegistryCredentials;
 import com.yahoo.vespa.hosted.dockerapi.metrics.Metrics;
 import com.yahoo.vespa.hosted.node.admin.configserver.noderepository.NodeSpec;
 import com.yahoo.vespa.hosted.node.admin.configserver.orchestrator.Orchestrator;
@@ -29,6 +30,7 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.time.Clock;
 import java.time.Duration;
+import java.util.Collections;
 import java.util.Optional;
 import java.util.logging.Logger;
 
@@ -84,8 +86,9 @@ public class DockerTester implements AutoCloseable {
         ContainerOperations containerOperations = new ContainerOperationsImpl(containerEngine, terminal, ipAddresses, fileSystem);
 
         NodeAgentFactory nodeAgentFactory = (contextSupplier, nodeContext) -> new NodeAgentImpl(
-                contextSupplier, nodeRepository, orchestrator, containerOperations, storageMaintainer, flagSource,
-                Optional.empty(), Optional.empty(), Optional.empty(), clock, Duration.ofSeconds(-1));
+                contextSupplier, nodeRepository, orchestrator, containerOperations, () -> RegistryCredentials.none,
+                storageMaintainer, flagSource,
+                Collections.emptyList(), Optional.empty(), Optional.empty(), clock, Duration.ofSeconds(-1));
         nodeAdmin = new NodeAdminImpl(nodeAgentFactory, metrics, clock, Duration.ofMillis(10), Duration.ZERO);
         NodeAgentContextFactory nodeAgentContextFactory = (nodeSpec, acl) ->
                 new NodeAgentContextImpl.Builder(nodeSpec).acl(acl).fileSystem(fileSystem).build();

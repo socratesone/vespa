@@ -10,6 +10,7 @@ import com.yahoo.searchlib.rankingexpression.rule.ArithmeticOperator;
 import com.yahoo.searchlib.rankingexpression.rule.ConstantNode;
 import com.yahoo.searchlib.rankingexpression.rule.ExpressionNode;
 import com.yahoo.searchlib.rankingexpression.rule.IfNode;
+import com.yahoo.tensor.Tensor;
 import org.junit.Test;
 
 import static org.junit.Assert.assertEquals;
@@ -194,14 +195,16 @@ public class EvaluationTestCase {
                                "reduce(tensor0, avg, x, y)",   "{ {x:0,y:0}:1.0, {x:1,y:0}:3.0, {x:0,y:1}:5.0, {x:1,y:1}:7.0 }");
         tester.assertEvaluates("{ {}:4 }",
                                "reduce(tensor0, count, x, y)", "{ {x:0,y:0}:1.0, {x:1,y:0}:3.0, {x:0,y:1}:5.0, {x:1,y:1}:7.0 }");
+        tester.assertEvaluates("{ {}:7 }",
+                               "reduce(tensor0, max, x, y)",   "{ {x:0,y:0}:1.0, {x:1,y:0}:3.0, {x:0,y:1}:5.0, {x:1,y:1}:7.0 }");
+        tester.assertEvaluates("{ {}:4 }",
+                               "reduce(tensor0, median, x, y)",   "{ {x:0,y:0}:1.0, {x:1,y:0}:3.0, {x:0,y:1}:5.0, {x:1,y:1}:7.0 }");
+        tester.assertEvaluates("{ {}:1 }",
+                               "reduce(tensor0, min, x, y)",   "{ {x:0,y:0}:1.0, {x:1,y:0}:3.0, {x:0,y:1}:5.0, {x:1,y:1}:7.0 }");
         tester.assertEvaluates("{ {}:105 }",
                                "reduce(tensor0, prod, x, y)",  "{ {x:0,y:0}:1.0, {x:1,y:0}:3.0, {x:0,y:1}:5.0, {x:1,y:1}:7.0 }");
         tester.assertEvaluates("{ {}:16 }",
                                "reduce(tensor0, sum, x, y)",   "{ {x:0,y:0}:1.0, {x:1,y:0}:3.0, {x:0,y:1}:5.0, {x:1,y:1}:7.0 }");
-        tester.assertEvaluates("{ {}:7 }",
-                               "reduce(tensor0, max, x, y)",   "{ {x:0,y:0}:1.0, {x:1,y:0}:3.0, {x:0,y:1}:5.0, {x:1,y:1}:7.0 }");
-        tester.assertEvaluates("{ {}:1 }",
-                               "reduce(tensor0, min, x, y)",   "{ {x:0,y:0}:1.0, {x:1,y:0}:3.0, {x:0,y:1}:5.0, {x:1,y:1}:7.0 }");
         // -- reduce 2 by specifying no arguments
         tester.assertEvaluates("{ {}:4 }",
                                "reduce(tensor0, avg)",   "{ {x:0,y:0}:1.0, {x:1,y:0}:3.0, {x:0,y:1}:5.0, {x:1,y:1}:7.0 }");
@@ -223,6 +226,8 @@ public class EvaluationTestCase {
         tester.assertEvaluates("{ {}:-5   }", "sum(tensor0)", "-5.0");
         tester.assertEvaluates("{ {}:12.5 }", "sum(tensor0)", "{ {d1:0}:5.5, {d1:1}:7.0 }");
         tester.assertEvaluates("{ {}: 0   }", "sum(tensor0)", "{ {d1:0}:5.0, {d1:1}:7.0, {d1:2}:-12.0}");
+        tester.assertEvaluates("{ {}: 8.0   }", "avg(tensor0)", "{ {d1:0}:5.0, {d1:1}:7.0, {d1:2}:12.0}");
+        tester.assertEvaluates("{ {}: 5.0   }", "median(tensor0)", "{ {d1:0}:5.0, {d1:1}:7.0, {d1:2}:-12.0}");
         tester.assertEvaluates("{ {y:0}:4, {y:1}:12.0 }",
                                "sum(tensor0, x)", "{ {x:0,y:0}:1.0, {x:1,y:0}:3.0, {x:0,y:1}:5.0, {x:1,y:1}:7.0 }");
         tester.assertEvaluates("{ {x:0}:6, {x:1}:10.0 }",
@@ -386,6 +391,39 @@ public class EvaluationTestCase {
         tester.assertEvaluates("tensor(x{}):{}", "tensor0 * tensor1", "{ {x:0}:1 }", "tensor(x{}):{ {x:1}:1 }");
         tester.assertEvaluates("tensor(x{},y{}):{}", "tensor0 * tensor1", "{ {x:0}:1 }", "tensor(x{},y{}):{ {x:1,y:0}:1, {x:2,y:1}:1 }");
 
+    }
+
+    @Test
+    public void testCellTypeCasting() {
+        EvaluationTester tester = new EvaluationTester();
+
+        tester.assertEvaluates("tensor<float>(x[3]):[1.0, 2.0, 3.0]",
+                               "cell_cast(tensor0, float)",
+                               "tensor<double>(x[3]):[1, 2, 3]");
+        tester.assertEvaluates("tensor<float>():{1}",
+                               "cell_cast(tensor0{x:1}, float)",
+                               "tensor<double>(x{}):{1:1, 2:2, 3:3}");
+        tester.assertEvaluates("tensor<float>(x[2]):[3,8]",
+                               "cell_cast(tensor0 * tensor1, float)",
+                               "tensor<float>(x[2]):[1,2]",
+                               "tensor<double>(x[2]):[3,4]");
+    }
+
+    @Test
+    public void testMixedTensorType() throws ParseException {
+        String expected = "tensor(x[1],y{},z[2]):{{x:0,y:a,z:0}:4.0,{x:0,y:a,z:1}:5.0,{x:0,y:b,z:0}:7.0,{x:0,y:b,z:1}:8.0}";
+        String a = "tensor(x[1],y{}):{ {x:0,y:a}:1, {x:0,y:b}:2 }";
+        String b = "tensor(y{},z[2]):{ {y:a,z:0}:3, {y:a,z:1}:4, {y:b,z:0}:5, {y:b,z:1}:6 }";
+        String expression = "a + b";
+
+        MapContext context = new MapContext();
+        context.put("a", new TensorValue(Tensor.from(a)));
+        context.put("b", new TensorValue(Tensor.from(b)));
+
+        Tensor expectedResult = Tensor.from(expected);
+        Tensor result = new RankingExpression(expression).evaluate(context).asTensor();
+        assertEquals(expectedResult, result);
+        assertEquals(expectedResult.type(), result.type());
     }
 
     @Test

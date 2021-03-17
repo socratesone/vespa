@@ -6,10 +6,13 @@ import com.yahoo.config.model.builder.xml.test.DomBuilderTest;
 import com.yahoo.config.model.deploy.DeployState;
 import com.yahoo.config.model.deploy.TestProperties;
 import com.yahoo.config.provision.AthenzDomain;
+import com.yahoo.vespa.defaults.Defaults;
 import com.yahoo.vespa.model.container.ApplicationContainer;
 import com.yahoo.vespa.model.container.http.AccessControl;
+import com.yahoo.vespa.model.container.http.ConnectorFactory;
 import com.yahoo.vespa.model.container.http.FilterChains;
 import com.yahoo.vespa.model.container.http.Http;
+import com.yahoo.vespa.model.container.http.ssl.HostedSslConnectorFactory;
 import org.junit.Test;
 
 import java.util.ArrayList;
@@ -22,6 +25,7 @@ import static com.yahoo.vespa.defaults.Defaults.getDefaults;
 import static org.hamcrest.CoreMatchers.hasItem;
 import static org.hamcrest.CoreMatchers.is;
 import static org.hamcrest.Matchers.containsInAnyOrder;
+import static org.hamcrest.Matchers.empty;
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.hasItems;
 import static org.hamcrest.Matchers.not;
@@ -48,6 +52,7 @@ public class AccessControlTest extends ContainerModelBuilderTestBase {
         FilterChains filterChains = http.getFilterChains();
         assertTrue(filterChains.hasChain(AccessControl.ACCESS_CONTROL_CHAIN_ID));
         assertTrue(filterChains.hasChain(AccessControl.ACCESS_CONTROL_EXCLUDED_CHAIN_ID));
+        assertTrue(filterChains.hasChain(AccessControl.DEFAULT_CONNECTOR_HOSTED_REQUEST_CHAIN_ID));
     }
 
     @Test
@@ -152,15 +157,24 @@ public class AccessControlTest extends ContainerModelBuilderTestBase {
     }
 
     @Test
-    public void access_control_filter_chain_contains_catchall_bindings() {
+    public void hosted_connector_for_port_4443_uses_access_control_filter_chain_as_default_request_filter_chain() {
         Http http = createModelAndGetHttp(
                 "  <http>",
                 "    <filtering>",
                 "      <access-control/>",
                 "    </filtering>",
                 "  </http>");
+
         Set<String> actualBindings = getFilterBindings(http, AccessControl.ACCESS_CONTROL_CHAIN_ID);
-        assertThat(actualBindings, containsInAnyOrder("http://*:4443/*"));
+        assertThat(actualBindings, empty());
+
+        HostedSslConnectorFactory hostedConnectorFactory = (HostedSslConnectorFactory)http.getHttpServer().get().getConnectorFactories().stream()
+                .filter(connectorFactory -> connectorFactory instanceof HostedSslConnectorFactory)
+                .findAny()
+                .get();
+        Optional<ComponentId> maybeDefaultChain = hostedConnectorFactory.getDefaultRequestFilterChain();
+        assertTrue(maybeDefaultChain.isPresent());
+        assertEquals(AccessControl.ACCESS_CONTROL_CHAIN_ID, maybeDefaultChain.get());
     }
 
     @Test
@@ -193,7 +207,7 @@ public class AccessControlTest extends ContainerModelBuilderTestBase {
     }
 
     @Test
-    public void access_control_chains_does_not_contain_duplicate_bindings_to_user_request_filter_chain() {
+    public void access_control_chain_exclude_chain_does_not_contain_duplicate_bindings_to_user_request_filter_chain() {
         Http http = createModelAndGetHttp(
                 "  <http>",
                 "    <handler id='custom.Handler'>",
@@ -220,9 +234,6 @@ public class AccessControlTest extends ContainerModelBuilderTestBase {
                 "http://*:4443/prometheus/v1/*",
                 "http://*:4443/metrics/v2",
                 "http://*:4443/metrics/v2/*"));
-
-        Set<String> actualAccessControlBindings = getFilterBindings(http, AccessControl.ACCESS_CONTROL_CHAIN_ID);
-        assertThat(actualAccessControlBindings, containsInAnyOrder("http://*:4443/*"));
 
         Set<String> actualCustomChainBindings = getFilterBindings(http, ComponentId.fromString("my-custom-request-chain"));
         assertThat(actualCustomChainBindings, containsInAnyOrder("http://*/custom-handler/*", "http://*/"));
@@ -261,9 +272,6 @@ public class AccessControlTest extends ContainerModelBuilderTestBase {
                 "http://*:4443/",
                 "http://*:4443/custom-handler/*"));
 
-        Set<String> actualAccessControlBindings = getFilterBindings(http, AccessControl.ACCESS_CONTROL_CHAIN_ID);
-        assertThat(actualAccessControlBindings, containsInAnyOrder("http://*:4443/*"));
-
         Set<String> actualCustomChainBindings = getFilterBindings(http, ComponentId.fromString("my-custom-response-chain"));
         assertThat(actualCustomChainBindings, containsInAnyOrder("http://*/custom-handler/*"));
     }
@@ -290,6 +298,28 @@ public class AccessControlTest extends ContainerModelBuilderTestBase {
                 "  </http>");
         assertTrue(http.getAccessControl().isPresent());
         assertEquals(AccessControl.ClientAuthentication.want, http.getAccessControl().get().clientAuthentication);
+    }
+
+    @Test
+    public void local_connector_has_default_chain() {
+        Http http = createModelAndGetHttp(
+                "  <http>",
+                "    <filtering>",
+                "      <access-control/>",
+                "    </filtering>",
+                "  </http>");
+
+        Set<String> actualBindings = getFilterBindings(http, AccessControl.DEFAULT_CONNECTOR_HOSTED_REQUEST_CHAIN_ID);
+        assertThat(actualBindings, empty());
+
+        ConnectorFactory connectorFactory = http.getHttpServer().get().getConnectorFactories().stream()
+                .filter(cf -> cf.getListenPort() == Defaults.getDefaults().vespaWebServicePort())
+                .findAny()
+                .get();
+
+        Optional<ComponentId> defaultChain = connectorFactory.getDefaultRequestFilterChain();
+        assertTrue(defaultChain.isPresent());
+        assertEquals(AccessControl.DEFAULT_CONNECTOR_HOSTED_REQUEST_CHAIN_ID, defaultChain.get());
     }
 
     private Http createModelAndGetHttp(String... httpElement) {

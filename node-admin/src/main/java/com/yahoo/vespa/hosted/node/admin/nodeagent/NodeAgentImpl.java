@@ -5,13 +5,13 @@ import com.yahoo.config.provision.DockerImage;
 import com.yahoo.config.provision.Environment;
 import com.yahoo.config.provision.NodeType;
 import com.yahoo.config.provision.zone.ZoneApi;
-import java.util.logging.Level;
 import com.yahoo.vespa.flags.DoubleFlag;
 import com.yahoo.vespa.flags.FetchVector;
 import com.yahoo.vespa.flags.FlagSource;
-import com.yahoo.vespa.flags.Flags;
+import com.yahoo.vespa.flags.PermanentFlags;
 import com.yahoo.vespa.hosted.dockerapi.Container;
 import com.yahoo.vespa.hosted.dockerapi.ContainerResources;
+import com.yahoo.vespa.hosted.dockerapi.RegistryCredentials;
 import com.yahoo.vespa.hosted.dockerapi.exception.ContainerNotFoundException;
 import com.yahoo.vespa.hosted.dockerapi.exception.DockerException;
 import com.yahoo.vespa.hosted.node.admin.configserver.noderepository.NodeAttributes;
@@ -21,6 +21,7 @@ import com.yahoo.vespa.hosted.node.admin.configserver.noderepository.NodeState;
 import com.yahoo.vespa.hosted.node.admin.configserver.orchestrator.Orchestrator;
 import com.yahoo.vespa.hosted.node.admin.configserver.orchestrator.OrchestratorException;
 import com.yahoo.vespa.hosted.node.admin.docker.ContainerOperations;
+import com.yahoo.vespa.hosted.node.admin.docker.RegistryCredentialsProvider;
 import com.yahoo.vespa.hosted.node.admin.maintenance.StorageMaintainer;
 import com.yahoo.vespa.hosted.node.admin.maintenance.acl.AclMaintainer;
 import com.yahoo.vespa.hosted.node.admin.maintenance.identity.CredentialsMaintainer;
@@ -36,6 +37,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Function;
+import java.util.logging.Level;
 import java.util.logging.Logger;
 
 import static com.yahoo.vespa.hosted.node.admin.nodeagent.NodeAgentImpl.ContainerState.ABSENT;
@@ -58,8 +60,9 @@ public class NodeAgentImpl implements NodeAgent {
     private final NodeRepository nodeRepository;
     private final Orchestrator orchestrator;
     private final ContainerOperations containerOperations;
+    private final RegistryCredentialsProvider registryCredentialsProvider;
     private final StorageMaintainer storageMaintainer;
-    private final Optional<CredentialsMaintainer> credentialsMaintainer;
+    private final List<CredentialsMaintainer> credentialsMaintainers;
     private final Optional<AclMaintainer> aclMaintainer;
     private final Optional<HealthChecker> healthChecker;
     private final Clock clock;
@@ -97,28 +100,33 @@ public class NodeAgentImpl implements NodeAgent {
 
     // Created in NodeAdminImpl
     public NodeAgentImpl(NodeAgentContextSupplier contextSupplier, NodeRepository nodeRepository,
-                         Orchestrator orchestrator, ContainerOperations containerOperations, StorageMaintainer storageMaintainer,
-                         FlagSource flagSource, Optional<CredentialsMaintainer> credentialsMaintainer,
+                         Orchestrator orchestrator, ContainerOperations containerOperations,
+                         RegistryCredentialsProvider registryCredentialsProvider, StorageMaintainer storageMaintainer,
+                         FlagSource flagSource, List<CredentialsMaintainer> credentialsMaintainers,
                          Optional<AclMaintainer> aclMaintainer, Optional<HealthChecker> healthChecker, Clock clock) {
-        this(contextSupplier, nodeRepository, orchestrator, containerOperations, storageMaintainer, flagSource, credentialsMaintainer,
-             aclMaintainer, healthChecker, clock, DEFAULT_WARM_UP_DURATION);
+        this(contextSupplier, nodeRepository, orchestrator, containerOperations, registryCredentialsProvider,
+             storageMaintainer, flagSource, credentialsMaintainers, aclMaintainer, healthChecker, clock,
+             DEFAULT_WARM_UP_DURATION);
     }
 
     public NodeAgentImpl(NodeAgentContextSupplier contextSupplier, NodeRepository nodeRepository,
-                         Orchestrator orchestrator, ContainerOperations containerOperations, StorageMaintainer storageMaintainer,
-                         FlagSource flagSource, Optional<CredentialsMaintainer> credentialsMaintainer,
-                         Optional<AclMaintainer> aclMaintainer, Optional<HealthChecker> healthChecker, Clock clock, Duration warmUpDuration) {
+                         Orchestrator orchestrator, ContainerOperations containerOperations,
+                         RegistryCredentialsProvider registryCredentialsProvider, StorageMaintainer storageMaintainer,
+                         FlagSource flagSource, List<CredentialsMaintainer> credentialsMaintainers,
+                         Optional<AclMaintainer> aclMaintainer, Optional<HealthChecker> healthChecker, Clock clock,
+                         Duration warmUpDuration) {
         this.contextSupplier = contextSupplier;
         this.nodeRepository = nodeRepository;
         this.orchestrator = orchestrator;
         this.containerOperations = containerOperations;
+        this.registryCredentialsProvider = registryCredentialsProvider;
         this.storageMaintainer = storageMaintainer;
-        this.credentialsMaintainer = credentialsMaintainer;
+        this.credentialsMaintainers = credentialsMaintainers;
         this.aclMaintainer = aclMaintainer;
         this.healthChecker = healthChecker;
         this.clock = clock;
         this.warmUpDuration = warmUpDuration;
-        this.containerCpuCap = Flags.CONTAINER_CPU_CAP.bindTo(flagSource);
+        this.containerCpuCap = PermanentFlags.CONTAINER_CPU_CAP.bindTo(flagSource);
     }
 
     @Override
@@ -364,7 +372,7 @@ public class NodeAgentImpl implements NodeAgent {
                 wantedContainerResources.toStringCpu(), existingContainer.resources.toStringCpu());
 
         // Only update CPU resources
-        containerOperations.updateContainer(context, wantedContainerResources.withMemoryBytes(existingContainer.resources.memoryBytes()));
+        containerOperations.updateContainer(context, existingContainer.id(), wantedContainerResources.withMemoryBytes(existingContainer.resources.memoryBytes()));
         return containerOperations.getContainer(context).orElseThrow(() ->
                 new ConvergenceException("Did not find container that was just updated"));
     }
@@ -376,19 +384,23 @@ public class NodeAgentImpl implements NodeAgent {
                         .map(appId -> containerCpuCap.with(FetchVector.Dimension.APPLICATION_ID, appId.serializedForm()))
                         .orElse(containerCpuCap)
                         .with(FetchVector.Dimension.HOSTNAME, context.node().hostname())
-                        .value() * context.unscaledVcpu();
+                        .value() * context.vcpuOnThisHost();
 
-        return ContainerResources.from(cpuCap, context.unscaledVcpu(), context.node().memoryGb());
+        return ContainerResources.from(cpuCap, context.vcpuOnThisHost(), context.node().memoryGb());
     }
 
     private boolean noCpuCap(ZoneApi zone) {
         return zone.getEnvironment() == Environment.dev || zone.getSystemName().isCd();
     }
 
-    private boolean downloadImageIfNeeded(NodeSpec node, Optional<Container> container) {
+    private boolean downloadImageIfNeeded(NodeAgentContext context, Optional<Container> container) {
+        NodeSpec node = context.node();
         if (node.wantedDockerImage().equals(container.map(c -> c.image))) return false;
 
-        return node.wantedDockerImage().map(containerOperations::pullImageAsyncIfNeeded).orElse(false);
+        RegistryCredentials credentials = registryCredentialsProvider.get();
+        return node.wantedDockerImage()
+                   .map(image -> containerOperations.pullImageAsyncIfNeeded(context, image, credentials))
+                   .orElse(false);
     }
 
     public void converge(NodeAgentContext context) {
@@ -440,15 +452,16 @@ public class NodeAgentImpl implements NodeAgent {
                 stopServicesIfNeeded(context);
                 break;
             case active:
+                storageMaintainer.syncLogs(context, true);
                 storageMaintainer.cleanDiskIfFull(context);
                 storageMaintainer.handleCoreDumpsForContainer(context, container);
 
-                if (downloadImageIfNeeded(node, container)) {
+                if (downloadImageIfNeeded(context, container)) {
                     context.log(logger, "Waiting for image to download " + context.node().wantedDockerImage().get().asString());
                     return;
                 }
                 container = removeContainerIfNeededUpdateContainerState(context, container);
-                credentialsMaintainer.ifPresent(maintainer -> maintainer.converge(context));
+                credentialsMaintainers.forEach(maintainer -> maintainer.converge(context));
                 if (container.isEmpty()) {
                     containerState = STARTING;
                     container = Optional.of(startContainer(context));
@@ -482,7 +495,7 @@ public class NodeAgentImpl implements NodeAgent {
                 //  - Slobrok and internal orchestrator state is used to determine whether
                 //    to allow upgrade (suspend).
                 updateNodeRepoWithCurrentAttributes(context);
-                if (suspendedInOrchestrator || node.allowedToBeDown().orElse(false)) {
+                if (suspendedInOrchestrator || node.orchestratorStatus().isSuspended()) {
                     context.log(logger, "Call resume against Orchestrator");
                     orchestrator.resume(context.hostname().value());
                     suspendedInOrchestrator = false;
@@ -494,7 +507,8 @@ public class NodeAgentImpl implements NodeAgent {
             case dirty:
                 removeContainerIfNeededUpdateContainerState(context, container);
                 context.log(logger, "State is " + node.state() + ", will delete application storage and mark node as ready");
-                credentialsMaintainer.ifPresent(maintainer -> maintainer.clearCredentials(context));
+                credentialsMaintainers.forEach(maintainer -> maintainer.clearCredentials(context));
+                storageMaintainer.syncLogs(context, false);
                 storageMaintainer.archiveNodeStorage(context);
                 updateNodeRepoWithCurrentAttributes(context);
                 nodeRepository.setNodeState(context.hostname().value(), NodeState.ready);
@@ -593,8 +607,8 @@ public class NodeAgentImpl implements NodeAgent {
         };
     }
 
-    protected Optional<CredentialsMaintainer> credentialsMaintainer() {
-        return credentialsMaintainer;
+    protected List<CredentialsMaintainer> credentialsMaintainers() {
+        return credentialsMaintainers;
     }
 
     private Duration warmUpDuration(ZoneApi zone) {

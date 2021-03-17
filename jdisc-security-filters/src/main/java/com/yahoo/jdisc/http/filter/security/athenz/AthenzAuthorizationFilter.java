@@ -6,7 +6,6 @@ import com.yahoo.jdisc.Metric;
 import com.yahoo.jdisc.http.filter.DiscFilterRequest;
 import com.yahoo.jdisc.http.filter.security.athenz.RequestResourceMapper.ResourceNameAndAction;
 import com.yahoo.jdisc.http.filter.security.base.JsonSecurityRequestFilterBase;
-import java.util.logging.Level;
 import com.yahoo.vespa.athenz.api.AthenzAccessToken;
 import com.yahoo.vespa.athenz.api.AthenzIdentity;
 import com.yahoo.vespa.athenz.api.AthenzPrincipal;
@@ -22,6 +21,8 @@ import java.util.EnumSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
+import java.util.logging.Level;
 import java.util.logging.Logger;
 import java.util.stream.Collectors;
 
@@ -54,6 +55,7 @@ public class AthenzAuthorizationFilter extends JsonSecurityRequestFilterBase {
     private final Zpe zpe;
     private final RequestResourceMapper requestResourceMapper;
     private final Metric metric;
+    private final Set<AthenzIdentity> allowedProxyIdentities;
 
     @Inject
     public AthenzAuthorizationFilter(AthenzAuthorizationFilterConfig config, RequestResourceMapper resourceMapper, Metric metric) {
@@ -72,6 +74,9 @@ public class AthenzAuthorizationFilter extends JsonSecurityRequestFilterBase {
         this.requestResourceMapper = resourceMapper;
         this.zpe = zpe;
         this.metric = metric;
+        this.allowedProxyIdentities = config.allowedProxyIdentities().stream()
+                .map(AthenzIdentities::from)
+                .collect(Collectors.toSet());
     }
 
     @Override
@@ -106,10 +111,10 @@ public class AthenzAuthorizationFilter extends JsonSecurityRequestFilterBase {
         // Note: the ordering of the if-constructs determines the precedence of the credential types
         if (enabledCredentials.contains(ACCESS_TOKEN)
                 && isAccessTokenPresent(request)
-                && isClientCertificatePresent(request)) {
+                && isIdentityCertificatePresent(request)) {
             return checkAccessWithAccessToken(request, resourceAndAction);
         } else if (enabledCredentials.contains(ROLE_CERTIFICATE)
-                && isClientCertificatePresent(request)) {
+                && isRoleCertificatePresent(request)) {
             return checkAccessWithRoleCertificate(request, resourceAndAction);
         } else if (enabledCredentials.contains(ROLE_TOKEN)
                 && isRoleTokenPresent(request)) {
@@ -122,14 +127,27 @@ public class AthenzAuthorizationFilter extends JsonSecurityRequestFilterBase {
 
     private Result checkAccessWithAccessToken(DiscFilterRequest request, ResourceNameAndAction resourceAndAction) {
         AthenzAccessToken accessToken = getAccessToken(request);
-        X509Certificate identityCertificate = getClientCertificate(request);
-        var zpeResult = zpe.checkAccessAllowed(
-                accessToken, identityCertificate, resourceAndAction.resourceName(), resourceAndAction.action());
+        X509Certificate identityCertificate = getClientCertificate(request).get();
+        AthenzIdentity peerIdentity = AthenzIdentities.from(identityCertificate);
+        if (allowedProxyIdentities.contains(peerIdentity)) {
+            return checkAccessWithProxiedAccessToken(resourceAndAction, accessToken, identityCertificate);
+        } else {
+            var zpeResult = zpe.checkAccessAllowed(
+                    accessToken, identityCertificate, resourceAndAction.resourceName(), resourceAndAction.action());
+            return new Result(ACCESS_TOKEN, peerIdentity, zpeResult);
+        }
+    }
+
+    private Result checkAccessWithProxiedAccessToken(ResourceNameAndAction resourceAndAction, AthenzAccessToken accessToken, X509Certificate identityCertificate) {
+        AthenzIdentity proxyIdentity = AthenzIdentities.from(identityCertificate);
+        log.log(Level.FINE,
+                () -> String.format("Checking proxied access token. Proxy identity: '%s'. Allowed identities: %s", proxyIdentity, allowedProxyIdentities));
+        var zpeResult = zpe.checkAccessAllowed(accessToken, resourceAndAction.resourceName(), resourceAndAction.action());
         return new Result(ACCESS_TOKEN, AthenzIdentities.from(identityCertificate), zpeResult);
     }
 
     private Result checkAccessWithRoleCertificate(DiscFilterRequest request, ResourceNameAndAction resourceAndAction) {
-        X509Certificate roleCertificate = getClientCertificate(request);
+        X509Certificate roleCertificate = getClientCertificate(request).get();
         var zpeResult = zpe.checkAccessAllowed(roleCertificate, resourceAndAction.resourceName(), resourceAndAction.action());
         AthenzIdentity identity = AthenzX509CertificateUtils.getIdentityFromRoleCertificate(roleCertificate);
         return new Result(ROLE_CERTIFICATE, identity, zpeResult);
@@ -145,8 +163,34 @@ public class AthenzAuthorizationFilter extends JsonSecurityRequestFilterBase {
         return request.getHeader(AthenzAccessToken.HTTP_HEADER_NAME) != null;
     }
 
-    private static boolean isClientCertificatePresent(DiscFilterRequest request) {
-        return !request.getClientCertificateChain().isEmpty();
+    // Check that client certificate looks like a role certificate
+    private static boolean isRoleCertificatePresent(DiscFilterRequest request) {
+        return getClientCertificate(request)
+                .filter(cert -> {
+                    try {
+                        AthenzX509CertificateUtils.getRolesFromRoleCertificate(cert);
+                        return true;
+                    } catch (Exception e) {
+                        log.log(Level.FINE, e, () -> "Not a role certificate: " + e.getMessage());
+                        return false;
+                    }
+                })
+                .isPresent();
+    }
+
+    // Check that client certificate looks like an identity certificate
+    private static boolean isIdentityCertificatePresent(DiscFilterRequest request) {
+        return getClientCertificate(request)
+                .filter(cert -> {
+                    try {
+                        AthenzIdentities.from(cert);
+                        return true;
+                    } catch (Exception e) {
+                        log.log(Level.FINE, e, () -> "Not an identity certificate: " + e.getMessage());
+                        return false;
+                    }
+                })
+                .isPresent();
     }
 
     private boolean isRoleTokenPresent(DiscFilterRequest request) {
@@ -157,8 +201,10 @@ public class AthenzAuthorizationFilter extends JsonSecurityRequestFilterBase {
         return new AthenzAccessToken(request.getHeader(AthenzAccessToken.HTTP_HEADER_NAME));
     }
 
-    private static X509Certificate getClientCertificate(DiscFilterRequest request) {
-        return request.getClientCertificateChain().get(0);
+    private static Optional<X509Certificate> getClientCertificate(DiscFilterRequest request) {
+        List<X509Certificate> certificates = request.getClientCertificateChain();
+        if (certificates.isEmpty()) return Optional.empty();
+        return Optional.of(certificates.get(0));
     }
 
     private ZToken getRoleToken(DiscFilterRequest request) {

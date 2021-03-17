@@ -1,16 +1,20 @@
-// Copyright 2017 Yahoo Holdings. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Verizon Media. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.model.admin;
 
 import com.google.common.collect.Collections2;
+import com.yahoo.cloud.config.CuratorConfig;
 import com.yahoo.cloud.config.ZookeeperServerConfig;
 import com.yahoo.cloud.config.ZookeepersConfig;
 import com.yahoo.component.Version;
 import com.yahoo.config.application.api.ApplicationPackage;
 import com.yahoo.config.application.api.DeployLogger;
 import com.yahoo.config.model.NullConfigModelRegistry;
+import com.yahoo.config.model.api.Reindexing;
 import com.yahoo.config.model.application.provider.SimpleApplicationValidator;
+import com.yahoo.config.model.builder.xml.test.DomBuilderTest;
 import com.yahoo.config.model.deploy.DeployState;
 import com.yahoo.config.model.deploy.TestProperties;
+import com.yahoo.config.model.test.MockApplicationPackage;
 import com.yahoo.config.model.test.TestDriver;
 import com.yahoo.config.model.test.TestRoot;
 import com.yahoo.config.provision.Environment;
@@ -20,11 +24,13 @@ import com.yahoo.config.provision.Zone;
 import com.yahoo.search.config.QrStartConfig;
 import com.yahoo.vespa.config.content.FleetcontrollerConfig;
 import com.yahoo.vespa.config.content.StorDistributionConfig;
-import com.yahoo.config.model.builder.xml.test.DomBuilderTest;
-import com.yahoo.config.model.test.MockApplicationPackage;
+import com.yahoo.vespa.config.content.reindexing.ReindexingConfig;
 import com.yahoo.vespa.model.HostResource;
 import com.yahoo.vespa.model.Service;
 import com.yahoo.vespa.model.VespaModel;
+import com.yahoo.vespa.model.admin.clustercontroller.ClusterControllerContainer;
+import com.yahoo.vespa.model.admin.clustercontroller.ClusterControllerContainerCluster;
+import com.yahoo.vespa.model.container.component.Component;
 import com.yahoo.vespa.model.test.utils.ApplicationPackageUtils;
 import com.yahoo.vespa.model.test.utils.DeployLoggerStub;
 import org.junit.Before;
@@ -33,8 +39,10 @@ import org.xml.sax.SAXException;
 
 import java.io.IOException;
 import java.io.StringReader;
+import java.time.Instant;
 import java.util.Collection;
 import java.util.List;
+import java.util.Optional;
 
 import static org.hamcrest.CoreMatchers.is;
 import static org.junit.Assert.assertEquals;
@@ -207,6 +215,8 @@ public class ClusterControllerTestCase extends DomBuilderTest {
         assertZookeeperServerConfig(root, 0);
         assertZookeeperServerConfig(root, 1);
         assertZookeeperServerConfig(root, 2);
+
+        assertCuratorConfig(root);
     }
 
     private void assertZookeepersConfig(TestRoot root) {
@@ -224,6 +234,17 @@ public class ClusterControllerTestCase extends DomBuilderTest {
         assertThat(config.myid(), is(id));
         Collection<Integer> serverIds = Collections2.transform(config.server(), ZookeeperServerConfig.Server::id);
         assertTrue(serverIds.contains(id));
+    }
+
+    public void assertCuratorConfig(TestRoot root) {
+        CuratorConfig.Builder builder = new CuratorConfig.Builder();
+        root.getConfig(builder, "admin/standalone/cluster-controllers");
+        CuratorConfig config = builder.build();
+
+        assertEquals(3, config.server().size());
+        assertEquals("my.host1.com", config.server().get(0).hostname());
+        assertEquals(2181, config.server().get(0).port());
+        assertFalse(config.zookeeperLocalhostAffinity());
     }
 
     @Test
@@ -351,7 +372,7 @@ public class ClusterControllerTestCase extends DomBuilderTest {
                 "\n" +
                 "</services>";
 
-        VespaModel model = createVespaModel(xml, false);
+        VespaModel model = createVespaModel(xml);
         assertTrue(model.getService("admin/cluster-controllers/0").isPresent());
 
         assertTrue(existsHostsWithClusterControllerConfigId(model));
@@ -368,14 +389,55 @@ public class ClusterControllerTestCase extends DomBuilderTest {
         model.getConfig(qrBuilder, "admin/cluster-controllers/0/components/clustercontroller-bar-configurer");
         QrStartConfig qrStartConfig = new QrStartConfig(qrBuilder);
         assertEquals(32, qrStartConfig.jvm().minHeapsize());
-        assertEquals(512, qrStartConfig.jvm().heapsize());
+        assertEquals(256, qrStartConfig.jvm().heapsize());
         assertEquals(0, qrStartConfig.jvm().heapSizeAsPercentageOfPhysicalMemory());
         assertEquals(2, qrStartConfig.jvm().availableProcessors());
-        assertFalse(qrStartConfig.jvm().verbosegc());
+        assertTrue(qrStartConfig.jvm().verbosegc());
         assertEquals("-XX:+UseG1GC -XX:MaxTenuringThreshold=15", qrStartConfig.jvm().gcopts());
         assertEquals(512, qrStartConfig.jvm().stacksize());
         assertEquals(0, qrStartConfig.jvm().directMemorySizeCache());
         assertEquals(75, qrStartConfig.jvm().baseMaxDirectMemorySize());
+
+        assertReindexingConfigPresent(model);
+        assertReindexingConfiguredOnAdminCluster(model);
+    }
+
+    @Test
+    public void testQrStartConfigWithFeatureFlagForMaxHeap() throws Exception {
+        String xml = "<?xml version=\"1.0\" encoding=\"utf-8\" ?>\n" +
+                     "<services>\n" +
+                     "\n" +
+                     "  <admin version=\"2.0\">\n" +
+                     "    <adminserver hostalias=\"configserver\" />\n" +
+                     "    <logserver hostalias=\"logserver\" />\n" +
+                     "    <slobroks>\n" +
+                     "      <slobrok hostalias=\"configserver\" />\n" +
+                     "      <slobrok hostalias=\"logserver\" />\n" +
+                     "    </slobroks>\n" +
+                     "  </admin>\n" +
+                     "  <content version='1.0' id='bar'>" +
+                     "     <redundancy>1</redundancy>\n" +
+                     "     <documents>" +
+                     "       <document type=\"type1\" mode=\"store-only\"/>\n" +
+                     "     </documents>\n" +
+                     "     <group>" +
+                     "       <node hostalias='node0' distribution-key='0' />" +
+                     "     </group>" +
+                     "   </content>" +
+                     "\n" +
+                     "</services>";
+
+        VespaModel model = createVespaModel(xml, new DeployState.Builder().properties(new TestProperties().clusterControllerMaxHeapSizeInMb(256)));
+        assertTrue(model.getService("admin/cluster-controllers/0").isPresent());
+
+        QrStartConfig.Builder qrBuilder = new QrStartConfig.Builder();
+        model.getConfig(qrBuilder, "admin/cluster-controllers/0/components/clustercontroller-bar-configurer");
+        QrStartConfig qrStartConfig = new QrStartConfig(qrBuilder);
+        // Taken from ContainerCluster
+        assertEquals(32, qrStartConfig.jvm().minHeapsize());
+        // Overridden values from ClusterControllerContainerCluster
+        assertEquals(256, qrStartConfig.jvm().heapsize());
+        assertTrue(qrStartConfig.jvm().verbosegc());
     }
 
     @Test
@@ -452,22 +514,51 @@ public class ClusterControllerTestCase extends DomBuilderTest {
     }
 
     private VespaModel createVespaModel(String servicesXml) throws IOException, SAXException {
-        return createVespaModel(servicesXml, false);
+        return createVespaModel(servicesXml, new DeployState.Builder());
     }
-    private VespaModel createVespaModel(String servicesXml, boolean isHosted) throws IOException, SAXException {
+
+    private VespaModel createVespaModel(String servicesXml, DeployState.Builder deployStateBuilder) throws IOException, SAXException {
         ApplicationPackage applicationPackage = new MockApplicationPackage.Builder()
                 .withServices(servicesXml)
                 .withSchemas(sds)
                 .build();
         // Need to create VespaModel to make deploy properties have effect
         DeployLogger logger = new DeployLoggerStub();
-        VespaModel model = new VespaModel(new NullConfigModelRegistry(), new DeployState.Builder()
+        VespaModel model = new VespaModel(new NullConfigModelRegistry(), deployStateBuilder
                 .applicationPackage(applicationPackage)
+                .reindexing(new DummyReindexing())
                 .deployLogger(logger)
                 .zone(new Zone(SystemName.cd, Environment.dev, RegionName.from("here")))
-                .properties(new TestProperties().setHostedVespa(isHosted))
                 .build());
         SimpleApplicationValidator.checkServices(new StringReader(servicesXml), new Version(7));
         return model;
+    }
+
+    private static void assertReindexingConfigPresent(VespaModel model) {
+        ReindexingConfig reindexingConfig = model.getConfig(ReindexingConfig.class, "admin/cluster-controllers/0");
+        assertTrue(reindexingConfig.enabled());
+        assertEquals(1, reindexingConfig.clusters().size());
+        String contentClusterId = "bar";
+        assertEquals(Instant.EPOCH.toEpochMilli(), reindexingConfig.clusters(contentClusterId).documentTypes("type1").readyAtMillis());
+    }
+
+    private static void assertReindexingConfiguredOnAdminCluster(VespaModel model) {
+        ClusterControllerContainerCluster clusterControllerCluster = model.getAdmin().getClusterControllers();
+        assertReindexingMaintainerConfiguredOnClusterController(clusterControllerCluster);
+    }
+
+    private static void assertReindexingMaintainerConfiguredOnClusterController(ClusterControllerContainerCluster clusterControllerCluster) {
+        ClusterControllerContainer container = clusterControllerCluster.getContainers().get(0);
+        Component<?, ?> reindexingMaintainer = container.getComponents().getComponents().stream()
+                .filter(component -> component.getComponentId().getName().equals("reindexing-maintainer"))
+                .findAny()
+                .get();
+        assertEquals("ai.vespa.reindexing.ReindexingMaintainer", reindexingMaintainer.getClassId().getName());
+    }
+
+    private static class DummyReindexing implements Reindexing, Reindexing.Status {
+        @Override public Optional<Status> status(String cluster, String documentType) { return Optional.of(this); }
+        @Override public boolean enabled() { return true; }
+        @Override public Instant ready() { return Instant.EPOCH; }
     }
 }

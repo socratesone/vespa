@@ -8,10 +8,9 @@ using document::BucketSpace;
 
 namespace storage {
 
-ReadBucketList::ReadBucketList(BucketSpace bucketSpace, spi::PartitionId partition)
+ReadBucketList::ReadBucketList(BucketSpace bucketSpace)
     : api::InternalCommand(ID),
-      _bucketSpace(bucketSpace),
-      _partition(partition)
+      _bucketSpace(bucketSpace)
 { }
 
 ReadBucketList::~ReadBucketList() = default;
@@ -24,7 +23,7 @@ ReadBucketList::getBucket() const
 
 void
 ReadBucketList::print(std::ostream& out, bool verbose, const std::string& indent) const {
-    out << "ReadBucketList(" << _partition << ")";
+    out << "ReadBucketList()";
 
     if (verbose) {
         out << " : ";
@@ -34,8 +33,7 @@ ReadBucketList::print(std::ostream& out, bool verbose, const std::string& indent
 
 ReadBucketListReply::ReadBucketListReply(const ReadBucketList& cmd)
     : api::InternalReply(ID, cmd),
-      _bucketSpace(cmd.getBucketSpace()),
-      _partition(cmd.getPartition())
+      _bucketSpace(cmd.getBucketSpace())
 { }
 
 ReadBucketListReply::~ReadBucketListReply() = default;
@@ -104,55 +102,6 @@ ReadBucketInfoReply::print(std::ostream& out, bool verbose, const std::string& i
 
 std::unique_ptr<api::StorageReply> ReadBucketInfo::makeReply() {
     return std::make_unique<ReadBucketInfoReply>(*this);
-}
-
-InternalBucketJoinCommand::InternalBucketJoinCommand(const document::Bucket &bucket,
-                                                     uint16_t keepOnDisk, uint16_t joinFromDisk)
-    : api::InternalCommand(ID),
-      _bucket(bucket),
-      _keepOnDisk(keepOnDisk),
-      _joinFromDisk(joinFromDisk)
-{
-    setPriority(HIGH); // To not get too many pending of these, prioritize
-                       // them higher than getting more bucket info lists.
-}
-
-InternalBucketJoinCommand::~InternalBucketJoinCommand() = default;
-
-void
-InternalBucketJoinCommand::print(std::ostream& out, bool verbose, const std::string& indent) const {
-    out << "InternalBucketJoinCommand()";
-
-    if (verbose) {
-        out << " : ";
-        InternalCommand::print(out, true, indent);
-    }
-}
-
-InternalBucketJoinReply::InternalBucketJoinReply(const InternalBucketJoinCommand& cmd,
-                                                 const api::BucketInfo& info)
-    : api::InternalReply(ID, cmd),
-      _bucket(cmd.getBucket()),
-      _bucketInfo(info)
-{ }
-
-InternalBucketJoinReply::~InternalBucketJoinReply() = default;
-
-void
-InternalBucketJoinReply::print(std::ostream& out, bool verbose, const std::string& indent) const
-{
-    out << "InternalBucketJoinReply()";
-
-    if (verbose) {
-        out << " : ";
-        InternalReply::print(out, true, indent);
-    }
-}
-
-std::unique_ptr<api::StorageReply>
-InternalBucketJoinCommand::makeReply()
-{
-    return std::make_unique<InternalBucketJoinReply>(*this);
 }
 
 } // storage

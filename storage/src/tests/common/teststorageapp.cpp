@@ -1,17 +1,20 @@
 // Copyright 2017 Yahoo Holdings. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
 #include "teststorageapp.h"
-#include <vespa/storage/bucketdb/storagebucketdbinitializer.h>
+#include <vespa/storage/common/content_bucket_db_options.h>
 #include <vespa/storage/config/config-stor-server.h>
 #include <vespa/config-stor-distribution.h>
 #include <vespa/config-load-type.h>
 #include <vespa/config-fleetcontroller.h>
 #include <vespa/persistence/dummyimpl/dummypersistence.h>
+#include <vespa/vdslib/distribution/distribution.h>
+#include <vespa/vdslib/state/clusterstate.h>
 #include <vespa/vespalib/util/exceptions.h>
 #include <vespa/vespalib/util/time.h>
 #include <vespa/config/config.h>
 #include <vespa/config/helper/configgetter.hpp>
 #include <thread>
+#include <sstream>
 
 #include <vespa/log/log.h>
 LOG_SETUP(".test.servicelayerapp");
@@ -40,13 +43,13 @@ TestStorageApp::TestStorageApp(StorageComponentRegisterImpl::UP compReg,
       _docMan(),
       _nodeStateUpdater(type),
       _configId(configId),
+      _node_identity("test_cluster", type, index),
       _initialized(false)
 {
         // Use config to adjust values
     vespalib::string clusterName = "mycluster";
     uint32_t redundancy = 2;
     uint32_t nodeCount = 10;
-    documentapi::LoadTypeSet::SP loadTypes;
     if (!configId.empty()) {
         config::ConfigUri uri(configId);
         std::unique_ptr<vespa::config::content::core::StorServerConfig> serverConfig = config::ConfigGetter<vespa::config::content::core::StorServerConfig>::getConfig(uri.getConfigId(), uri.getContext());
@@ -54,15 +57,8 @@ TestStorageApp::TestStorageApp(StorageComponentRegisterImpl::UP compReg,
         if (index == 0xffff) index = serverConfig->nodeIndex;
         redundancy = config::ConfigGetter<vespa::config::content::StorDistributionConfig>::getConfig(uri.getConfigId(), uri.getContext())->redundancy;
         nodeCount = config::ConfigGetter<vespa::config::content::FleetcontrollerConfig>::getConfig(uri.getConfigId(), uri.getContext())->totalStorageCount;
-        _compReg.setPriorityConfig(
-                *config::ConfigGetter<StorageComponent::PriorityConfig>
-                    ::getConfig(uri.getConfigId(), uri.getContext()));
-        loadTypes = std::make_shared<documentapi::LoadTypeSet>(
-                *config::ConfigGetter<vespa::config::content::LoadTypeConfig>
-                    ::getConfig(uri.getConfigId(), uri.getContext()));
     } else {
         if (index == 0xffff) index = 0;
-        loadTypes.reset(new documentapi::LoadTypeSet);
     }
     if (index >= nodeCount) nodeCount = index + 1;
     if (redundancy > nodeCount) redundancy = nodeCount;
@@ -70,7 +66,6 @@ TestStorageApp::TestStorageApp(StorageComponentRegisterImpl::UP compReg,
     _compReg.setNodeInfo(clusterName, type, index);
     _compReg.setNodeStateUpdater(_nodeStateUpdater);
     _compReg.setDocumentTypeRepo(_docMan.getTypeRepoSP());
-    _compReg.setLoadTypes(loadTypes);
     _compReg.setBucketIdFactory(document::BucketIdFactory());
     auto distr = std::make_shared<lib::Distribution>(
             lib::Distribution::getDefaultDistributionConfig(redundancy, nodeCount));
@@ -116,7 +111,6 @@ TestStorageApp::waitUntilInitialized(
                   << timeout << " seconds.";
             if (initializer != 0) {
                 error << " ";
-                initializer->reportStatus(error, framework::HttpUrlPath(""));
                 LOG(error, "%s", error.str().c_str());
                 throw std::runtime_error(error.str());
             }
@@ -125,40 +119,40 @@ TestStorageApp::waitUntilInitialized(
 }
 
 namespace {
-    NodeIndex getIndexFromConfig(vespalib::stringref configId) {
-        if (!configId.empty()) {
-            config::ConfigUri uri(configId);
-            return NodeIndex(
-                config::ConfigGetter<vespa::config::content::core::StorServerConfig>::getConfig(uri.getConfigId(), uri.getContext())->nodeIndex);
-        }
-        return NodeIndex(0);
+NodeIndex getIndexFromConfig(vespalib::stringref configId) {
+    if (!configId.empty()) {
+        config::ConfigUri uri(configId);
+        return NodeIndex(
+            config::ConfigGetter<vespa::config::content::core::StorServerConfig>::getConfig(uri.getConfigId(), uri.getContext())->nodeIndex);
     }
+    return NodeIndex(0);
+}
+
+VESPA_THREAD_STACK_TAG(test_executor)
 }
 
 TestServiceLayerApp::TestServiceLayerApp(vespalib::stringref configId)
-    : TestStorageApp(std::make_unique<ServiceLayerComponentRegisterImpl>(true), // TODO remove B-tree flag once default
+    : TestStorageApp(std::make_unique<ServiceLayerComponentRegisterImpl>(ContentBucketDbOptions()),
                      lib::NodeType::STORAGE, getIndexFromConfig(configId), configId),
       _compReg(dynamic_cast<ServiceLayerComponentRegisterImpl&>(TestStorageApp::getComponentRegister())),
       _persistenceProvider(),
-      _executor(vespalib::SequencedTaskExecutor::create(1))
+      _executor(vespalib::SequencedTaskExecutor::create(test_executor, 1)),
+      _host_info()
 {
-    _compReg.setDiskCount(1);
     lib::NodeState ns(*_nodeStateUpdater.getReportedNodeState());
-    ns.setDiskCount(1);
     _nodeStateUpdater.setReportedNodeState(ns);
 }
 
 TestServiceLayerApp::TestServiceLayerApp(NodeIndex index,
                                          vespalib::stringref configId)
-    : TestStorageApp(std::make_unique<ServiceLayerComponentRegisterImpl>(true), // TODO remove B-tree flag once default
+    : TestStorageApp(std::make_unique<ServiceLayerComponentRegisterImpl>(ContentBucketDbOptions()),
                      lib::NodeType::STORAGE, index, configId),
       _compReg(dynamic_cast<ServiceLayerComponentRegisterImpl&>(TestStorageApp::getComponentRegister())),
       _persistenceProvider(),
-      _executor(vespalib::SequencedTaskExecutor::create(1))
+      _executor(vespalib::SequencedTaskExecutor::create(test_executor, 1)),
+      _host_info()
 {
-    _compReg.setDiskCount(1);
     lib::NodeState ns(*_nodeStateUpdater.getReportedNodeState());
-    ns.setDiskCount(1);
     _nodeStateUpdater.setReportedNodeState(ns);
 }
 
@@ -167,7 +161,6 @@ TestServiceLayerApp::~TestServiceLayerApp() = default;
 void
 TestServiceLayerApp::setupDummyPersistence()
 {
-    assert(_compReg.getDiskCount() == 1u);
     auto provider = std::make_unique<spi::dummy::DummyPersistence>(getTypeRepo());
     provider->initialize();
     setPersistenceProvider(std::move(provider));

@@ -3,9 +3,11 @@ package com.yahoo.jdisc.http.server.jetty;
 
 import com.google.inject.AbstractModule;
 import com.google.inject.Module;
-import com.yahoo.container.logging.AccessLog;
-import com.yahoo.container.logging.AccessLogEntry;
-import com.yahoo.jdisc.Metric;
+import com.yahoo.container.logging.ConnectionLog;
+import com.yahoo.container.logging.ConnectionLogEntry;
+import com.yahoo.container.logging.ConnectionLogEntry.SslHandshakeFailure.ExceptionEntry;
+import com.yahoo.container.logging.RequestLog;
+import com.yahoo.container.logging.RequestLogEntry;
 import com.yahoo.jdisc.References;
 import com.yahoo.jdisc.Request;
 import com.yahoo.jdisc.Response;
@@ -31,10 +33,12 @@ import com.yahoo.security.Pkcs10CsrBuilder;
 import com.yahoo.security.SslContextBuilder;
 import com.yahoo.security.X509CertificateBuilder;
 import com.yahoo.security.X509CertificateUtils;
+import com.yahoo.security.tls.TlsContext;
 import org.apache.http.conn.ssl.NoopHostnameVerifier;
 import org.apache.http.entity.ContentType;
 import org.apache.http.entity.mime.FormBodyPart;
 import org.apache.http.entity.mime.content.StringBody;
+import org.assertj.core.api.Assertions;
 import org.eclipse.jetty.client.HttpClient;
 import org.eclipse.jetty.client.ProxyProtocolClientConnectionFactory.V1;
 import org.eclipse.jetty.client.ProxyProtocolClientConnectionFactory.V2;
@@ -60,6 +64,7 @@ import java.nio.file.Path;
 import java.security.KeyPair;
 import java.security.PrivateKey;
 import java.security.cert.X509Certificate;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
@@ -68,10 +73,9 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
-import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.UUID;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 import java.util.regex.Pattern;
@@ -90,8 +94,8 @@ import static com.yahoo.jdisc.http.HttpHeaders.Names.X_DISABLE_CHUNKING;
 import static com.yahoo.jdisc.http.HttpHeaders.Values.APPLICATION_X_WWW_FORM_URLENCODED;
 import static com.yahoo.jdisc.http.HttpHeaders.Values.CLOSE;
 import static com.yahoo.jdisc.http.server.jetty.SimpleHttpClient.ResponseValidator;
-import static com.yahoo.security.KeyAlgorithm.RSA;
-import static com.yahoo.security.SignatureAlgorithm.SHA256_WITH_RSA;
+import static com.yahoo.security.KeyAlgorithm.EC;
+import static com.yahoo.security.SignatureAlgorithm.SHA256_WITH_ECDSA;
 import static org.cthul.matchers.CthulMatchers.containsPattern;
 import static org.cthul.matchers.CthulMatchers.matchesPattern;
 import static org.hamcrest.CoreMatchers.containsString;
@@ -99,12 +103,13 @@ import static org.hamcrest.CoreMatchers.instanceOf;
 import static org.hamcrest.CoreMatchers.is;
 import static org.hamcrest.CoreMatchers.startsWith;
 import static org.hamcrest.MatcherAssert.assertThat;
-import static org.hamcrest.Matchers.equalTo;
+import static org.hamcrest.Matchers.anyOf;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
-import static org.mockito.ArgumentMatchers.anyMap;
+import static org.junit.Assume.assumeTrue;
+import static org.mockito.Mockito.atLeast;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -175,31 +180,17 @@ public class HttpServerTest {
 
     @Test
     public void requireThatAccessLogIsCalledForRequestRejectedByJetty() throws Exception {
-        AccessLogMock accessLogMock = new AccessLogMock();
+        BlockingQueueRequestLog requestLogMock = new BlockingQueueRequestLog();
         final TestDriver driver = TestDrivers.newConfiguredInstance(
                 mockRequestHandler(),
                 new ServerConfig.Builder(),
                 new ConnectorConfig.Builder().requestHeaderSize(1),
-                binder -> binder.bind(AccessLog.class).toInstance(accessLogMock));
+                binder -> binder.bind(RequestLog.class).toInstance(requestLogMock));
         driver.client().get("/status.html")
                 .expectStatusCode(is(REQUEST_URI_TOO_LONG));
+        RequestLogEntry entry = requestLogMock.poll(Duration.ofSeconds(30));
+        assertEquals(414, entry.statusCode().getAsInt());
         assertThat(driver.close(), is(true));
-
-        assertThat(accessLogMock.logEntries.size(), equalTo(1));
-        AccessLogEntry accessLogEntry = accessLogMock.logEntries.get(0);
-        assertEquals(414, accessLogEntry.getStatusCode());
-    }
-
-    private static class AccessLogMock extends AccessLog {
-
-        final List<AccessLogEntry> logEntries = new CopyOnWriteArrayList<>();
-
-        AccessLogMock() { super(null); }
-
-        @Override
-        public void log(AccessLogEntry accessLogEntry) {
-            logEntries.add(accessLogEntry);
-        }
     }
 
     @Test
@@ -648,16 +639,20 @@ public class HttpServerTest {
         Path certificateFile = tmpFolder.newFile().toPath();
         generatePrivateKeyAndCertificate(privateKeyFile, certificateFile);
         var metricConsumer = new MetricConsumerMock();
-        TestDriver driver = createSslTestDriver(certificateFile, privateKeyFile, metricConsumer);
+        InMemoryConnectionLog connectionLog = new InMemoryConnectionLog();
+        TestDriver driver = createSslTestDriver(certificateFile, privateKeyFile, metricConsumer, connectionLog);
 
         SSLContext clientCtx = new SslContextBuilder()
                 .withTrustStore(certificateFile)
                 .build();
         assertHttpsRequestTriggersSslHandshakeException(
                 driver, clientCtx, null, null, "Received fatal alert: bad_certificate");
-        verify(metricConsumer.mockitoMock())
+        verify(metricConsumer.mockitoMock(), atLeast(1))
                 .add(MetricDefinitions.SSL_HANDSHAKE_FAILURE_MISSING_CLIENT_CERT, 1L, MetricConsumerMock.STATIC_CONTEXT);
         assertTrue(driver.close());
+        Assertions.assertThat(connectionLog.logEntries()).hasSize(1);
+        assertSslHandshakeFailurePresent(
+                connectionLog.logEntries().get(0), SSLHandshakeException.class, SslHandshakeFailure.MISSING_CLIENT_CERT.failureType());
     }
 
     @Test
@@ -666,18 +661,24 @@ public class HttpServerTest {
         Path certificateFile = tmpFolder.newFile().toPath();
         generatePrivateKeyAndCertificate(privateKeyFile, certificateFile);
         var metricConsumer = new MetricConsumerMock();
-        TestDriver driver = createSslTestDriver(certificateFile, privateKeyFile, metricConsumer);
+        InMemoryConnectionLog connectionLog = new InMemoryConnectionLog();
+        TestDriver driver = createSslTestDriver(certificateFile, privateKeyFile, metricConsumer, connectionLog);
 
         SSLContext clientCtx = new SslContextBuilder()
                 .withTrustStore(certificateFile)
                 .withKeyStore(privateKeyFile, certificateFile)
                 .build();
 
-        assertHttpsRequestTriggersSslHandshakeException(
-                driver, clientCtx, "TLSv1.3", null, "Received fatal alert: protocol_version");
-        verify(metricConsumer.mockitoMock())
+        boolean tlsv11Enabled = List.of(clientCtx.getDefaultSSLParameters().getProtocols()).contains("TLSv1.1");
+        assumeTrue("TLSv1.1 must be enabled in installed JDK", tlsv11Enabled);
+
+        assertHttpsRequestTriggersSslHandshakeException(driver, clientCtx, "TLSv1.1", null, "protocol");
+        verify(metricConsumer.mockitoMock(), atLeast(1))
                 .add(MetricDefinitions.SSL_HANDSHAKE_FAILURE_INCOMPATIBLE_PROTOCOLS, 1L, MetricConsumerMock.STATIC_CONTEXT);
         assertTrue(driver.close());
+        Assertions.assertThat(connectionLog.logEntries()).hasSize(1);
+        assertSslHandshakeFailurePresent(
+                connectionLog.logEntries().get(0), SSLHandshakeException.class, SslHandshakeFailure.INCOMPATIBLE_PROTOCOLS.failureType());
     }
 
     @Test
@@ -686,7 +687,8 @@ public class HttpServerTest {
         Path certificateFile = tmpFolder.newFile().toPath();
         generatePrivateKeyAndCertificate(privateKeyFile, certificateFile);
         var metricConsumer = new MetricConsumerMock();
-        TestDriver driver = createSslTestDriver(certificateFile, privateKeyFile, metricConsumer);
+        InMemoryConnectionLog connectionLog = new InMemoryConnectionLog();
+        TestDriver driver = createSslTestDriver(certificateFile, privateKeyFile, metricConsumer, connectionLog);
 
         SSLContext clientCtx = new SslContextBuilder()
                 .withTrustStore(certificateFile)
@@ -695,9 +697,12 @@ public class HttpServerTest {
 
         assertHttpsRequestTriggersSslHandshakeException(
                 driver, clientCtx, null, "TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA", "Received fatal alert: handshake_failure");
-        verify(metricConsumer.mockitoMock())
+        verify(metricConsumer.mockitoMock(), atLeast(1))
                 .add(MetricDefinitions.SSL_HANDSHAKE_FAILURE_INCOMPATIBLE_CIPHERS, 1L, MetricConsumerMock.STATIC_CONTEXT);
         assertTrue(driver.close());
+        Assertions.assertThat(connectionLog.logEntries()).hasSize(1);
+        assertSslHandshakeFailurePresent(
+                connectionLog.logEntries().get(0), SSLHandshakeException.class, SslHandshakeFailure.INCOMPATIBLE_CIPHERS.failureType());
     }
 
     @Test
@@ -706,7 +711,8 @@ public class HttpServerTest {
         Path serverCertificateFile = tmpFolder.newFile().toPath();
         generatePrivateKeyAndCertificate(serverPrivateKeyFile, serverCertificateFile);
         var metricConsumer = new MetricConsumerMock();
-        TestDriver driver = createSslTestDriver(serverCertificateFile, serverPrivateKeyFile, metricConsumer);
+        InMemoryConnectionLog connectionLog = new InMemoryConnectionLog();
+        TestDriver driver = createSslTestDriver(serverCertificateFile, serverPrivateKeyFile, metricConsumer, connectionLog);
 
         Path clientPrivateKeyFile = tmpFolder.newFile().toPath();
         Path clientCertificateFile = tmpFolder.newFile().toPath();
@@ -719,9 +725,12 @@ public class HttpServerTest {
 
         assertHttpsRequestTriggersSslHandshakeException(
                 driver, clientCtx, null, null, "Received fatal alert: certificate_unknown");
-        verify(metricConsumer.mockitoMock())
+        verify(metricConsumer.mockitoMock(), atLeast(1))
                 .add(MetricDefinitions.SSL_HANDSHAKE_FAILURE_INVALID_CLIENT_CERT, 1L, MetricConsumerMock.STATIC_CONTEXT);
         assertTrue(driver.close());
+        Assertions.assertThat(connectionLog.logEntries()).hasSize(1);
+        assertSslHandshakeFailurePresent(
+                connectionLog.logEntries().get(0), SSLHandshakeException.class, SslHandshakeFailure.INVALID_CLIENT_CERT.failureType());
     }
 
     @Test
@@ -733,7 +742,8 @@ public class HttpServerTest {
         Instant notAfter = Instant.now().minus(100, ChronoUnit.DAYS);
         generatePrivateKeyAndCertificate(rootPrivateKeyFile, rootCertificateFile, privateKeyFile, certificateFile, notAfter);
         var metricConsumer = new MetricConsumerMock();
-        TestDriver driver = createSslTestDriver(rootCertificateFile, rootPrivateKeyFile, metricConsumer);
+        InMemoryConnectionLog connectionLog = new InMemoryConnectionLog();
+        TestDriver driver = createSslTestDriver(rootCertificateFile, rootPrivateKeyFile, metricConsumer, connectionLog);
 
         SSLContext clientCtx = new SslContextBuilder()
                 .withTrustStore(rootCertificateFile)
@@ -742,9 +752,11 @@ public class HttpServerTest {
 
         assertHttpsRequestTriggersSslHandshakeException(
                 driver, clientCtx, null, null, "Received fatal alert: certificate_unknown");
-        verify(metricConsumer.mockitoMock())
+        verify(metricConsumer.mockitoMock(), atLeast(1))
                 .add(MetricDefinitions.SSL_HANDSHAKE_FAILURE_EXPIRED_CLIENT_CERT, 1L, MetricConsumerMock.STATIC_CONTEXT);
         assertTrue(driver.close());
+        Assertions.assertThat(connectionLog.logEntries()).hasSize(1);
+
     }
 
     @Test
@@ -752,20 +764,22 @@ public class HttpServerTest {
         Path privateKeyFile = tmpFolder.newFile().toPath();
         Path certificateFile = tmpFolder.newFile().toPath();
         generatePrivateKeyAndCertificate(privateKeyFile, certificateFile);
-        AccessLogMock accessLogMock = new AccessLogMock();
-        TestDriver driver = createSslWithProxyProtocolTestDriver(certificateFile, privateKeyFile, accessLogMock, /*mixedMode*/false);
-        HttpClient client = createJettyHttpClient(certificateFile);
+        InMemoryRequestLog requestLogMock = new InMemoryRequestLog();
+        InMemoryConnectionLog connectionLog = new InMemoryConnectionLog();
+        TestDriver driver = createSslWithProxyProtocolTestDriver(certificateFile, privateKeyFile, requestLogMock, /*mixedMode*/connectionLog, false);
 
         String proxiedRemoteAddress = "192.168.0.100";
         int proxiedRemotePort = 12345;
-        sendJettyClientRequest(driver, client, new V1.Tag(proxiedRemoteAddress, proxiedRemotePort));
-        sendJettyClientRequest(driver, client, new V2.Tag(proxiedRemoteAddress, proxiedRemotePort));
-        client.stop();
+        sendJettyClientRequest(driver, certificateFile, new V1.Tag(proxiedRemoteAddress, proxiedRemotePort));
+        sendJettyClientRequest(driver, certificateFile, new V2.Tag(proxiedRemoteAddress, proxiedRemotePort));
         assertTrue(driver.close());
 
-        assertEquals(2, accessLogMock.logEntries.size());
-        assertLogEntryHasRemote(accessLogMock.logEntries.get(0), proxiedRemoteAddress, proxiedRemotePort);
-        assertLogEntryHasRemote(accessLogMock.logEntries.get(1), proxiedRemoteAddress, proxiedRemotePort);
+        assertEquals(2, requestLogMock.entries().size());
+        assertLogEntryHasRemote(requestLogMock.entries().get(0), proxiedRemoteAddress, proxiedRemotePort);
+        assertLogEntryHasRemote(requestLogMock.entries().get(1), proxiedRemoteAddress, proxiedRemotePort);
+        Assertions.assertThat(connectionLog.logEntries()).hasSize(2);
+        assertLogEntryHasRemote(connectionLog.logEntries().get(0), proxiedRemoteAddress, proxiedRemotePort);
+        assertLogEntryHasRemote(connectionLog.logEntries().get(1), proxiedRemoteAddress, proxiedRemotePort);
     }
 
     @Test
@@ -773,19 +787,21 @@ public class HttpServerTest {
         Path privateKeyFile = tmpFolder.newFile().toPath();
         Path certificateFile = tmpFolder.newFile().toPath();
         generatePrivateKeyAndCertificate(privateKeyFile, certificateFile);
-        AccessLogMock accessLogMock = new AccessLogMock();
-        TestDriver driver = createSslWithProxyProtocolTestDriver(certificateFile, privateKeyFile, accessLogMock, /*mixedMode*/true);
-        HttpClient client = createJettyHttpClient(certificateFile);
+        InMemoryRequestLog requestLogMock = new InMemoryRequestLog();
+        InMemoryConnectionLog connectionLog = new InMemoryConnectionLog();
+        TestDriver driver = createSslWithProxyProtocolTestDriver(certificateFile, privateKeyFile, requestLogMock, /*mixedMode*/connectionLog, true);
 
         String proxiedRemoteAddress = "192.168.0.100";
-        sendJettyClientRequest(driver, client, null);
-        sendJettyClientRequest(driver, client, new V2.Tag(proxiedRemoteAddress, 12345));
-        client.stop();
+        sendJettyClientRequest(driver, certificateFile, null);
+        sendJettyClientRequest(driver, certificateFile, new V2.Tag(proxiedRemoteAddress, 12345));
         assertTrue(driver.close());
 
-        assertEquals(2, accessLogMock.logEntries.size());
-        assertLogEntryHasRemote(accessLogMock.logEntries.get(0), "127.0.0.1", 0);
-        assertLogEntryHasRemote(accessLogMock.logEntries.get(1), proxiedRemoteAddress, 0);
+        assertEquals(2, requestLogMock.entries().size());
+        assertLogEntryHasRemote(requestLogMock.entries().get(0), "127.0.0.1", 0);
+        assertLogEntryHasRemote(requestLogMock.entries().get(1), proxiedRemoteAddress, 0);
+        Assertions.assertThat(connectionLog.logEntries()).hasSize(2);
+        assertLogEntryHasRemote(connectionLog.logEntries().get(0), null, 0);
+        assertLogEntryHasRemote(connectionLog.logEntries().get(1), proxiedRemoteAddress, 12345);
     }
 
     @Test
@@ -793,9 +809,9 @@ public class HttpServerTest {
         Path privateKeyFile = tmpFolder.newFile().toPath();
         Path certificateFile = tmpFolder.newFile().toPath();
         generatePrivateKeyAndCertificate(privateKeyFile, certificateFile);
-        AccessLogMock accessLogMock = new AccessLogMock();
-        TestDriver driver = createSslWithProxyProtocolTestDriver(certificateFile, privateKeyFile, accessLogMock, /*mixedMode*/false);
-        HttpClient client = createJettyHttpClient(certificateFile);
+        InMemoryRequestLog requestLogMock = new InMemoryRequestLog();
+        InMemoryConnectionLog connectionLog = new InMemoryConnectionLog();
+        TestDriver driver = createSslWithProxyProtocolTestDriver(certificateFile, privateKeyFile, requestLogMock, connectionLog, /*mixedMode*/false);
 
         String proxiedRemoteAddress = "192.168.0.100";
         int proxiedRemotePort = 12345;
@@ -803,32 +819,68 @@ public class HttpServerTest {
         int proxyLocalPort = 23456;
         V2.Tag v2Tag = new V2.Tag(V2.Tag.Command.PROXY, null, V2.Tag.Protocol.STREAM,
                                   proxiedRemoteAddress, proxiedRemotePort, proxyLocalAddress, proxyLocalPort, null);
-        ContentResponse response = sendJettyClientRequest(driver, client, v2Tag);
-        client.stop();
+        ContentResponse response = sendJettyClientRequest(driver, certificateFile, v2Tag);
         assertTrue(driver.close());
 
         int clientPort = Integer.parseInt(response.getHeaders().get("Jdisc-Local-Port"));
         assertNotEquals(proxyLocalPort, clientPort);
+        assertNotEquals(proxyLocalPort, connectionLog.logEntries().get(0).localPort().get().intValue());
     }
 
-    private ContentResponse sendJettyClientRequest(TestDriver testDriver, HttpClient client, Object tag)
-            throws InterruptedException, TimeoutException {
-        int maxAttempts = 3;
-        for (int attempt = 0; attempt < maxAttempts; attempt++) {
-            try {
-                ContentResponse response = client.newRequest(URI.create("https://localhost:" + testDriver.server().getListenPort() + "/"))
-                        .tag(tag)
-                        .send();
-                assertEquals(200, response.getStatus());
-                return response;
-            } catch (ExecutionException e) {
-                // Retry when the server closes the connection before the TLS handshake is completed. This have been observed in CI.
-                // We have been unable to reproduce this locally. The cause is therefor currently unknown.
-                log.log(Level.WARNING, String.format("Attempt %d failed: %s", attempt, e.getMessage()), e);
-                Thread.sleep(10);
+    @Test
+    public void requireThatConnectionIsTrackedInConnectionLog() throws Exception {
+        Path privateKeyFile = tmpFolder.newFile().toPath();
+        Path certificateFile = tmpFolder.newFile().toPath();
+        generatePrivateKeyAndCertificate(privateKeyFile, certificateFile);
+        InMemoryConnectionLog connectionLog = new InMemoryConnectionLog();
+        Module overrideModule = binder -> binder.bind(ConnectionLog.class).toInstance(connectionLog);
+        TestDriver driver = TestDrivers.newInstanceWithSsl(new EchoRequestHandler(), certificateFile, privateKeyFile, TlsClientAuth.NEED, overrideModule);
+        int listenPort = driver.server().getListenPort();
+        driver.client().get("/status.html");
+        assertTrue(driver.close());
+        List<ConnectionLogEntry> logEntries = connectionLog.logEntries();
+        Assertions.assertThat(logEntries).hasSize(1);
+        ConnectionLogEntry logEntry = logEntries.get(0);
+        assertEquals(4, UUID.fromString(logEntry.id()).version());
+        Assertions.assertThat(logEntry.timestamp()).isAfter(Instant.EPOCH);
+        Assertions.assertThat(logEntry.requests()).hasValue(1L);
+        Assertions.assertThat(logEntry.responses()).hasValue(1L);
+        Assertions.assertThat(logEntry.peerAddress()).hasValue("127.0.0.1");
+        Assertions.assertThat(logEntry.localAddress()).hasValue("127.0.0.1");
+        Assertions.assertThat(logEntry.localPort()).hasValue(listenPort);
+        Assertions.assertThat(logEntry.httpBytesReceived()).hasValueSatisfying(value -> Assertions.assertThat(value).isPositive());
+        Assertions.assertThat(logEntry.httpBytesSent()).hasValueSatisfying(value -> Assertions.assertThat(value).isPositive());
+        Assertions.assertThat(logEntry.sslProtocol()).hasValueSatisfying(TlsContext.ALLOWED_PROTOCOLS::contains);
+        Assertions.assertThat(logEntry.sslPeerSubject()).hasValue("CN=localhost");
+        Assertions.assertThat(logEntry.sslCipherSuite()).hasValueSatisfying(cipher -> Assertions.assertThat(cipher).isNotBlank());
+        Assertions.assertThat(logEntry.sslSessionId()).hasValueSatisfying(sessionId -> Assertions.assertThat(sessionId).hasSize(64));
+        Assertions.assertThat(logEntry.sslPeerNotBefore()).hasValue(Instant.EPOCH);
+        Assertions.assertThat(logEntry.sslPeerNotAfter()).hasValue(Instant.EPOCH.plus(100_000, ChronoUnit.DAYS));
+    }
+
+    private ContentResponse sendJettyClientRequest(TestDriver testDriver, Path certificateFile, Object tag)
+            throws Exception {
+        HttpClient client = createJettyHttpClient(certificateFile);
+        try {
+            int maxAttempts = 3;
+            for (int attempt = 0; attempt < maxAttempts; attempt++) {
+                try {
+                    ContentResponse response = client.newRequest(URI.create("https://localhost:" + testDriver.server().getListenPort() + "/"))
+                            .tag(tag)
+                            .send();
+                    assertEquals(200, response.getStatus());
+                    return response;
+                } catch (ExecutionException e) {
+                    // Retry when the server closes the connection before the TLS handshake is completed. This have been observed in CI.
+                    // We have been unable to reproduce this locally. The cause is therefor currently unknown.
+                    log.log(Level.WARNING, String.format("Attempt %d failed: %s", attempt, e.getMessage()), e);
+                    Thread.sleep(10);
+                }
             }
+            throw new AssertionError("Failed to send request, see log for details");
+        } finally {
+            client.stop();
         }
-        throw new AssertionError("Failed to send request, see log for details");
     }
 
     // Using Jetty's http client as Apache httpclient does not support the proxy-protocol v1/v2.
@@ -842,15 +894,38 @@ public class HttpServerTest {
         return client;
     }
 
-    private static void assertLogEntryHasRemote(AccessLogEntry entry, String expectedAddress, int expectedPort) {
-        assertEquals(expectedAddress, entry.getPeerAddress());
+    private static void assertLogEntryHasRemote(RequestLogEntry entry, String expectedAddress, int expectedPort) {
+        assertEquals(expectedAddress, entry.peerAddress().get());
         if (expectedPort > 0) {
-            assertEquals(expectedPort, entry.getPeerPort());
+            assertEquals(expectedPort, entry.peerPort().getAsInt());
         }
     }
 
+    private static void assertLogEntryHasRemote(ConnectionLogEntry entry, String expectedAddress, int expectedPort) {
+        if (expectedAddress != null) {
+            Assertions.assertThat(entry.remoteAddress()).hasValue(expectedAddress);
+        } else {
+            Assertions.assertThat(entry.remoteAddress()).isEmpty();
+        }
+        if (expectedPort > 0) {
+            Assertions.assertThat(entry.remotePort()).hasValue(expectedPort);
+        } else {
+            Assertions.assertThat(entry.remotePort()).isEmpty();
+        }
+    }
+
+    private static void assertSslHandshakeFailurePresent(
+            ConnectionLogEntry entry, Class<? extends SSLHandshakeException> expectedException, String expectedType) {
+        Assertions.assertThat(entry.sslHandshakeFailure()).isPresent();
+        ConnectionLogEntry.SslHandshakeFailure failure = entry.sslHandshakeFailure().get();
+        assertEquals(expectedType, failure.type());
+        ExceptionEntry exceptionEntry = failure.exceptionChain().get(0);
+        assertEquals(expectedException.getName(), exceptionEntry.name());
+    }
+
     private static TestDriver createSslWithProxyProtocolTestDriver(
-            Path certificateFile, Path privateKeyFile, AccessLogMock accessLogMock, boolean mixedMode) throws IOException {
+            Path certificateFile, Path privateKeyFile, RequestLog requestLog,
+            ConnectionLog connectionLog, boolean mixedMode) {
         ConnectorConfig.Builder connectorConfig = new ConnectorConfig.Builder()
                 .proxyProtocol(new ConnectorConfig.ProxyProtocol.Builder()
                                        .enabled(true)
@@ -862,15 +937,22 @@ public class HttpServerTest {
                              .caCertificateFile(certificateFile.toString()));
         return TestDrivers.newConfiguredInstance(
                 new EchoRequestHandler(),
-                new ServerConfig.Builder(),
+                new ServerConfig.Builder().connectionLog(new ServerConfig.ConnectionLog.Builder().enabled(true)),
                 connectorConfig,
-                binder -> binder.bind(AccessLog.class).toInstance(accessLogMock));
+                binder -> {
+                    binder.bind(RequestLog.class).toInstance(requestLog);
+                    binder.bind(ConnectionLog.class).toInstance(connectionLog);
+                });
     }
 
     private static TestDriver createSslTestDriver(
-            Path serverCertificateFile, Path serverPrivateKeyFile, MetricConsumerMock metricConsumer) throws IOException {
+            Path serverCertificateFile, Path serverPrivateKeyFile, MetricConsumerMock metricConsumer, InMemoryConnectionLog connectionLog) throws IOException {
+        Module extraModule = binder -> {
+            binder.bind(MetricConsumer.class).toInstance(metricConsumer.mockitoMock());
+            binder.bind(ConnectionLog.class).toInstance(connectionLog);
+        };
         return TestDrivers.newInstanceWithSsl(
-                new EchoRequestHandler(), serverCertificateFile, serverPrivateKeyFile, TlsClientAuth.NEED, metricConsumer.asGuiceModule());
+                new EchoRequestHandler(), serverCertificateFile, serverPrivateKeyFile, TlsClientAuth.NEED, extraModule);
     }
 
     private static void assertHttpsRequestTriggersSslHandshakeException(
@@ -889,17 +971,18 @@ public class HttpServerTest {
         } catch (SSLException e) {
             // This exception is thrown if Apache httpclient's write thread detects the handshake failure before the read thread.
             log.log(Level.WARNING, "Client failed to get a proper TLS handshake response: " + e.getMessage(), e);
-            assertThat(e.getMessage(), containsString("readHandshakeRecord")); // Only ignore this specific ssl exception
+            // Only ignore a subset of exceptions
+            assertThat(e.getMessage(), anyOf(containsString("readHandshakeRecord"), containsString("Broken pipe")));
         }
     }
 
     private static void generatePrivateKeyAndCertificate(Path privateKeyFile, Path certificateFile) throws IOException {
-        KeyPair keyPair = KeyUtils.generateKeypair(RSA, 2048);
+        KeyPair keyPair = KeyUtils.generateKeypair(EC);
         Files.writeString(privateKeyFile, KeyUtils.toPem(keyPair.getPrivate()));
 
         X509Certificate certificate = X509CertificateBuilder
                 .fromKeypair(
-                        keyPair, new X500Principal("CN=localhost"), Instant.EPOCH, Instant.EPOCH.plus(100_000, ChronoUnit.DAYS), SHA256_WITH_RSA, BigInteger.ONE)
+                        keyPair, new X500Principal("CN=localhost"), Instant.EPOCH, Instant.EPOCH.plus(100_000, ChronoUnit.DAYS), SHA256_WITH_ECDSA, BigInteger.ONE)
                 .build();
         Files.writeString(certificateFile, X509CertificateUtils.toPem(certificate));
     }
@@ -910,11 +993,11 @@ public class HttpServerTest {
         X509Certificate rootCertificate = X509CertificateUtils.fromPem(Files.readString(rootCertificateFile));
         PrivateKey privateKey = KeyUtils.fromPemEncodedPrivateKey(Files.readString(rootPrivateKeyFile));
 
-        KeyPair keyPair = KeyUtils.generateKeypair(RSA, 2048);
+        KeyPair keyPair = KeyUtils.generateKeypair(EC);
         Files.writeString(privateKeyFile, KeyUtils.toPem(keyPair.getPrivate()));
-        Pkcs10Csr csr = Pkcs10CsrBuilder.fromKeypair(new X500Principal("CN=myclient"), keyPair, SHA256_WITH_RSA).build();
+        Pkcs10Csr csr = Pkcs10CsrBuilder.fromKeypair(new X500Principal("CN=myclient"), keyPair, SHA256_WITH_ECDSA).build();
         X509Certificate certificate = X509CertificateBuilder
-                .fromCsr(csr, rootCertificate.getSubjectX500Principal(), Instant.EPOCH, notAfter, privateKey, SHA256_WITH_RSA, BigInteger.ONE)
+                .fromCsr(csr, rootCertificate.getSubjectX500Principal(), Instant.EPOCH, notAfter, privateKey, SHA256_WITH_ECDSA, BigInteger.ONE)
                 .build();
         Files.writeString(certificateFile, X509CertificateUtils.toPem(certificate));
     }
@@ -1113,19 +1196,6 @@ public class HttpServerTest {
         public int compare(final Cookie lhs, final Cookie rhs) {
             return lhs.getName().compareTo(rhs.getName());
         }
-    }
-
-    private static class MetricConsumerMock {
-        static final Metric.Context STATIC_CONTEXT = new Metric.Context() {};
-
-        private final MetricConsumer mockitoMock = mock(MetricConsumer.class);
-
-        MetricConsumerMock() {
-            when(mockitoMock.createContext(anyMap())).thenReturn(STATIC_CONTEXT);
-        }
-
-        MetricConsumer mockitoMock() { return mockitoMock; }
-        Module asGuiceModule() { return binder -> binder.bind(MetricConsumer.class).toInstance(mockitoMock); }
     }
 
 }

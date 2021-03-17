@@ -15,21 +15,20 @@ import static java.lang.Long.min;
 public class NodeResourcesTuning implements ProtonConfig.Producer {
 
     final static long MB = 1024 * 1024;
-    final static long GB = MB * 1024;
+    public final static long GB = MB * 1024;
+    // This is an approximate number base on observation of a node using 33G memory with 765M docs
+    private final static long MEMORY_COST_PER_DOCUMENT_STORE_ONLY = 46L;
     private final NodeResources resources;
-    private final int redundancy;
-    private final int searchableCopies;
     private final int threadsPerSearch;
     private final boolean combined;
 
+    // "Reserve" 0.5GB of memory for other processes running on the content node (config-proxy, metrics-proxy).
+    public static final double reservedMemoryGb = 0.5;
+
     public NodeResourcesTuning(NodeResources resources,
-                               int redundancy,
-                               int searchableCopies,
                                int threadsPerSearch,
                                boolean combined) {
         this.resources = resources;
-        this.redundancy = redundancy;
-        this.searchableCopies = searchableCopies;
         this.threadsPerSearch = threadsPerSearch;
         this.combined = combined;
     }
@@ -45,7 +44,6 @@ public class NodeResourcesTuning implements ProtonConfig.Producer {
         tuneSummaryReadIo(builder.summary.read);
         tuneSummaryCache(builder.summary.cache);
         tuneSearchReadIo(builder.search.mmap);
-        tuneWriteFilter(builder.writefilter);
         for (ProtonConfig.Documentdb.Builder dbb : builder.documentdb) {
             getConfig(dbb);
         }
@@ -54,8 +52,8 @@ public class NodeResourcesTuning implements ProtonConfig.Producer {
     private void getConfig(ProtonConfig.Documentdb.Builder builder) {
         ProtonConfig.Documentdb dbCfg = builder.build();
         if (dbCfg.mode() != ProtonConfig.Documentdb.Mode.Enum.INDEX) {
-            long numDocs = (long)usableMemoryGb() * GB / 64L;
-            builder.allocation.initialnumdocs(numDocs/Math.max(searchableCopies, redundancy));
+            long numDocs = (long)usableMemoryGb() * GB / MEMORY_COST_PER_DOCUMENT_STORE_ONLY;
+            builder.allocation.initialnumdocs(numDocs);
         }
     }
 
@@ -121,20 +119,15 @@ public class NodeResourcesTuning implements ProtonConfig.Producer {
         builder.numthreadspersearch(threadsPerSearch);
     }
 
-    private void tuneWriteFilter(ProtonConfig.Writefilter.Builder builder) {
-        // "Reserve" 1GB of memory for other processes running on the content node (config-proxy, cluster-controller, metrics-proxy)
-        double reservedMemoryGb = 1;
-        double defaultMemoryLimit = new ProtonConfig.Writefilter(new ProtonConfig.Writefilter.Builder()).memorylimit();
-        double scaledMemoryLimit = ((usableMemoryGb() - reservedMemoryGb) * defaultMemoryLimit) / usableMemoryGb();
-        builder.memorylimit(scaledMemoryLimit);
-    }
-
     /** Returns the memory we can expect will be available for the content node processes */
     private double usableMemoryGb() {
-        if ( ! combined ) return resources.memoryGb();
+        double usableMemoryGb = resources.memoryGb() - reservedMemoryGb;
+        if ( ! combined) {
+            return usableMemoryGb;
+        }
 
-        double fractionTakenByContainer = (double)ApplicationContainerCluster.heapSizePercentageOfTotalNodeMemoryWhenCombinedCluster / 100;
-        return resources.memoryGb() * (1 - fractionTakenByContainer);
+        double fractionTakenByContainer = ApplicationContainerCluster.heapSizePercentageOfTotalNodeMemoryWhenCombinedCluster * 1e-2;
+        return usableMemoryGb * (1 - fractionTakenByContainer);
     }
 
 }

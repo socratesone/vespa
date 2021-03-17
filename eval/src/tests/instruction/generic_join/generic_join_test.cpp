@@ -5,7 +5,8 @@
 #include <vespa/eval/eval/value_codec.h>
 #include <vespa/eval/instruction/generic_join.h>
 #include <vespa/eval/eval/interpreted_function.h>
-#include <vespa/eval/eval/test/tensor_model.hpp>
+#include <vespa/eval/eval/test/reference_operations.h>
+#include <vespa/eval/eval/test/gen_spec.h>
 #include <vespa/vespalib/util/stringfmt.h>
 #include <vespa/vespalib/gtest/gtest.h>
 
@@ -16,30 +17,25 @@ using namespace vespalib::eval::test;
 
 using vespalib::make_string_short::fmt;
 
-std::vector<Layout> join_layouts = {
-    {},                                                 {},
-    {x(5)},                                             {x(5)},
-    {x(5)},                                             {y(5)},
-    {x(5)},                                             {x(5),y(5)},
-    {y(3)},                                             {x(2),z(3)},
-    {x(3),y(5)},                                        {y(5),z(7)},
-    float_cells({x(3),y(5)}),                           {y(5),z(7)},
-    {x(3),y(5)},                                        float_cells({y(5),z(7)}),
-    float_cells({x(3),y(5)}),                           float_cells({y(5),z(7)}),
-    {x({"a","b","c"})},                                 {x({"a","b","c"})},
-    {x({"a","b","c"})},                                 {x({"a","b"})},
-    {x({"a","b","c"})},                                 {y({"foo","bar","baz"})},
-    {x({"a","b","c"})},                                 {x({"a","b","c"}),y({"foo","bar","baz"})},
-    {x({"a","b"}),y({"foo","bar","baz"})},              {x({"a","b","c"}),y({"foo","bar"})},
-    {x({"a","b"}),y({"foo","bar","baz"})},              {y({"foo","bar"}),z({"i","j","k","l"})},
-    float_cells({x({"a","b"}),y({"foo","bar","baz"})}), {y({"foo","bar"}),z({"i","j","k","l"})},
-    {x({"a","b"}),y({"foo","bar","baz"})},              float_cells({y({"foo","bar"}),z({"i","j","k","l"})}),
-    float_cells({x({"a","b"}),y({"foo","bar","baz"})}), float_cells({y({"foo","bar"}),z({"i","j","k","l"})}),
-    {x(3),y({"foo", "bar"})},                           {y({"foo", "bar"}),z(7)},
-    {x({"a","b","c"}),y(5)},                            {y(5),z({"i","j","k","l"})},
-    float_cells({x({"a","b","c"}),y(5)}),               {y(5),z({"i","j","k","l"})},
-    {x({"a","b","c"}),y(5)},                            float_cells({y(5),z({"i","j","k","l"})}),
-    float_cells({x({"a","b","c"}),y(5)}),               float_cells({y(5),z({"i","j","k","l"})})
+GenSpec::seq_t N_16ths = [] (size_t i) noexcept { return (i + 1.0) / 16.0; };
+
+GenSpec G() { return GenSpec().seq(N_16ths); }
+
+const std::vector<GenSpec> join_layouts = {
+    G(),                                                         G(),
+    G().idx("x", 5),                                             G().idx("x", 5),
+    G().idx("x", 5),                                             G().idx("y", 5),
+    G().idx("x", 5),                                             G().idx("x", 5).idx("y", 5),
+    G().idx("y", 3),                                             G().idx("x", 2).idx("z", 3),
+    G().idx("x", 3).idx("y", 5),                                 G().idx("y", 5).idx("z", 7),
+    G().map("x", {"a","b","c"}),                                 G().map("x", {"a","b","c"}),
+    G().map("x", {"a","b","c"}),                                 G().map("x", {"a","b"}),
+    G().map("x", {"a","b","c"}),                                 G().map("y", {"foo","bar","baz"}),
+    G().map("x", {"a","b","c"}),                                 G().map("x", {"a","b","c"}).map("y", {"foo","bar","baz"}),
+    G().map("x", {"a","b"}).map("y", {"foo","bar","baz"}),       G().map("x", {"a","b","c"}).map("y", {"foo","bar"}),
+    G().map("x", {"a","b"}).map("y", {"foo","bar","baz"}),       G().map("y", {"foo","bar"}).map("z", {"i","j","k","l"}),
+    G().idx("x", 3).map("y", {"foo", "bar"}),                    G().map("y", {"foo", "bar"}).idx("z", 7),
+    G().map("x", {"a","b","c"}).idx("y", 5),                     G().idx("y", 5).map("z", {"i","j","k","l"})
 };
 
 bool join_address(const TensorSpec::Address &a, const TensorSpec::Address &b, TensorSpec::Address &addr) {
@@ -53,39 +49,14 @@ bool join_address(const TensorSpec::Address &a, const TensorSpec::Address &b, Te
     return true;
 }
 
-TensorSpec reference_join(const TensorSpec &a, const TensorSpec &b, join_fun_t function) {
-    ValueType res_type = ValueType::join(ValueType::from_spec(a.type()), ValueType::from_spec(b.type()));
-    EXPECT_FALSE(res_type.is_error());
-    TensorSpec result(res_type.to_spec());
-    for (const auto &cell_a: a.cells()) {
-        for (const auto &cell_b: b.cells()) {
-            TensorSpec::Address addr;
-            if (join_address(cell_a.first, cell_b.first, addr) &&
-                join_address(cell_b.first, cell_a.first, addr))
-            {
-                result.add(addr, function(cell_a.second, cell_b.second));
-            }
-        }
-    }
-    return result;
-}
-
-TensorSpec perform_generic_join(const TensorSpec &a, const TensorSpec &b, join_fun_t function) {
+TensorSpec perform_generic_join(const TensorSpec &a, const TensorSpec &b,
+                                join_fun_t function, const ValueBuilderFactory &factory)
+{
     Stash stash;
-    const auto &factory = SimpleValueBuilderFactory::get();
     auto lhs = value_from_spec(a, factory);
     auto rhs = value_from_spec(b, factory);
-    auto my_op = GenericJoin::make_instruction(lhs->type(), rhs->type(), function, factory, stash);
-    InterpretedFunction::EvalSingle single(factory, my_op);
-    return spec_from_value(single.eval(std::vector<Value::CREF>({*lhs,*rhs})));
-}
-
-TensorSpec perform_generic_join_fast(const TensorSpec &a, const TensorSpec &b, join_fun_t function) {
-    Stash stash;
-    const auto &factory = FastValueBuilderFactory::get();
-    auto lhs = value_from_spec(a, factory);
-    auto rhs = value_from_spec(b, factory);
-    auto my_op = GenericJoin::make_instruction(lhs->type(), rhs->type(), function, factory, stash);
+    auto res_type = ValueType::join(lhs->type(), rhs->type());
+    auto my_op = GenericJoin::make_instruction(res_type, lhs->type(), rhs->type(), function, factory, stash);
     InterpretedFunction::EvalSingle single(factory, my_op);
     return spec_from_value(single.eval(std::vector<Value::CREF>({*lhs,*rhs})));
 }
@@ -94,9 +65,9 @@ TEST(GenericJoinTest, dense_join_plan_can_be_created) {
     auto lhs = ValueType::from_spec("tensor(a{},b[6],c[5],e[3],f[2],g{})");
     auto rhs = ValueType::from_spec("tensor(a{},b[6],c[5],d[4],h{})");
     auto plan = DenseJoinPlan(lhs, rhs);
-    std::vector<size_t> expect_loop = {30,4,6};
-    std::vector<size_t> expect_lhs_stride = {6,0,1};
-    std::vector<size_t> expect_rhs_stride = {4,1,0};
+    SmallVector<size_t> expect_loop = {30,4,6};
+    SmallVector<size_t> expect_lhs_stride = {6,0,1};
+    SmallVector<size_t> expect_rhs_stride = {4,1,0};
     EXPECT_EQ(plan.lhs_size, 180);
     EXPECT_EQ(plan.rhs_size, 120);
     EXPECT_EQ(plan.out_size, 720);
@@ -110,9 +81,9 @@ TEST(GenericJoinTest, sparse_join_plan_can_be_created) {
     auto rhs = ValueType::from_spec("tensor(b[6],c[5],d[4],g{},h{})");
     auto plan = SparseJoinPlan(lhs, rhs);
     using SRC = SparseJoinPlan::Source;
-    std::vector<SRC> expect_sources = {SRC::LHS,SRC::BOTH,SRC::RHS};
-    std::vector<size_t> expect_lhs_overlap = {1};
-    std::vector<size_t> expect_rhs_overlap = {0};
+    SmallVector<SRC> expect_sources = {SRC::LHS,SRC::BOTH,SRC::RHS};
+    SmallVector<size_t> expect_lhs_overlap = {1};
+    SmallVector<size_t> expect_rhs_overlap = {0};
     EXPECT_EQ(plan.sources, expect_sources);
     EXPECT_EQ(plan.lhs_overlap, expect_lhs_overlap);
     EXPECT_EQ(plan.rhs_overlap, expect_rhs_overlap);
@@ -135,17 +106,26 @@ TEST(GenericJoinTest, dense_join_plan_can_be_executed) {
 TEST(GenericJoinTest, generic_join_works_for_simple_and_fast_values) {
     ASSERT_TRUE((join_layouts.size() % 2) == 0);
     for (size_t i = 0; i < join_layouts.size(); i += 2) {
-        TensorSpec lhs = spec(join_layouts[i], Div16(N()));
-        TensorSpec rhs = spec(join_layouts[i + 1], Div16(N()));
-        for (auto fun: {operation::Add::f, operation::Sub::f, operation::Mul::f, operation::Div::f}) {
-            SCOPED_TRACE(fmt("\n===\nLHS: %s\nRHS: %s\n===\n", lhs.to_string().c_str(), rhs.to_string().c_str()));
-            auto expect = reference_join(lhs, rhs, fun);
-            auto actual = perform_generic_join(lhs, rhs, fun);
-            auto fast = perform_generic_join_fast(lhs, rhs, fun); 
-            EXPECT_EQ(actual, expect);
-            EXPECT_EQ(fast, expect);
+        const auto &l = join_layouts[i];
+        const auto &r = join_layouts[i+1];
+        for (CellType lct : CellTypeUtils::list_types()) {
+            auto lhs = l.cpy().cells(lct);
+            if (lhs.bad_scalar()) continue;
+            for (CellType rct : CellTypeUtils::list_types()) {
+                auto rhs = r.cpy().cells(rct);
+                if (rhs.bad_scalar()) continue;
+                for (auto fun: {operation::Add::f, operation::Sub::f, operation::Mul::f, operation::Div::f}) {
+                    SCOPED_TRACE(fmt("\n===\nLHS: %s\nRHS: %s\n===\n", lhs.gen().to_string().c_str(), rhs.gen().to_string().c_str()));
+                    auto expect = ReferenceOperations::join(lhs, rhs, fun);
+                    auto simple = perform_generic_join(lhs, rhs, fun, SimpleValueBuilderFactory::get());
+                    auto fast = perform_generic_join(lhs, rhs, fun, FastValueBuilderFactory::get());
+                    EXPECT_EQ(simple, expect);
+                    EXPECT_EQ(fast, expect);
+                }
+            }
         }
     }
 }
+
 
 GTEST_MAIN_RUN_ALL_TESTS()

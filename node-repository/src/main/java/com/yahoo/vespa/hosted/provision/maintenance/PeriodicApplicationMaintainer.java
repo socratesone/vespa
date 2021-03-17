@@ -7,8 +7,9 @@ import com.yahoo.jdisc.Metric;
 import com.yahoo.vespa.flags.BooleanFlag;
 import com.yahoo.vespa.flags.FetchVector;
 import com.yahoo.vespa.flags.FlagSource;
-import com.yahoo.vespa.flags.Flags;
+import com.yahoo.vespa.flags.PermanentFlags;
 import com.yahoo.vespa.hosted.provision.Node;
+import com.yahoo.vespa.hosted.provision.NodeList;
 import com.yahoo.vespa.hosted.provision.NodeRepository;
 
 import java.time.Duration;
@@ -70,13 +71,13 @@ public class PeriodicApplicationMaintainer extends ApplicationMaintainer {
     }
 
     private boolean shouldMaintain(ApplicationId id) {
-        BooleanFlag skipMaintenanceDeployment = Flags.SKIP_MAINTENANCE_DEPLOYMENT.bindTo(flagSource)
+        BooleanFlag skipMaintenanceDeployment = PermanentFlags.SKIP_MAINTENANCE_DEPLOYMENT.bindTo(flagSource)
                 .with(FetchVector.Dimension.APPLICATION_ID, id.serializedForm());
         return ! skipMaintenanceDeployment.value();
     }
 
-    protected List<Node> nodesNeedingMaintenance() {
-        return nodeRepository().getNodes(Node.State.active);
+    protected NodeList nodesNeedingMaintenance() {
+        return nodeRepository().nodes().list(Node.State.active);
     }
 
 }

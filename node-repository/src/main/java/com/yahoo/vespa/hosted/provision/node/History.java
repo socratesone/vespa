@@ -39,6 +39,13 @@ public class History {
     /** Returns this event if it is present in this history */
     public Optional<Event> event(Event.Type type) { return Optional.ofNullable(events.get(type)); }
 
+    /** Returns true if a given event is registered in this history at the given time */
+    public boolean hasEventAt(Event.Type type, Instant time) {
+        return event(type)
+                       .map(event -> event.at().equals(time))
+                       .orElse(false);
+    }
+
     /** Returns true if a given event is registered in this history after the given time */
     public boolean hasEventAfter(Event.Type type, Instant time) {
         return event(type)
@@ -89,6 +96,7 @@ public class History {
             case failed:        return this.with(new Event(Event.Type.failed, agent, at));
             case dirty:         return this.with(new Event(Event.Type.deallocated, agent, at));
             case parked:        return this.with(new Event(Event.Type.parked, agent, at));
+            case breakfixed:    return this.with(new Event(Event.Type.breakfixed, agent, at));
             default:            return this;
         }
     }
@@ -128,10 +136,22 @@ public class History {
         }
 
         public enum Type { 
-            // State move events
-            provisioned(false), deprovisioned(false), readied, reserved, activated, deactivated, deallocated, parked,
-            // The node was scheduled for retirement
-            wantToRetire,
+            // State changes
+            activated,
+            breakfixed(false),
+            deactivated,
+            deallocated,
+            deprovisioned(false),
+            failed(false),
+            parked,
+            provisioned(false),
+            readied,
+            reserved,
+
+            // The node was scheduled for retirement (hard)
+            wantToRetire(false),
+            // The node was scheduled for retirement (soft)
+            preferToRetire(false),
             // The active node was retired
             retired,
             // The active node went down according to the service monitor
@@ -143,9 +163,7 @@ public class History {
             // The node upgraded its OS (implies a reboot)
             osUpgraded(false),
             // The node verified its firmware (whether this resulted in a reboot depends on the node model)
-            firmwareVerified(false),
-            // The node was failed
-            failed(false);
+            firmwareVerified(false);
             
             private final boolean applicationLevel;
             

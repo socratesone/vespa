@@ -30,19 +30,19 @@
         <javax.inject.version>1</javax.inject.version>
         <javax.servlet-api.version>3.1.0</javax.servlet-api.version>
         <jaxb.version>2.3.0</jaxb.version>
-        <jetty.version>9.4.32.v20200930</jetty.version>
-        <junit5.version>5.6.2</junit5.version>
-        <junit5.platform.version>1.6.2</junit5.platform.version>
+        <jetty.version>9.4.38.v20210224</jetty.version>
+        <junit5.version>5.7.0</junit5.version>
+        <junit5.platform.version>1.7.0</junit5.platform.version>
         <org.lz4.version>1.7.1</org.lz4.version>
-        <org.json.version>20090211</org.json.version>
+        <org.json.version>20090211</org.json.version><!-- TODO Vespa 8: remove as provided dependency -->
         <slf4j.version>1.7.5</slf4j.version>
         <tensorflow.version>1.12.0</tensorflow.version>
         <xml-apis.version>1.4.01</xml-apis.version>
 
         <hk2.version>2.5.0-b32</hk2.version>
         <hk2.osgi-resource-locator.version>1.0.1</hk2.osgi-resource-locator.version>
-        <jackson2.version>2.8.11</jackson2.version>
-        <jackson-databind.version>${jackson2.version}.6</jackson-databind.version>
+        <jackson2.version>2.12.1</jackson2.version>
+        <jackson-databind.version>${jackson2.version}</jackson-databind.version>
         <javassist.version>3.20.0-GA</javassist.version>
         <javax.annotation-api.version>1.2</javax.annotation-api.version>
         <javax.validation-api.version>1.1.0.Final</javax.validation-api.version>
@@ -80,6 +80,7 @@
                                         <include>com.fasterxml.jackson.datatype:jackson-datatype-jdk8:[${jackson2.version}]:jar:provided</include>
                                         <include>com.fasterxml.jackson.datatype:jackson-datatype-jsr310:[${jackson2.version}]:jar:provided</include>
 
+
                                         <!-- Use version range for jax deps, because jersey and junit affect the versions. -->
                                         <include>com.fasterxml.jackson.jaxrs:jackson-jaxrs-base:[2.5.4, ${jackson2.version}]:jar:provided</include>
                                         <include>com.fasterxml.jackson.jaxrs:jackson-jaxrs-json-provider:[2.5.4, ${jackson2.version}]:jar:provided</include>
@@ -94,6 +95,8 @@
                                         <include>com.sun.xml.bind:jaxb-core:[${jaxb.version}]:jar:provided</include>
                                         <include>com.sun.xml.bind:jaxb-impl:[${jaxb.version}]:jar:provided</include>
                                         <include>commons-logging:commons-logging:[1.1.3]:jar:provided</include>
+                                        <include>jakarta.activation:jakarta.activation-api:[1.2.1]:jar:provided</include>
+                                        <include>jakarta.xml.bind:jakarta.xml.bind-api:[2.3.2]:jar:provided</include>
                                         <include>javax.annotation:javax.annotation-api:[${javax.annotation-api.version}]:jar:provided</include>
                                         <include>javax.inject:javax.inject:[${javax.inject.version}]:jar:provided</include>
                                         <include>javax.servlet:javax.servlet-api:[${javax.servlet-api.version}]:jar:provided</include>
@@ -145,8 +148,8 @@
                                         <include>com.yahoo.vespa:config:*:jar:provided</include>
                                         <include>com.yahoo.vespa:configdefinitions:*:jar:provided</include>
                                         <include>com.yahoo.vespa:configgen:*:jar:provided</include>
-                                        <include>com.yahoo.vespa:container-accesslogging:*:jar:provided</include>
                                         <include>com.yahoo.vespa:container-core:*:jar:provided</include>
+                                        <include>com.yahoo.vespa:container-core-config:*:jar:provided</include>
                                         <include>com.yahoo.vespa:container-dev:*:jar:provided</include>
                                         <include>com.yahoo.vespa:container-di:*:jar:provided</include>
                                         <include>com.yahoo.vespa:container-disc:*:jar:provided</include>
@@ -175,7 +178,6 @@
                                         <include>com.yahoo.vespa:predicate-search-core:*:jar:provided</include>
                                         <include>com.yahoo.vespa:processing:*:jar:provided</include>
                                         <include>com.yahoo.vespa:provided-dependencies:*:jar:provided</include>
-                                        <include>com.yahoo.vespa:provided-yahoo-dependencies:*:jar:provided</include>
                                         <include>com.yahoo.vespa:searchcore:*:jar:provided</include>
                                         <include>com.yahoo.vespa:searchlib:*:jar:provided</include>
                                         <include>com.yahoo.vespa:security-utils:*:jar:provided</include>
@@ -216,7 +218,7 @@
                                         <include>com.yahoo.vespa:vsm:*:jar:test</include>
 
                                         <!-- 3rd party test dependencies -->
-                                        <include>com.amazonaws:aws-java-sdk-core:1.11.542:jar:test</include>
+                                        <include>com.amazonaws:aws-java-sdk-core:1.11.974:jar:test</include>
                                         <include>com.auth0:java-jwt:3.10.0:jar:test</include>
                                         <include>com.fasterxml.jackson.dataformat:jackson-dataformat-cbor:2.6.7:jar:test</include>
                                         <include>com.fasterxml.jackson.dataformat:jackson-dataformat-xml:[${jackson2.version}]:jar:test</include>
@@ -236,6 +238,7 @@
                                         <include>commons-beanutils:commons-beanutils:1.7.0:jar:test</include>
                                         <include>commons-codec:commons-codec:1.11:jar:test</include>
                                         <include>commons-digester:commons-digester:1.8:jar:test</include>
+                                        <include>io.airlift:aircompressor:0.17:jar:test</include>
                                         <include>io.airlift:airline:0.7:jar:test</include>
                                         <include>io.jsonwebtoken:jjwt:0.9.1:jar:test</include>
                                         <include>io.prometheus:simpleclient:0.6.0:jar:test</include>
@@ -260,6 +263,7 @@
                                         <include>org.eclipse.jetty:jetty-server:[${jetty.version}]:jar:test</include>
                                         <include>org.eclipse.jetty:jetty-servlet:[${jetty.version}]:jar:test</include>
                                         <include>org.eclipse.jetty:jetty-servlets:[${jetty.version}]:jar:test</include>
+                                        <include>org.eclipse.jetty:jetty-util-ajax:[${jetty.version}]:jar:test</include>
                                         <include>org.hamcrest:hamcrest-core:1.3:jar:test</include>
                                         <include>org.hdrhistogram:HdrHistogram:2.1.8:jar:test</include>
                                         <include>org.junit.jupiter:junit-jupiter-api:[${junit5.version}]:jar:test</include>

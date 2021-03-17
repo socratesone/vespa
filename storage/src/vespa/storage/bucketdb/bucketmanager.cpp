@@ -2,7 +2,6 @@
 
 #include "bucketmanager.h"
 #include "minimumusedbitstracker.h"
-#include "lockablemap.hpp"
 #include <iomanip>
 #include <vespa/storage/common/content_bucket_space_repo.h>
 #include <vespa/storage/common/nodestateupdater.h>
@@ -22,6 +21,7 @@
 #include <vespa/config/config.h>
 #include <vespa/config/helper/configgetter.hpp>
 #include <chrono>
+#include <thread>
 
 #include <vespa/log/bufferedlogger.h>
 LOG_SETUP(".storage.bucketdb.manager");
@@ -50,7 +50,6 @@ BucketManager::BucketManager(const config::ConfigUri & configUri,
       _metrics(std::make_shared<BucketManagerMetrics>(_component.getBucketSpaceRepo())),
       _simulated_processing_delay(0)
 {
-    _metrics->setDisks(_component.getDiskCount());
     _component.registerStatusPage(*this);
     _component.registerMetric(*_metrics);
     _component.registerMetricUpdateHook(*this, framework::SecondTime(300));
@@ -167,32 +166,31 @@ namespace {
             uint64_t active;
             uint64_t ready;
 
-            Count() : docs(0), bytes(0), buckets(0), active(0), ready(0) {}
+            Count() noexcept : docs(0), bytes(0), buckets(0), active(0), ready(0) {}
         };
 
-        uint16_t diskCount;
-        std::vector<Count> disk;
+        Count    count;
         uint32_t lowestUsedBit;
 
-        explicit MetricsUpdater(uint16_t diskCnt)
-            : diskCount(diskCnt), disk(diskCnt), lowestUsedBit(58) {}
+        MetricsUpdater() noexcept
+            : count(), lowestUsedBit(58) {}
 
         void operator()(document::BucketId::Type bucketId,
-                        const StorBucketDatabase::Entry& data)
+                        const StorBucketDatabase::Entry& data) noexcept
         {
             document::BucketId bucket(
                     document::BucketId::keyToBucketId(bucketId));
 
             if (data.valid()) {
-                ++disk[0].buckets;
+                ++count.buckets;
                 if (data.getBucketInfo().isActive()) {
-                    ++disk[0].active;
+                    ++count.active;
                 }
                 if (data.getBucketInfo().isReady()) {
-                    ++disk[0].ready;
+                    ++count.ready;
                 }
-                disk[0].docs += data.getBucketInfo().getDocumentCount();
-                disk[0].bytes += data.getBucketInfo().getTotalDocumentSize();
+                count.docs += data.getBucketInfo().getDocumentCount();
+                count.bytes += data.getBucketInfo().getTotalDocumentSize();
 
                 if (bucket.getUsedBits() < lowestUsedBit) {
                     lowestUsedBit = bucket.getUsedBits();
@@ -200,17 +198,14 @@ namespace {
             }
         };
 
-        void add(const MetricsUpdater& rhs) {
-            assert(diskCount == rhs.diskCount);
-            for (uint16_t i = 0; i < diskCount; i++) {
-                auto& d = disk[i];
-                auto& s = rhs.disk[i];
-                d.buckets += s.buckets;
-                d.docs    += s.docs;
-                d.bytes   += s.bytes;
-                d.ready   += s.ready;
-                d.active  += s.active;
-            }
+        void add(const MetricsUpdater& rhs) noexcept {
+            auto& d = count;
+            auto& s = rhs.count;
+            d.buckets += s.buckets;
+            d.docs    += s.docs;
+            d.bytes   += s.bytes;
+            d.ready   += s.ready;
+            d.active  += s.active;
         }
     };
 
@@ -231,35 +226,31 @@ BucketManager::updateMetrics(bool updateDocCount)
         updateDocCount ? "" : ", minusedbits only",
         _doneInitialized ? "" : ", server is not done initializing");
 
-    uint16_t diskCount = _component.getDiskCount();
-    assert(diskCount >= 1);
     if (!updateDocCount || _doneInitialized) {
-        MetricsUpdater total(diskCount);
+        MetricsUpdater total;
         for (auto& space : _component.getBucketSpaceRepo()) {
-            MetricsUpdater m(diskCount);
+            MetricsUpdater m;
             auto guard = space.second->bucketDatabase().acquire_read_guard();
             guard->for_each(std::ref(m));
             total.add(m);
             if (updateDocCount) {
                 auto bm = _metrics->bucket_spaces.find(space.first);
                 assert(bm != _metrics->bucket_spaces.end());
-                // No system with multiple bucket spaces has more than 1 "disk"
-                // TODO remove disk concept entirely as it's a VDS relic
-                bm->second->buckets_total.set(m.disk[0].buckets);
-                bm->second->docs.set(m.disk[0].docs);
-                bm->second->bytes.set(m.disk[0].bytes);
-                bm->second->active_buckets.set(m.disk[0].active);
-                bm->second->ready_buckets.set(m.disk[0].ready);
+                bm->second->buckets_total.set(m.count.buckets);
+                bm->second->docs.set(m.count.docs);
+                bm->second->bytes.set(m.count.bytes);
+                bm->second->active_buckets.set(m.count.active);
+                bm->second->ready_buckets.set(m.count.ready);
             }
         }
         if (updateDocCount) {
-            for (uint16_t i = 0; i< diskCount; i++) {
-                _metrics->disks[i]->buckets.addValue(total.disk[i].buckets);
-                _metrics->disks[i]->docs.addValue(total.disk[i].docs);
-                _metrics->disks[i]->bytes.addValue(total.disk[i].bytes);
-                _metrics->disks[i]->active.addValue(total.disk[i].active);
-                _metrics->disks[i]->ready.addValue(total.disk[i].ready);
-            }
+            auto & dest = *_metrics->disk;
+            const auto & src = total.count;
+            dest.buckets.addValue(src.buckets);
+            dest.docs.addValue(src.docs);
+            dest.bytes.addValue(src.bytes);
+            dest.active.addValue(src.active);
+            dest.ready.addValue(src.ready);
         }
     }
     update_bucket_db_memory_usage_metrics();
@@ -275,7 +266,7 @@ void BucketManager::update_bucket_db_memory_usage_metrics() {
 
 void BucketManager::updateMinUsedBits()
 {
-    MetricsUpdater m(_component.getDiskCount());
+    MetricsUpdater m;
     _component.getBucketSpaceRepo().for_each_bucket(std::ref(m));
     // When going through to get sizes, we also record min bits
     MinimumUsedBitsTracker& bitTracker(_component.getMinUsedBitsTracker());
@@ -420,7 +411,7 @@ void BucketManager::startWorkerThread()
 bool BucketManager::onRequestBucketInfo(
             const std::shared_ptr<api::RequestBucketInfoCommand>& cmd)
 {
-    LOG(debug, "Got request bucket info command");
+    LOG(debug, "Got request bucket info command %s", cmd->toString().c_str());
     if (cmd->getBuckets().size() == 0 && cmd->hasSystemState()) {
 
         std::lock_guard<std::mutex> guard(_workerLock);
@@ -551,9 +542,10 @@ BucketManager::processRequestBucketInfoCommands(document::BucketSpace bucketSpac
 
     const auto our_hash = distribution->getNodeGraph().getDistributionConfigHash();
 
-    LOG(debug, "Processing %zu queued request bucket info commands. "
+    LOG(debug, "Processing %zu queued request bucket info commands for bucket space %s. "
         "Using cluster state '%s' and distribution hash '%s'",
         reqs.size(),
+        bucketSpace.toString().c_str(),
         clusterState->toString().c_str(),
         our_hash.c_str());
 
@@ -564,7 +556,15 @@ BucketManager::processRequestBucketInfoCommands(document::BucketSpace bucketSpac
         const auto their_hash = (*it)->getDistributionHash();
 
         std::ostringstream error;
-        if ((*it)->getSystemState().getVersion() > _lastClusterStateSeen) {
+        if (clusterState->getVersion() != _lastClusterStateSeen) {
+            // Calling onSetSystemState() on _this_ component and actually switching over
+            // to another cluster state version does not happen atomically. Detect and
+            // gracefully deal with the case where we're not internally in sync.
+            error << "Inconsistent internal cluster state on node during transition; "
+                  << "failing request from distributor " << (*it)->getDistributor()
+                  << " so it can be retried. Node version is " << clusterState->getVersion()
+                  << ", but last version seen by the bucket manager is " << _lastClusterStateSeen;
+        } else if ((*it)->getSystemState().getVersion() > _lastClusterStateSeen) {
             error << "Ignoring bucket info request for cluster state version "
                   << (*it)->getSystemState().getVersion() << " as newest "
                   << "version we know of is " << _lastClusterStateSeen;

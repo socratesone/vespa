@@ -27,8 +27,20 @@ filter[].id string
 # The binding of a filter
 filter[].binding string
 
-# Max number of threads in pool
+# Filter id for a default filter (chain)
+defaultFilters[].filterId string
+
+# The local port which the default filter should be applied to
+defaultFilters[].localPort int
+
+# Reject all requests not handled by a request filter (chain)
+strictFiltering                       bool   default = false
+
+# Max number of threads in underlying Jetty pool
 maxWorkerThreads                      int    default = 200
+
+# Min number of threads in underlying Jetty pool
+minWorkerThreads                      int    default = 8
 
 # Stop timeout in seconds. The maximum allowed time to process in-flight requests during server shutdown. Setting it to 0 disable graceful shutdown.
 stopTimeout                           double default = 30.0
@@ -50,3 +62,6 @@ accessLog.remoteAddressHeaders[]      string
 
 # HTTP request headers that contain remote port
 accessLog.remotePortHeaders[]         string
+
+# Whether to enable jdisc connection log
+connectionLog.enabled                 bool default=false

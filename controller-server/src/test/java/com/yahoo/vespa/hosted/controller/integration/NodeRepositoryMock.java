@@ -1,11 +1,14 @@
 // Copyright 2018 Yahoo Holdings. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.hosted.controller.integration;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.yahoo.collections.Pair;
 import com.yahoo.component.Version;
 import com.yahoo.config.provision.ApplicationId;
 import com.yahoo.config.provision.HostName;
 import com.yahoo.config.provision.NodeResources;
 import com.yahoo.config.provision.NodeType;
+import com.yahoo.config.provision.TenantName;
 import com.yahoo.config.provision.zone.ZoneId;
 import com.yahoo.vespa.hosted.controller.api.identifiers.DeploymentId;
 import com.yahoo.vespa.hosted.controller.api.integration.configserver.Application;
@@ -16,7 +19,9 @@ import com.yahoo.vespa.hosted.controller.api.integration.noderepository.NodeList
 import com.yahoo.vespa.hosted.controller.api.integration.noderepository.NodeRepositoryNode;
 import com.yahoo.vespa.hosted.controller.api.integration.noderepository.NodeState;
 
+import java.net.URI;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
@@ -25,6 +30,7 @@ import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.function.Function;
 import java.util.function.UnaryOperator;
 import java.util.stream.Collectors;
@@ -39,6 +45,14 @@ public class NodeRepositoryMock implements NodeRepository {
     private final Map<ZoneId, Map<ApplicationId, Application>> applications = new HashMap<>();
     private final Map<ZoneId, TargetVersions> targetVersions = new HashMap<>();
     private final Map<Integer, Duration> osUpgradeBudgets = new HashMap<>();
+    private final Map<DeploymentId, Pair<Double, Double>> trafficFractions = new HashMap<>();
+    private final Map<ZoneId, Map<TenantName, URI>> archiveUris = new HashMap<>();
+
+    // A separate/alternative list of NodeRepositoryNode nodes.
+    // Methods operating with Node and NodeRepositoryNode lives separate lives.
+    private final Map<ZoneId, List<NodeRepositoryNode>> nodeRepoNodes = new HashMap<>();
+
+    private boolean allowPatching = false;
 
     /** Add or update given nodes in zone */
     public void putNodes(ZoneId zone, List<Node> nodes) {
@@ -50,6 +64,10 @@ public class NodeRepositoryMock implements NodeRepository {
     public void putApplication(ZoneId zone, Application application) {
         applications.putIfAbsent(zone, new HashMap<>());
         applications.get(zone).put(application.id(), application);
+    }
+
+    public Pair<Double, Double> getTrafficFraction(ApplicationId application, ZoneId zone) {
+        return trafficFractions.get(new DeploymentId(application, zone));
     }
 
     /** Add or update given node in zone */
@@ -65,6 +83,7 @@ public class NodeRepositoryMock implements NodeRepository {
     /** Remove all nodes in all zones */
     public void clear() {
         nodeRepository.clear();
+        nodeRepoNodes.clear();
     }
 
     /** Replace nodes in zone with given nodes */
@@ -96,6 +115,7 @@ public class NodeRepositoryMock implements NodeRepository {
                 .resources(new NodeResources(24, 24, 500, 1))
                 .clusterId("clusterA")
                 .clusterType(Node.ClusterType.container)
+                .exclusiveTo(ApplicationId.from("t1", "a1", "i1"))
                 .build();
         var nodeB = new Node.Builder()
                 .hostname(HostName.from("hostB"))
@@ -118,7 +138,7 @@ public class NodeRepositoryMock implements NodeRepository {
 
     @Override
     public void addNodes(ZoneId zone, Collection<NodeRepositoryNode> nodes) {
-        throw new UnsupportedOperationException();
+        nodeRepoNodes.put(zone, new ArrayList<>(nodes));
     }
 
     @Override
@@ -138,7 +158,7 @@ public class NodeRepositoryMock implements NodeRepository {
 
     @Override
     public NodeList listNodes(ZoneId zone) {
-        throw new UnsupportedOperationException();
+        return new NodeList(nodeRepoNodes.get(zone));
     }
 
     @Override
@@ -173,6 +193,27 @@ public class NodeRepositoryMock implements NodeRepository {
     @Override
     public Application getApplication(ZoneId zone, ApplicationId applicationId) {
         return applications.get(zone).get(applicationId);
+    }
+
+    @Override
+    public void patchApplication(ZoneId zone, ApplicationId application,
+                                 double currentReadShare, double maxReadShare) {
+        trafficFractions.put(new DeploymentId(application, zone), new Pair<>(currentReadShare, maxReadShare));
+    }
+
+    @Override
+    public Map<TenantName, URI> getArchiveUris(ZoneId zone) {
+        return Map.copyOf(archiveUris.getOrDefault(zone, Map.of()));
+    }
+
+    @Override
+    public void setArchiveUri(ZoneId zone, TenantName tenantName, URI archiveUri) {
+        archiveUris.computeIfAbsent(zone, z -> new HashMap<>()).put(tenantName, archiveUri);
+    }
+
+    @Override
+    public void removeArchiveUri(ZoneId zone, TenantName tenantName) {
+        Optional.ofNullable(archiveUris.get(zone)).ifPresent(map -> map.remove(tenantName));
     }
 
     @Override
@@ -226,6 +267,23 @@ public class NodeRepositoryMock implements NodeRepository {
         nodeRepository.get(zoneId).remove(HostName.from(hostName));
     }
 
+    @Override
+    public void patchNode(ZoneId zoneId, String hostName, NodeRepositoryNode node) {
+        if (!allowPatching) throw new UnsupportedOperationException();
+        List<Node> existing = list(zoneId, List.of(HostName.from(hostName)));
+        if (existing.size() != 1) throw new IllegalArgumentException("Node " + hostName + " not found in " + zoneId);
+
+        // Note: Only supports switchHostname
+        Node newNode = new Node.Builder(existing.get(0)).switchHostname(node.getSwitchHostname())
+                                                        .build();
+        putNodes(zoneId, newNode);
+    }
+
+    @Override
+    public void reboot(ZoneId zoneId, String hostName) {
+        throw new UnsupportedOperationException();
+    }
+
     public Optional<Duration> osUpgradeBudget(ZoneId zone, NodeType type, Version version) {
         return Optional.ofNullable(osUpgradeBudgets.get(Objects.hash(zone, type, version)));
     }
@@ -262,6 +320,15 @@ public class NodeRepositoryMock implements NodeRepository {
 
     public void doReboot(DeploymentId deployment, Optional<HostName> hostname) {
         modifyNodes(deployment, hostname, node -> new Node.Builder(node).rebootGeneration(node.rebootGeneration() + 1).build());
+    }
+
+    public void addReport(ZoneId zoneId, HostName hostName, String reportId, JsonNode report) {
+        nodeRepository.get(zoneId).get(hostName).reports().put(reportId, report);
+    }
+
+    public NodeRepositoryMock allowPatching(boolean allowPatching) {
+        this.allowPatching = allowPatching;
+        return this;
     }
 
 }

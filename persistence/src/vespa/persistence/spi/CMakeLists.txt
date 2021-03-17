@@ -2,6 +2,7 @@
 vespa_add_library(persistence_spi OBJECT
     SOURCES
     abstractpersistenceprovider.cpp
+    attribute_resource_usage.cpp
     bucket.cpp
     bucketinfo.cpp
     clusterstate.cpp
@@ -10,6 +11,8 @@ vespa_add_library(persistence_spi OBJECT
     exceptions.cpp
     persistenceprovider.cpp
     read_consistency.cpp
+    resource_usage.cpp
+    resource_usage_listener.cpp
     result.cpp
     selection.cpp
     test.cpp

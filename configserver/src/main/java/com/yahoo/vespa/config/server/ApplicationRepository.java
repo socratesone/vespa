@@ -10,7 +10,9 @@ import com.yahoo.config.application.api.ApplicationMetaData;
 import com.yahoo.config.application.api.DeployLogger;
 import com.yahoo.config.model.api.HostInfo;
 import com.yahoo.config.model.api.ServiceInfo;
+import com.yahoo.config.provision.ActivationContext;
 import com.yahoo.config.provision.ApplicationId;
+import com.yahoo.config.provision.ApplicationTransaction;
 import com.yahoo.config.provision.Capacity;
 import com.yahoo.config.provision.Environment;
 import com.yahoo.config.provision.HostFilter;
@@ -21,21 +23,31 @@ import com.yahoo.config.provision.SystemName;
 import com.yahoo.config.provision.TenantName;
 import com.yahoo.config.provision.Zone;
 import com.yahoo.container.jdisc.HttpResponse;
+import com.yahoo.container.jdisc.SecretStoreProvider;
+import com.yahoo.container.jdisc.secretstore.SecretStore;
 import com.yahoo.docproc.jdisc.metric.NullMetric;
 import com.yahoo.io.IOUtils;
 import com.yahoo.jdisc.Metric;
 import com.yahoo.path.Path;
+import com.yahoo.slime.Slime;
 import com.yahoo.transaction.NestedTransaction;
 import com.yahoo.transaction.Transaction;
 import com.yahoo.vespa.config.server.application.Application;
+import com.yahoo.vespa.config.server.application.ApplicationCuratorDatabase;
+import com.yahoo.vespa.config.server.application.ApplicationReindexing;
 import com.yahoo.vespa.config.server.application.ApplicationSet;
+import com.yahoo.vespa.config.server.application.ClusterReindexing;
+import com.yahoo.vespa.config.server.application.ClusterReindexingStatusClient;
 import com.yahoo.vespa.config.server.application.CompressedApplicationInputStream;
 import com.yahoo.vespa.config.server.application.ConfigConvergenceChecker;
+import com.yahoo.vespa.config.server.application.DefaultClusterReindexingStatusClient;
 import com.yahoo.vespa.config.server.application.FileDistributionStatus;
 import com.yahoo.vespa.config.server.application.HttpProxy;
+import com.yahoo.vespa.config.server.http.SecretStoreValidator;
 import com.yahoo.vespa.config.server.application.TenantApplications;
 import com.yahoo.vespa.config.server.configchange.ConfigChangeActions;
 import com.yahoo.vespa.config.server.configchange.RefeedActions;
+import com.yahoo.vespa.config.server.configchange.ReindexActions;
 import com.yahoo.vespa.config.server.configchange.RestartActions;
 import com.yahoo.vespa.config.server.deploy.DeployHandlerLogger;
 import com.yahoo.vespa.config.server.deploy.Deployment;
@@ -62,14 +74,12 @@ import com.yahoo.vespa.config.server.tenant.EndpointCertificateMetadataStore;
 import com.yahoo.vespa.config.server.tenant.Tenant;
 import com.yahoo.vespa.config.server.tenant.TenantMetaData;
 import com.yahoo.vespa.config.server.tenant.TenantRepository;
+import com.yahoo.config.model.api.TenantSecretStore;
 import com.yahoo.vespa.curator.Curator;
-import com.yahoo.vespa.curator.Lock;
 import com.yahoo.vespa.curator.stats.LockStats;
 import com.yahoo.vespa.curator.stats.ThreadLockStats;
 import com.yahoo.vespa.defaults.Defaults;
-import com.yahoo.vespa.flags.BooleanFlag;
 import com.yahoo.vespa.flags.FlagSource;
-import com.yahoo.vespa.flags.Flags;
 import com.yahoo.vespa.flags.InMemoryFlagSource;
 import com.yahoo.vespa.orchestrator.Orchestrator;
 
@@ -90,8 +100,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.OptionalLong;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.UnaryOperator;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 import java.util.stream.Collectors;
@@ -131,7 +143,8 @@ public class ApplicationRepository implements com.yahoo.config.provision.Deploye
     private final LogRetriever logRetriever;
     private final TesterClient testerClient;
     private final Metric metric;
-    private final BooleanFlag acquireProvisionLock;
+    private final SecretStoreValidator secretStoreValidator;
+    private final ClusterReindexingStatusClient clusterReindexingStatusClient;
 
     @Inject
     public ApplicationRepository(TenantRepository tenantRepository,
@@ -143,7 +156,7 @@ public class ApplicationRepository implements com.yahoo.config.provision.Deploye
                                  Orchestrator orchestrator,
                                  TesterClient testerClient,
                                  Metric metric,
-                                 FlagSource flagSource) {
+                                 SecretStore secretStore) {
         this(tenantRepository,
              hostProvisionerProvider.getHostProvisioner(),
              infraDeployerProvider.getInfraDeployer(),
@@ -155,7 +168,8 @@ public class ApplicationRepository implements com.yahoo.config.provision.Deploye
              Clock.systemUTC(),
              testerClient,
              metric,
-             flagSource);
+             new SecretStoreValidator(secretStore),
+             new DefaultClusterReindexingStatusClient());
     }
 
     private ApplicationRepository(TenantRepository tenantRepository,
@@ -169,7 +183,8 @@ public class ApplicationRepository implements com.yahoo.config.provision.Deploye
                                   Clock clock,
                                   TesterClient testerClient,
                                   Metric metric,
-                                  FlagSource flagSource) {
+                                  SecretStoreValidator secretStoreValidator,
+                                  ClusterReindexingStatusClient clusterReindexingStatusClient) {
         this.tenantRepository = Objects.requireNonNull(tenantRepository);
         this.hostProvisioner = Objects.requireNonNull(hostProvisioner);
         this.infraDeployer = Objects.requireNonNull(infraDeployer);
@@ -181,7 +196,8 @@ public class ApplicationRepository implements com.yahoo.config.provision.Deploye
         this.clock = Objects.requireNonNull(clock);
         this.testerClient = Objects.requireNonNull(testerClient);
         this.metric = Objects.requireNonNull(metric);
-        this.acquireProvisionLock = Flags.ALWAYS_ACQUIRE_PROVISION_LOCK.bindTo(flagSource);
+        this.secretStoreValidator = Objects.requireNonNull(secretStoreValidator);
+        this.clusterReindexingStatusClient = clusterReindexingStatusClient;
     }
 
     public static class Builder {
@@ -194,6 +210,7 @@ public class ApplicationRepository implements com.yahoo.config.provision.Deploye
         private LogRetriever logRetriever = new LogRetriever();
         private TesterClient testerClient = new TesterClient();
         private Metric metric = new NullMetric();
+        private SecretStoreValidator secretStoreValidator = new SecretStoreValidator(new SecretStoreProvider().get());
         private FlagSource flagSource = new InMemoryFlagSource();
 
         public Builder withTenantRepository(TenantRepository tenantRepository) {
@@ -253,6 +270,11 @@ public class ApplicationRepository implements com.yahoo.config.provision.Deploye
             return this;
         }
 
+        public Builder withSecretStoreValidator(SecretStoreValidator secretStoreValidator) {
+            this.secretStoreValidator = secretStoreValidator;
+            return this;
+        }
+
         public ApplicationRepository build() {
             return new ApplicationRepository(tenantRepository,
                                              hostProvisioner,
@@ -265,7 +287,8 @@ public class ApplicationRepository implements com.yahoo.config.provision.Deploye
                                              clock,
                                              testerClient,
                                              metric,
-                                             flagSource);
+                                             secretStoreValidator,
+                                             ClusterReindexingStatusClient.DUMMY_INSTANCE);
         }
 
     }
@@ -320,10 +343,11 @@ public class ApplicationRepository implements com.yahoo.config.provision.Deploye
         return deploy(applicationPackage, prepareParams, DeployHandlerLogger.forPrepareParams(prepareParams));
     }
 
-    public PrepareResult deploy(File applicationPackage, PrepareParams prepareParams, DeployHandlerLogger logger) {
+    private PrepareResult deploy(File applicationPackage, PrepareParams prepareParams, DeployHandlerLogger logger) {
         ApplicationId applicationId = prepareParams.getApplicationId();
         long sessionId = createSession(applicationId, prepareParams.getTimeoutBudget(), applicationPackage);
         Deployment deployment = prepare(sessionId, prepareParams, logger);
+
         deployment.activate();
 
         return new PrepareResult(sessionId, deployment.configChangeActions(), logger);
@@ -478,20 +502,20 @@ public class ApplicationRepository implements com.yahoo.config.provision.Deploye
         if (tenant == null) return false;
 
         TenantApplications tenantApplications = tenant.getApplicationRepo();
-        try (Lock lock = tenantApplications.lock(applicationId)) {
+        NestedTransaction transaction = new NestedTransaction();
+        Optional<ApplicationTransaction> applicationTransaction = hostProvisioner.map(provisioner -> provisioner.lock(applicationId))
+                                                                                 .map(lock -> new ApplicationTransaction(lock, transaction));
+        try (var sessionLock = tenantApplications.lock(applicationId)) {
             Optional<Long> activeSession = tenantApplications.activeSessionOf(applicationId);
             if (activeSession.isEmpty()) return false;
 
-            // Deleting an application is done by deleting the remote session, other config
-            // servers will pick this up and clean up through the watcher in this class
             try {
                 Session session = getRemoteSession(tenant, activeSession.get());
-                tenant.getSessionRepository().delete(session);
+                transaction.add(tenant.getSessionRepository().createSetStatusTransaction(session, Session.Status.DELETE));
             } catch (NotFoundException e) {
                 log.log(Level.INFO, TenantRepository.logPre(applicationId) + "Active session exists, but has not been deleted properly. Trying to cleanup");
             }
 
-            NestedTransaction transaction = new NestedTransaction();
             Curator curator = tenantRepository.getCurator();
             transaction.add(new ContainerEndpointsCache(tenant.getPath(), curator).delete(applicationId)); // TODO: Not unit tested
             // Delete any application roles
@@ -503,20 +527,15 @@ public class ApplicationRepository implements com.yahoo.config.provision.Deploye
             transaction.add(tenantApplications.createDeleteTransaction(applicationId));
             transaction.onCommitted(() -> log.log(Level.INFO, "Deleted " + applicationId));
 
-            if (hostProvisioner.isPresent()) {
-                if (acquireProvisionLock.value()) {
-                    try (var provisionLock = hostProvisioner.get().lock(applicationId)) {
-                        hostProvisioner.get().remove(transaction, provisionLock);
-                        transaction.commit();
-                    }
-                } else { // TODO(mpolden): Remove when feature flag is removed
-                    hostProvisioner.get().remove(transaction, applicationId);
-                    transaction.commit();
-                }
+            if (applicationTransaction.isPresent()) {
+                hostProvisioner.get().remove(applicationTransaction.get());
+                applicationTransaction.get().nested().commit();
             } else {
                 transaction.commit();
             }
             return true;
+        } finally {
+            applicationTransaction.ifPresent(ApplicationTransaction::close);
         }
     }
 
@@ -529,6 +548,10 @@ public class ApplicationRepository implements com.yahoo.config.provision.Deploye
 
         return httpProxy.get(getApplication(applicationId), hostName,
                              CLUSTERCONTROLLER_CONTAINER.serviceName, relativePath);
+    }
+
+    public Map<String, ClusterReindexing> getClusterReindexingStatus(ApplicationId applicationId) {
+        return uncheck(() -> clusterReindexingStatusClient.getReindexingStatus(getApplication(applicationId)));
     }
 
     public Long getApplicationGeneration(ApplicationId applicationId) {
@@ -547,35 +570,16 @@ public class ApplicationRepository implements com.yahoo.config.provision.Deploye
         return fileDistributionStatus.status(getApplication(applicationId), timeout);
     }
 
-    public Set<String> deleteUnusedFiledistributionReferences(File fileReferencesPath, Duration keepFileReferences) {
+    public List<String> deleteUnusedFiledistributionReferences(File fileReferencesPath, Duration keepFileReferences) {
+        log.log(Level.FINE, "Keep unused file references for " + keepFileReferences);
         if (!fileReferencesPath.isDirectory()) throw new RuntimeException(fileReferencesPath + " is not a directory");
 
-        Set<String> fileReferencesInUse = new HashSet<>();
-        // Intentionally skip applications that we for some reason do not find
-        // or that we fail to get file references for (they will be retried on the next run)
-        for (var applicationId : listApplications()) {
-            try {
-                Optional<Application> app = getOptionalApplication(applicationId);
-                if (app.isEmpty()) continue;
-                fileReferencesInUse.addAll(app.get().getModel().fileReferences().stream()
-                                                   .map(FileReference::value)
-                                                   .collect(Collectors.toSet()));
-            } catch (Exception e) {
-                log.log(Level.WARNING, "Getting file references in use for '" + applicationId + "' failed", e);
-            }
-        }
+        Set<String> fileReferencesInUse = getFileReferencesInUse();
         log.log(Level.FINE, "File references in use : " + fileReferencesInUse);
 
-        // Find those on disk that are not in use
-        Set<String> fileReferencesOnDisk = getFileReferencesOnDisk(fileReferencesPath);
-        log.log(Level.FINE, "File references on disk (in " + fileReferencesPath + "): " + fileReferencesOnDisk);
-
-        Instant instant = Instant.now().minus(keepFileReferences);
-        Set<String> fileReferencesToDelete = fileReferencesOnDisk
-                .stream()
-                .filter(fileReference -> ! fileReferencesInUse.contains(fileReference))
-                .filter(fileReference -> isFileLastModifiedBefore(new File(fileReferencesPath, fileReference), instant))
-                .collect(Collectors.toSet());
+        List<String> candidates = sortedUnusedFileReferences(fileReferencesPath, fileReferencesInUse, keepFileReferences);
+        // Do not delete the newest ones
+        List<String> fileReferencesToDelete = candidates.subList(0, Math.max(0, candidates.size() - 5));
         if (fileReferencesToDelete.size() > 0) {
             log.log(Level.FINE, "Will delete file references not in use: " + fileReferencesToDelete);
             fileReferencesToDelete.forEach(fileReference -> {
@@ -585,6 +589,36 @@ public class ApplicationRepository implements com.yahoo.config.provision.Deploye
             });
         }
         return fileReferencesToDelete;
+    }
+
+    private Set<String> getFileReferencesInUse() {
+        Set<String> fileReferencesInUse = new HashSet<>();
+        // Intentionally skip applications that we for some reason do not find
+        // or that we fail to get file references for (they will be retried on the next run)
+        for (var applicationId : listApplications()) {
+            try {
+                Optional<Application> app = getOptionalApplication(applicationId);
+                if (app.isEmpty()) continue;
+                fileReferencesInUse.addAll(app.get().getModel().fileReferences().stream()
+                                              .map(FileReference::value)
+                                              .collect(Collectors.toSet()));
+            } catch (Exception e) {
+                log.log(Level.WARNING, "Getting file references in use for '" + applicationId + "' failed", e);
+            }
+        }
+        return fileReferencesInUse;
+    }
+
+    private List<String> sortedUnusedFileReferences(File fileReferencesPath, Set<String> fileReferencesInUse, Duration keepFileReferences) {
+        Set<String> fileReferencesOnDisk = getFileReferencesOnDisk(fileReferencesPath);
+        log.log(Level.INFO, "File references on disk (in " + fileReferencesPath + "): " + fileReferencesOnDisk);
+        Instant instant = Instant.now().minus(keepFileReferences);
+        return fileReferencesOnDisk
+                .stream()
+                .filter(fileReference -> ! fileReferencesInUse.contains(fileReference))
+                .filter(fileReference -> isFileLastModifiedBefore(new File(fileReferencesPath, fileReference), instant))
+                .sorted((a, b) -> lastModified(new File(fileReferencesPath, a)).isBefore(lastModified(new File(fileReferencesPath, b))) ? -1 : 1)
+                .collect(Collectors.toList());
     }
 
     public Set<FileReference> getFileReferences(ApplicationId applicationId) {
@@ -600,7 +634,7 @@ public class ApplicationRepository implements com.yahoo.config.provision.Deploye
         return tenantRepository.getTenant(applicationId.tenant());
     }
 
-    private Application getApplication(ApplicationId applicationId) {
+    Application getApplication(ApplicationId applicationId) {
         return getApplication(applicationId, Optional.empty());
     }
 
@@ -630,17 +664,21 @@ public class ApplicationRepository implements com.yahoo.config.provision.Deploye
         }
     }
 
-    public Set<ApplicationId> listApplications() {
+    public List<ApplicationId> listApplications() {
         return tenantRepository.getAllTenants().stream()
                 .flatMap(tenant -> tenant.getApplicationRepo().activeApplications().stream())
-                .collect(Collectors.toSet());
+                .collect(Collectors.toList());
     }
 
     private boolean isFileLastModifiedBefore(File fileReference, Instant instant) {
+        return lastModified(fileReference).isBefore(instant);
+    }
+
+    private Instant lastModified(File fileReference) {
         BasicFileAttributes fileAttributes;
         try {
             fileAttributes = readAttributes(fileReference.toPath(), BasicFileAttributes.class);
-            return fileAttributes.lastModifiedTime().toInstant().isBefore(instant);
+            return fileAttributes.lastModifiedTime().toInstant();
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }
@@ -665,16 +703,21 @@ public class ApplicationRepository implements com.yahoo.config.provision.Deploye
                 : applicationSet.get().getAllVersions(applicationId);
     }
 
+    public HttpResponse validateSecretStore(ApplicationId applicationId, SystemName systemName, Slime slime) {
+        Application application = getApplication(applicationId);
+        return secretStoreValidator.validateSecretStore(application, systemName, slime);
+    }
+
     // ---------------- Convergence ----------------------------------------------------------------
 
     public HttpResponse checkServiceForConfigConvergence(ApplicationId applicationId, String hostAndPort, URI uri,
                                                          Duration timeout, Optional<Version> vespaVersion) {
-        return convergeChecker.checkService(getApplication(applicationId, vespaVersion), hostAndPort, uri, timeout);
+        return convergeChecker.getServiceConfigGenerationResponse(getApplication(applicationId, vespaVersion), hostAndPort, uri, timeout);
     }
 
     public HttpResponse servicesToCheckForConfigConvergence(ApplicationId applicationId, URI uri,
                                                             Duration timeoutPerService, Optional<Version> vespaVersion) {
-        return convergeChecker.servicesToCheck(getApplication(applicationId, vespaVersion), uri, timeoutPerService);
+        return convergeChecker.getServiceConfigGenerationsResponse(getApplication(applicationId, vespaVersion), uri, timeoutPerService);
     }
 
     // ---------------- Logs ----------------------------------------------------------------
@@ -727,24 +770,27 @@ public class ApplicationRepository implements com.yahoo.config.provision.Deploye
 
     // ---------------- Session operations ----------------------------------------------------------------
 
-    public CompletionWaiter activate(Session session, Session previousActiveSession, ApplicationId applicationId, boolean force) {
-        CompletionWaiter waiter = session.getSessionZooKeeperClient().createActiveWaiter();
+    public Activation activate(Session session, ApplicationId applicationId, Tenant tenant, boolean force) {
         NestedTransaction transaction = new NestedTransaction();
-        transaction.add(deactivateCurrentActivateNew(previousActiveSession, session, force));
-        if (hostProvisioner.isPresent()) {
-           if (acquireProvisionLock.value()) {
-               try (var lock = hostProvisioner.get().lock(applicationId)) {
-                   hostProvisioner.get().activate(transaction, session.getAllocatedHosts().getHosts(), lock);
-                   transaction.commit();
-               }
-           } else { // TODO(mpolden): Remove when feature flag is removed
-               hostProvisioner.get().activate(transaction, applicationId, session.getAllocatedHosts().getHosts());
-               transaction.commit();
-           }
-        } else {
-            transaction.commit();
+        Optional<ApplicationTransaction> applicationTransaction = hostProvisioner.map(provisioner -> provisioner.lock(applicationId))
+                                                                                 .map(lock -> new ApplicationTransaction(lock, transaction));
+        try (var sessionLock = tenant.getApplicationRepo().lock(applicationId)) {
+            Session activeSession = getActiveSession(applicationId);
+            CompletionWaiter waiter = session.getSessionZooKeeperClient().createActiveWaiter();
+
+            transaction.add(deactivateCurrentActivateNew(activeSession, session, force));
+            if (applicationTransaction.isPresent()) {
+                hostProvisioner.get().activate(session.getAllocatedHosts().getHosts(),
+                                               new ActivationContext(session.getSessionId()),
+                                               applicationTransaction.get());
+                applicationTransaction.get().nested().commit();
+            } else {
+                transaction.commit();
+            }
+            return new Activation(waiter, activeSession);
+        } finally {
+            applicationTransaction.ifPresent(ApplicationTransaction::close);
         }
-        return waiter;
     }
 
     /**
@@ -821,7 +867,8 @@ public class ApplicationRepository implements com.yahoo.config.provision.Deploye
 
     public void deleteExpiredLocalSessions() {
         Map<Tenant, Collection<LocalSession>> sessionsPerTenant = new HashMap<>();
-        tenantRepository.getAllTenants().forEach(tenant -> sessionsPerTenant.put(tenant, tenant.getSessionRepository().getLocalSessions()));
+        tenantRepository.getAllTenants()
+                        .forEach(tenant -> sessionsPerTenant.put(tenant, tenant.getSessionRepository().getLocalSessions()));
 
         Set<ApplicationId> applicationIds = new HashSet<>();
         sessionsPerTenant.values()
@@ -900,6 +947,27 @@ public class ApplicationRepository implements com.yahoo.config.provision.Deploye
 
     public ApplicationMetaData getMetadataFromLocalSession(Tenant tenant, long sessionId) {
         return getLocalSession(tenant, sessionId).getMetaData();
+    }
+
+    private ApplicationCuratorDatabase requireDatabase(ApplicationId id) {
+        Tenant tenant = getTenant(id);
+        if (tenant == null)
+            throw new NotFoundException("Tenant '" + id.tenant().value() + "' not found");
+
+        return tenant.getApplicationRepo().database();
+    }
+
+    public ApplicationReindexing getReindexing(ApplicationId id) {
+        return requireDatabase(id).readReindexingStatus(id)
+                                  .orElseThrow(() -> new NotFoundException("Reindexing status not found for " + id));
+    }
+
+    public void modifyReindexing(ApplicationId id, UnaryOperator<ApplicationReindexing> modifications) {
+        Tenant tenant = getTenant(id);
+        if (tenant == null)
+            throw new NotFoundException("Tenant '" + id.tenant().value() + "' not found");
+
+        tenant.getApplicationRepo().database().modifyReindexing(id, ApplicationReindexing.empty(), modifications);
     }
 
     public ConfigserverConfig configserverConfig() {
@@ -993,18 +1061,26 @@ public class ApplicationRepository implements com.yahoo.config.provision.Deploye
                 .sum();
     }
 
+    @Override
+    public Duration serverDeployTimeout() { return Duration.ofSeconds(configserverConfig.zookeeper().barrierTimeout()); }
+
     private static void logConfigChangeActions(ConfigChangeActions actions, DeployLogger logger) {
         RestartActions restartActions = actions.getRestartActions();
         if ( ! restartActions.isEmpty()) {
             logger.log(Level.WARNING, "Change(s) between active and new application that require restart:\n" +
-                    restartActions.format());
+                                      restartActions.format());
         }
         RefeedActions refeedActions = actions.getRefeedActions();
         if ( ! refeedActions.isEmpty()) {
-            boolean allAllowed = refeedActions.getEntries().stream().allMatch(RefeedActions.Entry::allowed);
-            logger.log(allAllowed ? Level.INFO : Level.WARNING,
+            logger.log(Level.WARNING,
                        "Change(s) between active and new application that may require re-feed:\n" +
-                               refeedActions.format());
+                       refeedActions.format());
+        }
+        ReindexActions reindexActions = actions.getReindexActions();
+        if ( ! reindexActions.isEmpty()) {
+            logger.log(Level.WARNING,
+                       "Change(s) between active and new application that may require re-index:\n" +
+                       reindexActions.format());
         }
     }
 
@@ -1014,7 +1090,8 @@ public class ApplicationRepository implements com.yahoo.config.provision.Deploye
         // most applications under hosted-vespa are not known to the model and it's OK for a user to get
         // logs for any host if they are authorized for the hosted-vespa tenant.
         if (hostname.isPresent() && HOSTED_VESPA_TENANT.equals(applicationId.tenant())) {
-            return "http://" + hostname.get() + ":8080/logs";
+            int port = List.of("zone-config-servers", "controller").contains(applicationId.application().value()) ? 19071 : 8080;
+            return "http://" + hostname.get() + ":" + port + "/logs";
         }
 
         Application application = getApplication(applicationId);
@@ -1043,6 +1120,8 @@ public class ApplicationRepository implements com.yahoo.config.provision.Deploye
                         Environment.from(configserverConfig.environment()),
                         RegionName.from(configserverConfig.region()));
     }
+
+    public Clock clock() { return clock; }
 
     /** Emits as a metric the time in millis spent while holding this timer, with deployment ID as dimensions. */
     public ActionTimer timerFor(ApplicationId id, String metricName) {
@@ -1077,6 +1156,29 @@ public class ApplicationRepository implements com.yahoo.config.provision.Deploye
                                                    "tenantName", id.tenant().value(),
                                                    "app", id.application().value() + "." + id.instance().value(),
                                                    "zone", environment + "." + region)));
+        }
+
+    }
+
+    public static class Activation {
+
+        private final CompletionWaiter waiter;
+        private final OptionalLong sourceSessionId;
+
+        public Activation(CompletionWaiter waiter, Session sourceSession) {
+            this.waiter = waiter;
+            this.sourceSessionId = sourceSession == null
+                    ? OptionalLong.empty()
+                    : OptionalLong.of(sourceSession.getSessionId());
+        }
+
+        public void awaitCompletion(Duration timeout) {
+            waiter.awaitCompletion(timeout);
+        }
+
+        /** The session ID this activation was based on, if any */
+        public OptionalLong sourceSessionId() {
+            return sourceSessionId;
         }
 
     }

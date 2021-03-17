@@ -13,6 +13,7 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 @JsonIgnoreProperties(ignoreUnknown = true)
 @JsonInclude(JsonInclude.Include.NON_NULL)
 public class NodeHistory {
+
     @JsonProperty("at")
     public Long at;
     @JsonProperty("agent")
@@ -41,11 +42,13 @@ public class NodeHistory {
         FailedExpirer,
         InactiveExpirer,
         NodeFailer,
+        NodeHealthTracker,
         ProvisionedExpirer,
         Rebalancer,
         ReservationExpirer,
         RetiringUpgrader,
-        SpareCapacityMaintainer
+        SpareCapacityMaintainer,
+        SwitchRebalancer,
     }
 
 }

@@ -13,11 +13,11 @@
 #include "storagenode.h"
 #include <vespa/storage/visiting/visitormessagesessionfactory.h>
 #include <vespa/storage/common/visitorfactory.h>
-#include <vespa/storage/bucketdb/minimumusedbitstracker.h>
-#include <vespa/persistence/spi/persistenceprovider.h>
 #include <vespa/config/config.h>
 
 namespace storage {
+
+namespace spi { struct PersistenceProvider; }
 
 class FileStorManager;
 
@@ -29,13 +29,11 @@ class ServiceLayerNode
     ServiceLayerNodeContext& _context;
     spi::PersistenceProvider& _persistenceProvider;
     VisitorFactory::Map _externalVisitors;
-    MinimumUsedBitsTracker _minUsedBitsTracker;
 
     // FIXME: Should probably use the fetcher in StorageNode
     std::unique_ptr<config::ConfigFetcher> _configFetcher;
     FileStorManager* _fileStorManager;
     bool _init_has_been_called;
-    bool _noUsablePartitionMode;
 
 public:
     typedef std::unique_ptr<ServiceLayerNode> UP;

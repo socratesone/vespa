@@ -5,7 +5,6 @@
 #include <vespa/searchcore/proton/bucketdb/bucketdbhandler.h>
 #include <vespa/searchcore/proton/common/hw_info.h>
 #include <vespa/searchcore/proton/persistenceengine/i_document_retriever.h>
-#include <vespa/searchcommon/common/growstrategy.h>
 #include <vespa/searchlib/common/serialnum.h>
 #include <vespa/vespalib/util/varholder.h>
 #include <mutex>
@@ -32,7 +31,6 @@ class DocumentDBConfig;
 struct DocumentDBTaggedMetrics;
 class MaintenanceController;
 struct MetricsWireService;
-class ICommitable;
 struct IDocumentDBReferenceResolver;
 class IGetSerialNum;
 class DocTypeName;
@@ -62,19 +60,9 @@ public:
     using SerialNum = search::SerialNum;
     class Config {
     public:
-        using GrowStrategy = search::GrowStrategy;
-        Config(GrowStrategy ready, GrowStrategy notReady, GrowStrategy removed,
-               size_t fixedAttributeTotalSkew, size_t numSearchThreads);
-        GrowStrategy getReadyGrowth() const { return _readyGrowth; }
-        GrowStrategy getNotReadyGrowth() const { return _notReadyGrowth; }
-        GrowStrategy getRemovedGrowth() const { return _removedGrowth; }
-        size_t getNumSearchThreads() const { return _numSearchThreads; }
-        size_t getFixedAttributeTotalSkew() const { return _fixedAttributeTotalSkew; }
+        Config(size_t numSearchThreads);
+        size_t getNumSearchThreads() const noexcept { return _numSearchThreads; }
     private:
-        const GrowStrategy _readyGrowth;
-        const GrowStrategy _notReadyGrowth;
-        const GrowStrategy _removedGrowth;
-        const size_t       _fixedAttributeTotalSkew;
         const size_t       _numSearchThreads;
     };
 
@@ -91,9 +79,8 @@ private:
     const uint32_t _notReadySubDbId;
     using RetrieversSP = std::shared_ptr<std::vector<std::shared_ptr<IDocumentRetriever>> >;
     vespalib::VarHolder<RetrieversSP> _retrievers;
-    using ReprocessingTasks = std::vector<std::shared_ptr<IReprocessingTask>>;
     ReprocessingRunner _reprocessingRunner;
-    std::shared_ptr<BucketDBOwner> _bucketDB;
+    std::shared_ptr<bucketdb::BucketDBOwner> _bucketDB;
     std::unique_ptr<bucketdb::BucketDBHandler> _bucketDBHandler;
     HwInfo _hwInfo;
 
@@ -119,10 +106,10 @@ public:
     void setBucketStateCalculator(const IBucketStateCalculatorSP &calc);
 
     void createRetrievers();
-    void maintenanceSync(MaintenanceController &mc, ICommitable &commit);
+    void maintenanceSync(MaintenanceController &mc);
 
     // Internally synchronized
-    RetrieversSP getRetrievers(IDocumentRetriever::ReadConsistency consistency, ICommitable & visibilityHandler);
+    RetrieversSP getRetrievers(IDocumentRetriever::ReadConsistency consistency);
 
     IDocumentSubDB *getReadySubDB() { return _subDBs[_readySubDbId]; }
     const IDocumentSubDB *getReadySubDB() const { return _subDBs[_readySubDbId]; }
@@ -134,7 +121,7 @@ public:
     const_iterator begin() const { return _subDBs.begin(); }
     const_iterator end() const { return _subDBs.end(); }
 
-    BucketDBOwner &getBucketDB() { return *_bucketDB; }
+    bucketdb::BucketDBOwner &getBucketDB() { return *_bucketDB; }
 
     bucketdb::IBucketDBHandler &getBucketDBHandler() {
         return *_bucketDBHandler;

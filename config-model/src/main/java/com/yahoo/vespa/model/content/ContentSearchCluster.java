@@ -3,22 +3,21 @@ package com.yahoo.vespa.model.content;
 
 import com.yahoo.config.model.api.ModelContext;
 import com.yahoo.config.model.deploy.DeployState;
+import com.yahoo.config.model.producer.AbstractConfigProducer;
+import com.yahoo.documentmodel.NewDocumentType;
 import com.yahoo.vespa.config.search.DispatchConfig;
 import com.yahoo.vespa.config.search.core.ProtonConfig;
-import com.yahoo.documentmodel.NewDocumentType;
-import com.yahoo.config.model.producer.AbstractConfigProducer;
 import com.yahoo.vespa.model.builder.UserConfigBuilder;
 import com.yahoo.vespa.model.builder.xml.dom.DomSearchTuningBuilder;
 import com.yahoo.vespa.model.builder.xml.dom.ModelElement;
 import com.yahoo.vespa.model.builder.xml.dom.VespaDomBuilder;
 import com.yahoo.vespa.model.content.cluster.ContentCluster;
-import com.yahoo.vespa.model.content.cluster.DomResourceLimitsBuilder;
 import com.yahoo.vespa.model.search.AbstractSearchCluster;
 import com.yahoo.vespa.model.search.IndexedSearchCluster;
-import com.yahoo.vespa.model.search.NodeSpec;
-import com.yahoo.vespa.model.search.SearchCluster;
 import com.yahoo.vespa.model.search.NamedSchema;
+import com.yahoo.vespa.model.search.NodeSpec;
 import com.yahoo.vespa.model.search.SchemaDefinitionXMLHandler;
+import com.yahoo.vespa.model.search.SearchCluster;
 import com.yahoo.vespa.model.search.SearchNode;
 import com.yahoo.vespa.model.search.StreamingSearchCluster;
 import com.yahoo.vespa.model.search.TransactionLogServer;
@@ -33,13 +32,16 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.TreeMap;
+import java.util.function.Predicate;
 import java.util.stream.Collectors;
+
+import static java.util.stream.Collectors.toList;
 
 /**
  * Encapsulates the various options for search in a content model.
  * Wraps a search cluster from com.yahoo.vespa.model.search.
  */
-public class ContentSearchCluster extends AbstractConfigProducer implements ProtonConfig.Producer, DispatchConfig.Producer {
+public class ContentSearchCluster extends AbstractConfigProducer<SearchCluster> implements ProtonConfig.Producer, DispatchConfig.Producer {
 
     private final boolean flushOnShutdown;
 
@@ -61,6 +63,11 @@ public class ContentSearchCluster extends AbstractConfigProducer implements Prot
     private final Map<StorageGroup, NodeSpec> groupToSpecMap = new LinkedHashMap<>();
     private Optional<ResourceLimits> resourceLimits = Optional.empty();
     private final ProtonConfig.Indexing.Optimize.Enum feedSequencerType;
+    private final int maxPendingMoveOps;
+    private final double defaultFeedConcurrency;
+    private final boolean useBucketExecutorForLidSpaceCompact;
+    private final boolean useBucketExecutorForBucketMove;
+    private final double defaultMaxDeadBytesRatio;
 
     /** Whether the nodes of this cluster also hosts a container cluster in a hosted system */
     private final boolean combined;
@@ -74,24 +81,26 @@ public class ContentSearchCluster extends AbstractConfigProducer implements Prot
         private final Map<String, NewDocumentType> documentDefinitions;
         private final Set<NewDocumentType> globallyDistributedDocuments;
         private final boolean combined;
+        private final ResourceLimits resourceLimits;
 
         public Builder(Map<String, NewDocumentType> documentDefinitions,
                        Set<NewDocumentType> globallyDistributedDocuments,
-                       boolean combined) {
+                       boolean combined, ResourceLimits resourceLimits) {
             this.documentDefinitions = documentDefinitions;
             this.globallyDistributedDocuments = globallyDistributedDocuments;
             this.combined = combined;
+            this.resourceLimits = resourceLimits;
         }
 
         @Override
-        protected ContentSearchCluster doBuild(DeployState deployState, AbstractConfigProducer ancestor, Element producerSpec) {
+        protected ContentSearchCluster doBuild(DeployState deployState, AbstractConfigProducer<?> ancestor, Element producerSpec) {
             ModelElement clusterElem = new ModelElement(producerSpec);
             String clusterName = ContentCluster.getClusterId(clusterElem);
             Boolean flushOnShutdownElem = clusterElem.childAsBoolean("engine.proton.flush-on-shutdown");
 
             ContentSearchCluster search = new ContentSearchCluster(ancestor,
                                                                    clusterName,
-                                                                   deployState.getProperties(),
+                                                                   deployState.getProperties().featureFlags(),
                                                                    documentDefinitions,
                                                                    globallyDistributedDocuments,
                                                                    getFlushOnShutdown(flushOnShutdownElem, deployState),
@@ -101,10 +110,7 @@ public class ContentSearchCluster extends AbstractConfigProducer implements Prot
             if (tuning != null) {
                 search.setTuning(new DomSearchTuningBuilder().build(deployState, search, tuning.getXml()));
             }
-            ModelElement protonElem = clusterElem.childByPath("engine.proton");
-            if (protonElem != null) {
-                search.setResourceLimits(DomResourceLimitsBuilder.build(protonElem));
-            }
+            search.setResourceLimits(resourceLimits);
 
             buildAllStreamingSearchClusters(deployState, clusterElem, clusterName, search);
             buildIndexedSearchCluster(deployState, clusterElem, clusterName, search);
@@ -185,9 +191,9 @@ public class ContentSearchCluster extends AbstractConfigProducer implements Prot
         }
     }
 
-    private ContentSearchCluster(AbstractConfigProducer parent,
+    private ContentSearchCluster(AbstractConfigProducer<?> parent,
                                  String clusterName,
-                                 ModelContext.Properties featureFlags,
+                                 ModelContext.FeatureFlags featureFlags,
                                  Map<String, NewDocumentType> documentDefinitions,
                                  Set<NewDocumentType> globallyDistributedDocuments,
                                  boolean flushOnShutdown,
@@ -199,8 +205,12 @@ public class ContentSearchCluster extends AbstractConfigProducer implements Prot
         this.globallyDistributedDocuments = globallyDistributedDocuments;
         this.flushOnShutdown = flushOnShutdown;
         this.combined = combined;
+        maxPendingMoveOps = featureFlags.maxPendingMoveOps();
         feedSequencerType = convertFeedSequencerType(featureFlags.feedSequencerType());
-        visibilityDelay = featureFlags.visibilityDelay();
+        defaultFeedConcurrency = featureFlags.feedConcurrency();
+        useBucketExecutorForLidSpaceCompact = featureFlags.useBucketExecutorForLidSpaceCompact();
+        useBucketExecutorForBucketMove = featureFlags.useBucketExecutorForBucketMove();
+        defaultMaxDeadBytesRatio = featureFlags.maxDeadBytesRatio();
     }
 
     public void setVisibilityDelay(double delay) {
@@ -227,8 +237,8 @@ public class ContentSearchCluster extends AbstractConfigProducer implements Prot
             NamedSchema searchDefinition =
                     schemaDefinitionXMLHandler.getResponsibleSearchDefinition(deployState.getSchemas());
             if (searchDefinition == null)
-                throw new RuntimeException("Search definition parsing error or file does not exist: '" +
-                                           schemaDefinitionXMLHandler.getName() + "'");
+                throw new RuntimeException("Schema '" + schemaDefinitionXMLHandler.getName() + "' referenced in " +
+                                           this + " does not exist");
 
             // TODO: remove explicit building of user configs when the complete content model is built using builders.
             sc.getLocalSDS().add(new AbstractSearchCluster.SchemaSpec(searchDefinition,
@@ -256,19 +266,19 @@ public class ContentSearchCluster extends AbstractConfigProducer implements Prot
     }
 
     public void addSearchNode(DeployState deployState, ContentNode node, StorageGroup parentGroup, ModelElement element) {
-        AbstractConfigProducer parent = hasIndexedCluster() ? getIndexed() : this;
+        AbstractConfigProducer<?> parent = hasIndexedCluster() ? getIndexed() : this;
 
         NodeSpec spec = getNextSearchNodeSpec(parentGroup);
         SearchNode searchNode;
         TransactionLogServer tls;
         Optional<Tuning> tuning = Optional.ofNullable(this.tuning);
         if (element == null) {
-            searchNode = SearchNode.create(deployState.getProperties(), parent, "" + node.getDistributionKey(), node.getDistributionKey(), spec,
+            searchNode = SearchNode.create(parent, "" + node.getDistributionKey(), node.getDistributionKey(), spec,
                                            clusterName, node, flushOnShutdown, tuning, resourceLimits, parentGroup.isHosted(), combined);
             searchNode.setHostResource(node.getHostResource());
             searchNode.initService(deployState.getDeployLogger());
 
-            tls = new TransactionLogServer(searchNode, clusterName, deployState.getProperties());
+            tls = new TransactionLogServer(searchNode, clusterName);
             tls.setHostResource(searchNode.getHostResource());
             tls.initService(deployState.getDeployLogger());
         } else {
@@ -315,10 +325,6 @@ public class ContentSearchCluster extends AbstractConfigProducer implements Prot
             indexedCluster.setSearchableCopies(redundancy.readyCopies());
         }
         this.redundancy = redundancy;
-        for (SearchNode node : getSearchNodes()) {
-            node.setRedundancy(redundancy.finalRedundancy());
-            node.setSearchableCopies(redundancy.readyCopies());
-        }
     }
 
     private Optional<StreamingSearchCluster> findStreamingCluster(String docType) {
@@ -333,12 +339,35 @@ public class ContentSearchCluster extends AbstractConfigProducer implements Prot
         return getClusters().values().stream()
                 .filter(StreamingSearchCluster.class::isInstance)
                 .map(StreamingSearchCluster.class::cast)
+                .collect(toList());
+    }
+
+    public List<NewDocumentType> getDocumentTypesWithStreamingCluster() { return documentTypes(this::hasIndexingModeStreaming); }
+    public List<NewDocumentType> getDocumentTypesWithIndexedCluster() { return documentTypes(this::hasIndexingModeIndexed); }
+    public List<NewDocumentType> getDocumentTypesWithStoreOnly() { return documentTypes(this::hasIndexingModeStoreOnly); }
+
+    private List<NewDocumentType> documentTypes(Predicate<NewDocumentType> filter) {
+        return documentDefinitions.values().stream()
+                .filter(filter)
                 .collect(Collectors.toList());
+    }
+
+    private boolean hasIndexingModeStreaming(NewDocumentType type) {
+        return findStreamingCluster(type.getFullName().getName()).isPresent();
+    }
+
+    private boolean hasIndexingModeIndexed(NewDocumentType type) {
+        return !hasIndexingModeStreaming(type)
+                && hasIndexedCluster()
+                && getIndexed().hasDocumentDB(type.getFullName().getName());
+    }
+
+    private boolean hasIndexingModeStoreOnly(NewDocumentType type) {
+        return !hasIndexingModeStreaming(type) && !hasIndexingModeIndexed(type);
     }
 
     @Override
     public void getConfig(ProtonConfig.Builder builder) {
-        builder.feeding.concurrency(0.50); // As if specified 1.0 in services.xml
         boolean hasAnyNonIndexedCluster = false;
         for (NewDocumentType type : TopologicalDocumentTypeSorter.sort(documentDefinitions.values())) {
             ProtonConfig.Documentdb.Builder ddbB = new ProtonConfig.Documentdb.Builder();
@@ -348,25 +377,20 @@ public class ContentSearchCluster extends AbstractConfigProducer implements Prot
                 .configid(getConfigId())
                 .visibilitydelay(visibilityDelay)
                 .global(globalDocType);
-            Optional<StreamingSearchCluster> ssc = findStreamingCluster(docTypeName);
-            if (ssc.isPresent()) {
+            ddbB.allocation.max_dead_bytes_ratio(defaultMaxDeadBytesRatio);
+
+            if (hasIndexingModeStreaming(type)) {
                 hasAnyNonIndexedCluster = true;
                 ddbB.inputdoctypename(type.getFullName().getName())
-                    .configid(ssc.get().getDocumentDBConfigId())
+                        .configid(findStreamingCluster(docTypeName).get().getDocumentDBConfigId())
                         .mode(ProtonConfig.Documentdb.Mode.Enum.STREAMING)
-                    .feeding.concurrency(0.0);
-            } else if (hasIndexedCluster()) {
-                if (getIndexed().hasDocumentDB(type.getFullName().getName())) {
-                    getIndexed().fillDocumentDBConfig(type.getFullName().getName(), ddbB);
-                    if (tuning != null && tuning.searchNode != null && tuning.searchNode.feeding != null) {
-                        ddbB.feeding.concurrency(tuning.searchNode.feeding.concurrency / 2);
-                    } else {
-                        ddbB.feeding.concurrency(builder.feeding.build().concurrency());
-                    }
+                        .feeding.concurrency(0.0);
+            } else if (hasIndexingModeIndexed(type)) {
+                getIndexed().fillDocumentDBConfig(type.getFullName().getName(), ddbB);
+                if (tuning != null && tuning.searchNode != null && tuning.searchNode.feeding != null) {
+                    ddbB.feeding.concurrency(tuning.searchNode.feeding.concurrency);
                 } else {
-                    hasAnyNonIndexedCluster = true;
-                    ddbB.feeding.concurrency(0.0);
-                    ddbB.mode(ProtonConfig.Documentdb.Mode.Enum.STORE_ONLY);
+                    ddbB.feeding.concurrency(defaultFeedConcurrency);
                 }
             } else {
                 hasAnyNonIndexedCluster = true;
@@ -377,6 +401,12 @@ public class ContentSearchCluster extends AbstractConfigProducer implements Prot
                 ddbB.visibilitydelay(0.0);
             }
             builder.documentdb(ddbB);
+        }
+
+        if (hasAnyNonIndexedCluster) {
+            builder.feeding.concurrency(Math.min(1.0, defaultFeedConcurrency*2));
+        } else {
+            builder.feeding.concurrency(defaultFeedConcurrency);
         }
 
         int numDocumentDbs = builder.documentdb.size();
@@ -390,9 +420,7 @@ public class ContentSearchCluster extends AbstractConfigProducer implements Prot
         if (redundancy != null) {
             redundancy.getConfig(builder);
         }
-        if (hasAnyNonIndexedCluster) {
-            builder.feeding.concurrency(builder.feeding.build().concurrency() * 2);
-        }
+
         if ((feedSequencerType == ProtonConfig.Indexing.Optimize.Enum.THROUGHPUT) && (visibilityDelay == 0.0)) {
             // THROUGHPUT and zero visibilityDelay is inconsistent and currently a suboptimal combination, defaulting to LATENCY.
             // TODO: Once we have figured out optimal combination this limitation will be cleaned up.
@@ -400,6 +428,9 @@ public class ContentSearchCluster extends AbstractConfigProducer implements Prot
         } else {
             builder.indexing.optimize(feedSequencerType);
         }
+        builder.maintenancejobs.maxoutstandingmoveops(maxPendingMoveOps);
+        builder.lidspacecompaction.usebucketexecutor(useBucketExecutorForLidSpaceCompact);
+        builder.bucketmove.usebucketexecutor(useBucketExecutorForBucketMove);
     }
 
     private boolean isGloballyDistributed(NewDocumentType docType) {
@@ -417,4 +448,8 @@ public class ContentSearchCluster extends AbstractConfigProducer implements Prot
     public IndexedSearchCluster getIndexed() { return indexedCluster; }
     public boolean hasIndexedCluster()       { return indexedCluster != null; }
     public String getClusterName() { return clusterName; }
+
+    @Override
+    public String toString() { return "content cluster '" + clusterName + "'"; }
+
 }

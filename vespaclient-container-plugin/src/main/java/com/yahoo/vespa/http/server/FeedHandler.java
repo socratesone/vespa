@@ -7,12 +7,11 @@ import com.yahoo.container.jdisc.HttpRequest;
 import com.yahoo.container.jdisc.HttpResponse;
 import com.yahoo.container.jdisc.LoggingRequestHandler;
 import com.yahoo.container.jdisc.messagebus.SessionCache;
-import com.yahoo.container.logging.AccessLog;
 import com.yahoo.document.config.DocumentmanagerConfig;
 import com.yahoo.documentapi.metrics.DocumentApiMetrics;
 import com.yahoo.jdisc.Metric;
 import com.yahoo.jdisc.Request;
-import com.yahoo.jdisc.handler.ResponseDispatch;
+import com.yahoo.jdisc.Response;
 import com.yahoo.jdisc.handler.ResponseHandler;
 import com.yahoo.messagebus.ReplyHandler;
 import com.yahoo.metrics.simple.MetricReceiver;
@@ -46,13 +45,12 @@ public class FeedHandler extends LoggingRequestHandler {
     @Inject
     public FeedHandler(ContainerThreadPool threadpool,
                        Metric metric,
-                       AccessLog accessLog,
                        DocumentmanagerConfig documentManagerConfig,
                        SessionCache sessionCache,
                        MetricReceiver metricReceiver) {
-        super(threadpool.executor(), accessLog, metric);
+        super(threadpool.executor(), metric);
         metricsHelper = new DocumentApiMetrics(metricReceiver, "vespa.http.server");
-        feedHandlerV3 = new FeedHandlerV3(threadpool.executor(), metric, accessLog, documentManagerConfig, sessionCache, metricsHelper);
+        feedHandlerV3 = new FeedHandlerV3(threadpool.executor(), metric, documentManagerConfig, sessionCache, metricsHelper);
         feedReplyHandler = new FeedReplyReader(metric, metricsHelper);
     }
 
@@ -121,7 +119,7 @@ public class FeedHandler extends LoggingRequestHandler {
     @Override
     protected void writeErrorResponseOnOverload(Request request, ResponseHandler responseHandler) {
         int responseCode = request.headers().getFirst(Headers.SILENTUPGRADE) != null ? 299 : 429;
-        ResponseDispatch.newInstance(responseCode).dispatch(responseHandler);
+        responseHandler.handleResponse(new Response(responseCode)).close(null);
     }
 
     private static Optional<String> findClientVersion(HttpRequest request) {

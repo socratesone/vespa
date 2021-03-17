@@ -13,6 +13,7 @@
 #include <vespa/searchcore/proton/matching/querynodes.h>
 #include <vespa/searchcore/proton/matching/sessionmanager.h>
 #include <vespa/searchcore/proton/matching/viewresolver.h>
+#include <vespa/searchcore/proton/bucketdb/bucket_db_owner.h>
 #include <vespa/searchlib/aggregation/aggregation.h>
 #include <vespa/searchlib/aggregation/grouping.h>
 #include <vespa/searchlib/aggregation/perdocexpression.h>
@@ -32,9 +33,9 @@
 #include <vespa/searchcore/proton/matching/match_params.h>
 #include <vespa/searchcore/proton/matching/match_tools.h>
 #include <vespa/searchcore/proton/matching/match_context.h>
+#include <vespa/eval/eval/simple_value.h>
 #include <vespa/eval/eval/tensor_spec.h>
-#include <vespa/eval/eval/engine_or_factory.h>
-#include <vespa/eval/tensor/default_tensor_engine.h>
+#include <vespa/eval/eval/value_codec.h>
 #include <vespa/vespalib/objects/nbostream.h>
 
 #include <vespa/log/log.h>
@@ -59,8 +60,8 @@ using storage::spi::Timestamp;
 using search::fef::indexproperties::hitcollector::HeapSize;
 
 using vespalib::nbostream;
+using vespalib::eval::SimpleValue;
 using vespalib::eval::TensorSpec;
-using vespalib::eval::EngineOrFactory;
 
 void inject_match_phase_limiting(Properties &setup, const vespalib::string &attribute, size_t max_hits, bool descending)
 {
@@ -377,7 +378,7 @@ MyWorld::MyWorld()
       searchContext(),
       attributeContext(),
       sessionManager(),
-      metaStore(std::make_shared<BucketDBOwner>()),
+      metaStore(std::make_shared<bucketdb::BucketDBOwner>()),
       matchingStats(),
       clock(),
       queryLimiter()
@@ -667,9 +668,8 @@ TEST("require that summary features are filled") {
     EXPECT_TRUE(!f[2].is_double());
     EXPECT_TRUE(f[2].is_data());
     {
-        auto engine = EngineOrFactory::get();
         nbostream buf(f[2].as_data().data, f[2].as_data().size);
-        auto actual = engine.to_spec(*engine.decode(buf));
+        auto actual = spec_from_value(*SimpleValue::from_stream(buf));
         auto expect = TensorSpec("tensor(x[3])").add({{"x", 0}}, 0).add({{"x", 1}}, 1).add({{"x", 2}}, 2);
         EXPECT_EQUAL(actual, expect);
     }

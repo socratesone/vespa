@@ -2,6 +2,7 @@
 #include "distributorconfiguration.h"
 #include <vespa/document/select/parser.h>
 #include <vespa/document/select/traversingvisitor.h>
+#include <vespa/persistence/spi/bucket_limits.h>
 #include <vespa/vespalib/util/exceptions.h>
 #include <sstream>
 
@@ -23,6 +24,7 @@ DistributorConfiguration::DistributorConfiguration(StorageComponent& component)
       _idealStateChunkSize(1000),
       _maxNodesPerMerge(16),
       _max_consecutively_inhibited_maintenance_ticks(20),
+      _max_activation_inhibited_out_of_sync_groups(0),
       _lastGarbageCollectionChange(vespalib::duration::zero()),
       _garbageCollectionInterval(0),
       _minPendingMaintenanceOps(100),
@@ -44,6 +46,8 @@ DistributorConfiguration::DistributorConfiguration(StorageComponent& component)
       _merge_operations_disabled(false),
       _use_weak_internal_read_consistency_for_client_gets(false),
       _enable_metadata_only_fetch_phase_for_inconsistent_updates(false),
+      _prioritize_global_bucket_merges(true),
+      _enable_revert(true),
       _minimumReplicaCountingMode(ReplicaCountingMode::TRUSTED)
 {
 }
@@ -94,6 +98,7 @@ DistributorConfiguration::configureMaintenancePriorities(
     mp.mergeMoveToIdealNode = cfg.priorityMergeMoveToIdealNode;
     mp.mergeOutOfSyncCopies = cfg.priorityMergeOutOfSyncCopies;
     mp.mergeTooFewCopies = cfg.priorityMergeTooFewCopies;
+    mp.mergeGlobalBuckets = cfg.priorityMergeGlobalBuckets;
     mp.activateNoExistingActive = cfg.priorityActivateNoExistingActive;
     mp.activateWithExistingActive = cfg.priorityActivateWithExistingActive;
     mp.deleteBucketCopy = cfg.priorityDeleteBucketCopy;
@@ -123,7 +128,7 @@ DistributorConfiguration::configure(const vespa::config::content::core::StorDist
     _docCountSplitLimit = config.splitcount;
     _byteCountJoinLimit = config.joinsize;
     _docCountJoinLimit = config.joincount;
-    _minimalBucketSplit = config.minsplitcount;
+    _minimalBucketSplit = std::max(config.minsplitcount, static_cast<int>(spi::BucketLimits::MinUsedBits));
     _maxNodesPerMerge = config.maximumNodesPerMerge;
     _max_consecutively_inhibited_maintenance_ticks = config.maxConsecutivelyInhibitedMaintenanceTicks;
 
@@ -160,6 +165,9 @@ DistributorConfiguration::configure(const vespa::config::content::core::StorDist
     _merge_operations_disabled = config.mergeOperationsDisabled;
     _use_weak_internal_read_consistency_for_client_gets = config.useWeakInternalReadConsistencyForClientGets;
     _enable_metadata_only_fetch_phase_for_inconsistent_updates = config.enableMetadataOnlyFetchPhaseForInconsistentUpdates;
+    _prioritize_global_bucket_merges = config.prioritizeGlobalBucketMerges;
+    _max_activation_inhibited_out_of_sync_groups = config.maxActivationInhibitedOutOfSyncGroups;
+    _enable_revert = config.enableRevert;
 
     _minimumReplicaCountingMode = config.minimumReplicaCountingMode;
 

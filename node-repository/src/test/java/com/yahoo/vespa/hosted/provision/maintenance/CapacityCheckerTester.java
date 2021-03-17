@@ -63,7 +63,7 @@ public class CapacityCheckerTester {
         Curator curator = new MockCurator();
         NodeFlavors f = new NodeFlavors(new FlavorConfigBuilder().build());
         nodeRepository = new NodeRepository(f,
-                                            new EmptyProvisionServiceProvider().getHostResourcesCalculator(),
+                                            new EmptyProvisionServiceProvider(),
                                             curator,
                                             clock,
                                             zone,
@@ -71,12 +71,11 @@ public class CapacityCheckerTester {
                                             DockerImage.fromString("docker-registry.domain.tld:8080/dist/vespa"),
                                             new InMemoryFlagSource(),
                                             true,
-                                            false,
                                             0, 1000);
     }
 
     private void updateCapacityChecker() {
-        this.capacityChecker = new CapacityChecker(nodeRepository.list());
+        this.capacityChecker = new CapacityChecker(nodeRepository.nodes().list());
     }
 
     List<NodeModel> createDistinctChildren(int amount, List<NodeResources> childResources) {
@@ -150,9 +149,8 @@ public class CapacityCheckerTester {
                     .collect(Collectors.toSet());
 
             NodeResources nr = containingNodeResources(childResources, excessCapacity);
-            Node node = nodeRepository.createNode(hostname, hostname,
-                                                  new IP.Config(Set.of("::"), availableIps), Optional.empty(),
-                                                  new Flavor(nr), Optional.empty(), NodeType.host);
+            Node node = Node.create(hostname, new IP.Config(Set.of("::"), availableIps), hostname,
+                    new Flavor(nr), NodeType.host).build();
             hosts.computeIfAbsent(tenantHostApp, (ignored) -> new ArrayList<>())
                  .add(node);
         }
@@ -170,10 +168,8 @@ public class CapacityCheckerTester {
             Set<String> availableIps = IntStream.range(2000, 2000 + ips)
                     .mapToObj(n -> String.format("%04X::%04X", hostId, n))
                     .collect(Collectors.toSet());
-            Node node = nodeRepository.createNode(hostname,
-                                                  hostname,
-                                                  new IP.Config(Set.of("::" + (1000 + hostId)), availableIps), Optional.empty(),
-                                                  new Flavor(capacity), Optional.empty(), NodeType.host);
+            Node node = Node.create(hostname, new IP.Config(Set.of("::" + (1000 + hostId)), availableIps), hostname,
+                    new Flavor(capacity), NodeType.host).build();
             hosts.add(node);
         }
         return hosts;
@@ -195,12 +191,12 @@ public class CapacityCheckerTester {
                      int numEmptyHosts, NodeResources emptyHostExcessCapacity, int emptyHostExcessIps) {
         List<NodeModel> possibleChildren = createDistinctChildren(numDistinctChildren, childResources);
         Map<ApplicationId, List<Node>> hostsWithChildren = createHostsWithChildren(childrenPerHost, possibleChildren, numHosts, hostExcessCapacity, hostExcessIps);
-        nodeRepository.addNodes(hostsWithChildren.getOrDefault(tenantHostApp, List.of()), Agent.system);
+        nodeRepository.nodes().addNodes(hostsWithChildren.getOrDefault(tenantHostApp, List.of()), Agent.system);
         hostsWithChildren.forEach((applicationId, nodes) -> {
             if (applicationId.equals(tenantHostApp)) return;
-            nodeRepository.addNodes(nodes, Agent.system);
+            nodeRepository.database().addNodesInState(nodes, Node.State.active, Agent.system);
         });
-        nodeRepository.addNodes(createEmptyHosts(numHosts, numEmptyHosts, emptyHostExcessCapacity, emptyHostExcessIps), Agent.system);
+        nodeRepository.nodes().addNodes(createEmptyHosts(numHosts, numEmptyHosts, emptyHostExcessCapacity, emptyHostExcessIps), Agent.system);
 
         updateCapacityChecker();
     }
@@ -230,7 +226,7 @@ public class CapacityCheckerTester {
                 return m;
             }
             public String toString() {
-                return String.format("%s/%s/%s/%d%s", clustertype, clusterid, group, index, retired ? "/retired" : "");
+                return String.format("%s/%s/%s/%d%s%s", clustertype, clusterid, group, index, retired ? "/retired" : "", clustertype.isContent() ? "/stateful" : "");
             }
         }
         static class OwnerModel {
@@ -285,9 +281,10 @@ public class CapacityCheckerTester {
                                              nodeModel.fastDisk ? NodeResources.DiskSpeed.fast : NodeResources.DiskSpeed.slow);
         Flavor f = new Flavor(nr);
 
-        Node node = nodeRepository.createNode(nodeModel.id, nodeModel.hostname,
-                                              new IP.Config(nodeModel.ipAddresses, nodeModel.additionalIpAddresses),
-                                              nodeModel.parentHostname, f, Optional.empty(), nodeModel.type);
+        Node.Builder builder = Node.create(nodeModel.id, nodeModel.hostname, f, nodeModel.state, nodeModel.type)
+                .ipConfig(new IP.Config(nodeModel.ipAddresses, nodeModel.additionalIpAddresses));
+        nodeModel.parentHostname.ifPresent(builder::parentHostname);
+        Node node = builder.build();
 
         if (membership != null) {
             return node.allocate(owner, membership, node.resources(), Instant.now());
@@ -317,9 +314,9 @@ public class CapacityCheckerTester {
             }
         }
 
-        nodeRepository.addNodes(hosts, Agent.system);
+        nodeRepository.database().addNodesInState(hosts, Node.State.active, Agent.system);
         nodes.forEach((application, applicationNodes) -> {
-            nodeRepository.addNodes(applicationNodes, Agent.system);
+            nodeRepository.database().addNodesInState(applicationNodes, Node.State.active, Agent.system);
         });
         updateCapacityChecker();
     }

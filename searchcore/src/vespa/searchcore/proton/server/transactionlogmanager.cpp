@@ -4,8 +4,8 @@
 #include "transactionlogmanager.h"
 #include <vespa/searchlib/transactionlog/translogclient.h>
 #include <vespa/searchcore/proton/common/eventlogger.h>
-#include <vespa/vespalib/util/closuretask.h>
 #include <vespa/vespalib/util/exceptions.h>
+#include <cassert>
 
 #include <vespa/log/log.h>
 LOG_SETUP(".proton.server.transactionlogmanager");
@@ -21,7 +21,7 @@ void
 TransactionLogManager::doLogReplayComplete(const vespalib::string &domainName,
                                            vespalib::duration elapsedTime) const
 {
-    EventLogger::transactionLogReplayComplete(domainName, vespalib::count_ms(elapsedTime));
+    EventLogger::transactionLogReplayComplete(domainName, elapsedTime);
 }
 
 
@@ -34,11 +34,11 @@ TransactionLogManager::TransactionLogManager(const vespalib::string &tlsSpec, co
 TransactionLogManager::~TransactionLogManager() = default;
 
 void
-TransactionLogManager::init(SerialNum oldestConfigSerial, SerialNum &prunedSerialNum, SerialNum &serialNum)
+TransactionLogManager::init(SerialNum oldestConfigSerial, SerialNum &prunedSerialNum, SerialNum &replay_end_serial_num)
 {
     StatusResult res = TransactionLogManagerBase::init();
     prunedSerialNum = res.serialBegin > 0 ? (res.serialBegin - 1) : 0;
-    serialNum = res.serialEnd;
+    replay_end_serial_num = res.serialEnd;
     if (oldestConfigSerial != 0) {
         prunedSerialNum = std::max(prunedSerialNum, oldestConfigSerial);
     }

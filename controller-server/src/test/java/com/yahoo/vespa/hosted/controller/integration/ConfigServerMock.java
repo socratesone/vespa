@@ -12,6 +12,7 @@ import com.yahoo.config.provision.Environment;
 import com.yahoo.config.provision.HostName;
 import com.yahoo.config.provision.NodeResources;
 import com.yahoo.config.provision.NodeType;
+import com.yahoo.config.provision.TenantName;
 import com.yahoo.config.provision.zone.ZoneId;
 import com.yahoo.vespa.flags.json.FlagData;
 import com.yahoo.vespa.hosted.controller.api.application.v4.model.ClusterMetrics;
@@ -22,6 +23,8 @@ import com.yahoo.vespa.hosted.controller.api.application.v4.model.configserverbi
 import com.yahoo.vespa.hosted.controller.api.identifiers.DeploymentId;
 import com.yahoo.vespa.hosted.controller.api.identifiers.TenantId;
 import com.yahoo.vespa.hosted.controller.api.integration.LogEntry;
+import com.yahoo.vespa.hosted.controller.api.integration.configserver.ApplicationReindexing;
+import com.yahoo.vespa.hosted.controller.api.integration.configserver.ApplicationReindexing.Status;
 import com.yahoo.vespa.hosted.controller.api.integration.configserver.Cluster;
 import com.yahoo.vespa.hosted.controller.api.integration.configserver.ConfigServer;
 import com.yahoo.vespa.hosted.controller.api.integration.configserver.ContainerEndpoint;
@@ -36,6 +39,7 @@ import com.yahoo.vespa.hosted.controller.api.integration.configserver.ServiceCon
 import com.yahoo.vespa.hosted.controller.api.integration.deployment.TestReport;
 import com.yahoo.vespa.hosted.controller.api.integration.deployment.TesterCloud;
 import com.yahoo.vespa.hosted.controller.api.integration.noderepository.RestartFilter;
+import com.yahoo.vespa.hosted.controller.api.integration.secrets.TenantSecretStore;
 import com.yahoo.vespa.hosted.controller.application.ApplicationPackage;
 import com.yahoo.vespa.hosted.controller.application.SystemApplication;
 import com.yahoo.vespa.serviceview.bindings.ApplicationView;
@@ -46,6 +50,7 @@ import java.io.ByteArrayInputStream;
 import java.io.InputStream;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -79,20 +84,20 @@ public class ConfigServerMock extends AbstractComponent implements ConfigServer 
     private final Map<DeploymentId, ServiceConvergence> serviceStatus = new HashMap<>();
     private final Set<ApplicationId> disallowConvergenceCheckApplications = new HashSet<>();
     private final Version initialVersion = new Version(6, 1, 0);
-    private final DockerImage initialDockerImage = DockerImage.fromString("dockerImage:6.1.0");
+    private final DockerImage initialDockerImage = DockerImage.fromString("registry.example.com/vespa/vespa:6.1.0");
     private final Set<DeploymentId> suspendedApplications = new HashSet<>();
     private final Map<ZoneId, Set<LoadBalancer>> loadBalancers = new HashMap<>();
     private final Set<Environment> deferLoadBalancerProvisioning = new HashSet<>();
     private final Map<DeploymentId, List<Log>> warnings = new HashMap<>();
     private final Map<DeploymentId, Set<String>> rotationNames = new HashMap<>();
     private final Map<DeploymentId, List<ClusterMetrics>> clusterMetrics = new HashMap<>();
+    private final Map<DeploymentId, TestReport> testReport = new HashMap<>();
     private List<ProtonMetrics> protonMetrics;
 
     private Version lastPrepareVersion = null;
     private RuntimeException prepareException = null;
     private ConfigChangeActions configChangeActions = null;
     private String log = "INFO - All good";
-    private Map<DeploymentId, TestReport> testReport = new HashMap<>();
 
     @Inject
     public ConfigServerMock(ZoneRegistryMock zoneRegistry) {
@@ -106,12 +111,22 @@ public class ConfigServerMock extends AbstractComponent implements ConfigServer 
 
     /** Assigns a reserved tenant node to the given deployment, with initial versions. */
     public void provision(ZoneId zone, ApplicationId application, ClusterSpec.Id clusterId) {
+        var current = new ClusterResources(2, 1, new NodeResources(2,  8, 50, 1, slow, remote));
         Cluster cluster = new Cluster(clusterId,
+                                      ClusterSpec.Type.container,
                                       new ClusterResources(2, 1, new NodeResources(1,  4, 20, 1, slow, remote)),
                                       new ClusterResources(2, 1, new NodeResources(4, 16, 90, 1, slow, remote)),
-                                      new ClusterResources(2, 1, new NodeResources(2,  8, 50, 1, slow, remote)),
+                                      current,
                                       Optional.of(new ClusterResources(2, 1, new NodeResources(3, 8, 50, 1, slow, remote))),
-                                      Optional.empty());
+                                      Optional.empty(),
+                                      new Cluster.Utilization(0.1, 0.2, 0.3, 0.4, 0.5, 0.6),
+                                      List.of(new Cluster.ScalingEvent(new ClusterResources(0, 0, NodeResources.unspecified()),
+                                                                       current,
+                                                                       Instant.ofEpochMilli(1234))),
+                                      "the autoscaling status",
+                                      Duration.ofMinutes(6),
+                                      0.7,
+                                      0.3);
         nodeRepository.putApplication(zone,
                                       new com.yahoo.vespa.hosted.controller.api.integration.configserver.Application(application,
                                                                                                                      List.of(cluster)));
@@ -237,7 +252,8 @@ public class ConfigServerMock extends AbstractComponent implements ConfigServer 
         return Optional.ofNullable(applications.get(new DeploymentId(id, zone)));
     }
 
-    public void setSuspended(DeploymentId deployment, boolean suspend) {
+    @Override
+    public void setSuspension(DeploymentId deployment, boolean suspend) {
         if (suspend)
             suspendedApplications.add(deployment);
         else
@@ -405,14 +421,38 @@ public class ConfigServerMock extends AbstractComponent implements ConfigServer 
             prepareResponse.message = "foo";
             prepareResponse.configChangeActions = configChangeActions != null
                     ? configChangeActions
-                    : new ConfigChangeActions(Collections.emptyList(),
-                                              Collections.emptyList());
+                    : new ConfigChangeActions(List.of(), List.of(), List.of());
             setConfigChangeActions(null);
             prepareResponse.tenant = new TenantId("tenant");
             prepareResponse.log = warnings.getOrDefault(id, Collections.emptyList());
             return prepareResponse;
         };
     }
+
+    @Override
+    public void reindex(DeploymentId deployment, List<String> clusterNames, List<String> documentTypes, boolean indexedOnly) { }
+
+    @Override
+    public Optional<ApplicationReindexing> getReindexing(DeploymentId deployment) {
+        return Optional.of(new ApplicationReindexing(true,
+                                                     Map.of("cluster",
+                                                            new ApplicationReindexing.Cluster(Map.of("type", 100L),
+                                                                                              Map.of("type", new Status(Instant.ofEpochMilli(345),
+                                                                                                                        Instant.ofEpochMilli(456),
+                                                                                                                        Instant.ofEpochMilli(567),
+                                                                                                                        ApplicationReindexing.State.FAILED,
+                                                                                                                        "(＃｀д´)ﾉ",
+                                                                                                                        0.1))))));
+
+
+    }
+
+
+    @Override
+    public void disableReindexing(DeploymentId deployment) { }
+
+    @Override
+    public void enableReindexing(DeploymentId deployment) { }
 
     @Override
     public boolean isSuspended(DeploymentId deployment) {
@@ -485,7 +525,7 @@ public class ConfigServerMock extends AbstractComponent implements ConfigServer 
     }
 
     @Override
-    public String getClusterControllerStatus(DeploymentId deployment, String restPath) {
+    public String getClusterControllerStatus(DeploymentId deployment, String node, String subPath) {
         return "<h1>OK</h1>";
     }
 
@@ -538,6 +578,11 @@ public class ConfigServerMock extends AbstractComponent implements ConfigServer 
         var q = new QuotaUsage();
         q.rate = 42.42;
         return q;
+    }
+
+    @Override
+    public String validateSecretStore(DeploymentId deployment, TenantSecretStore tenantSecretStore, String region, String parameterName) {
+        return "{\"settings\":{\"name\":\"foo\",\"role\":\"vespa-secretstore-access\",\"awsId\":\"892075328880\",\"externalId\":\"*****\",\"region\":\"us-east-1\"},\"status\":\"ok\"}";
     }
 
     public static class Application {

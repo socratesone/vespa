@@ -1,30 +1,47 @@
-// Copyright 2017 Yahoo Holdings. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Verizon Media. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.config.server.tenant;
 
 import com.google.common.collect.ImmutableSet;
 import com.google.inject.Inject;
 import com.yahoo.cloud.config.ConfigserverConfig;
 import com.yahoo.concurrent.DaemonThreadFactory;
+import com.yahoo.concurrent.Lock;
+import com.yahoo.concurrent.Locks;
 import com.yahoo.concurrent.StripedExecutor;
+import com.yahoo.concurrent.ThreadFactoryFactory;
+import com.yahoo.config.model.api.ConfigDefinitionRepo;
 import com.yahoo.config.provision.ApplicationId;
 import com.yahoo.config.provision.TenantName;
+import com.yahoo.config.provision.Zone;
+import com.yahoo.container.jdisc.secretstore.SecretStore;
 import com.yahoo.path.Path;
 import com.yahoo.text.Utf8;
 import com.yahoo.transaction.Transaction;
-import com.yahoo.vespa.config.server.GlobalComponentRegistry;
+import com.yahoo.vespa.config.server.ConfigServerDB;
+import com.yahoo.vespa.config.server.ReloadListener;
+import com.yahoo.vespa.config.server.application.PermanentApplicationPackage;
 import com.yahoo.vespa.config.server.application.TenantApplications;
 import com.yahoo.vespa.config.server.deploy.TenantFileSystemDirs;
+import com.yahoo.vespa.config.server.filedistribution.FileDistributionFactory;
+import com.yahoo.vespa.config.server.host.HostRegistry;
+import com.yahoo.vespa.config.server.modelfactory.ModelFactoryRegistry;
 import com.yahoo.vespa.config.server.monitoring.MetricUpdater;
+import com.yahoo.vespa.config.server.monitoring.Metrics;
+import com.yahoo.vespa.config.server.provision.HostProvisionerProvider;
+import com.yahoo.vespa.config.server.session.SessionPreparer;
 import com.yahoo.vespa.config.server.session.SessionRepository;
+import com.yahoo.vespa.config.server.zookeeper.ConfigCurator;
 import com.yahoo.vespa.curator.Curator;
 import com.yahoo.vespa.curator.transaction.CuratorOperations;
 import com.yahoo.vespa.curator.transaction.CuratorTransaction;
+import com.yahoo.vespa.flags.FlagSource;
 import org.apache.curator.framework.CuratorFramework;
 import org.apache.curator.framework.recipes.cache.PathChildrenCacheEvent;
 import org.apache.curator.framework.state.ConnectionState;
 import org.apache.zookeeper.KeeperException;
 import org.apache.zookeeper.data.Stat;
 
+import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -77,13 +94,26 @@ public class TenantRepository {
     private static final Logger log = Logger.getLogger(TenantRepository.class.getName());
 
     private final Map<TenantName, Tenant> tenants = Collections.synchronizedMap(new LinkedHashMap<>());
-    private final GlobalComponentRegistry componentRegistry;
-    private final List<TenantListener> tenantListeners = Collections.synchronizedList(new ArrayList<>());
+    private final Locks<TenantName> tenantLocks = new Locks<>(1, TimeUnit.MINUTES);
+    private final HostRegistry hostRegistry;
+    private final TenantListener tenantListener;
+    private final ConfigCurator configCurator;
     private final Curator curator;
-
+    private final Metrics metrics;
     private final MetricUpdater metricUpdater;
     private final ExecutorService zkCacheExecutor;
     private final StripedExecutor<TenantName> zkWatcherExecutor;
+    private final FileDistributionFactory fileDistributionFactory;
+    private final FlagSource flagSource;
+    private final SecretStore secretStore;
+    private final HostProvisionerProvider hostProvisionerProvider;
+    private final ConfigserverConfig configserverConfig;
+    private final ConfigServerDB configServerDB;
+    private final Zone zone;
+    private final Clock clock;
+    private final ModelFactoryRegistry modelFactoryRegistry;
+    private final ConfigDefinitionRepo configDefinitionRepo;
+    private final ReloadListener reloadListener;
     private final ExecutorService bootstrapExecutor;
     private final ScheduledExecutorService checkForRemovedApplicationsService =
             new ScheduledThreadPoolExecutor(1, new DaemonThreadFactory("check for removed applications"));
@@ -92,19 +122,79 @@ public class TenantRepository {
     /**
      * Creates a new tenant repository
      * 
-     * @param componentRegistry a {@link com.yahoo.vespa.config.server.GlobalComponentRegistry}
      */
     @Inject
-    public TenantRepository(GlobalComponentRegistry componentRegistry) {
-        this.componentRegistry = componentRegistry;
-        ConfigserverConfig configserverConfig = componentRegistry.getConfigserverConfig();
+    public TenantRepository(HostRegistry hostRegistry,
+                            ConfigCurator configCurator,
+                            Metrics metrics,
+                            FlagSource flagSource,
+                            SecretStore secretStore,
+                            HostProvisionerProvider hostProvisionerProvider,
+                            ConfigserverConfig configserverConfig,
+                            ConfigServerDB configServerDB,
+                            Zone zone,
+                            ModelFactoryRegistry modelFactoryRegistry,
+                            ConfigDefinitionRepo configDefinitionRepo,
+                            ReloadListener reloadListener,
+                            TenantListener tenantListener) {
+        this(hostRegistry,
+             configCurator,
+             metrics,
+             new StripedExecutor<>(),
+             new FileDistributionFactory(configserverConfig),
+             flagSource,
+             Executors.newFixedThreadPool(1, ThreadFactoryFactory.getThreadFactory(TenantRepository.class.getName())),
+             secretStore,
+             hostProvisionerProvider,
+             configserverConfig,
+             configServerDB,
+             zone,
+             Clock.systemUTC(),
+             modelFactoryRegistry,
+             configDefinitionRepo,
+             reloadListener,
+             tenantListener);
+    }
+
+    public TenantRepository(HostRegistry hostRegistry,
+                            ConfigCurator configCurator,
+                            Metrics metrics,
+                            StripedExecutor<TenantName> zkWatcherExecutor,
+                            FileDistributionFactory fileDistributionFactory,
+                            FlagSource flagSource,
+                            ExecutorService zkCacheExecutor,
+                            SecretStore secretStore,
+                            HostProvisionerProvider hostProvisionerProvider,
+                            ConfigserverConfig configserverConfig,
+                            ConfigServerDB configServerDB,
+                            Zone zone,
+                            Clock clock,
+                            ModelFactoryRegistry modelFactoryRegistry,
+                            ConfigDefinitionRepo configDefinitionRepo,
+                            ReloadListener reloadListener,
+                            TenantListener tenantListener) {
+        this.hostRegistry = hostRegistry;
+        this.configserverConfig = configserverConfig;
         this.bootstrapExecutor = Executors.newFixedThreadPool(configserverConfig.numParallelTenantLoaders(),
-                                                              new DaemonThreadFactory("bootstrap tenants"));
-        this.curator = componentRegistry.getCurator();
-        metricUpdater = componentRegistry.getMetrics().getOrCreateMetricUpdater(Collections.emptyMap());
-        this.tenantListeners.add(componentRegistry.getTenantListener());
-        this.zkCacheExecutor = componentRegistry.getZkCacheExecutor();
-        this.zkWatcherExecutor = componentRegistry.getZkWatcherExecutor();
+                                                              new DaemonThreadFactory("bootstrap-tenant-"));
+        this.curator = configCurator.curator();
+        this.metrics = metrics;
+        metricUpdater = metrics.getOrCreateMetricUpdater(Collections.emptyMap());
+        this.zkCacheExecutor = zkCacheExecutor;
+        this.zkWatcherExecutor = zkWatcherExecutor;
+        this.fileDistributionFactory = fileDistributionFactory;
+        this.flagSource = flagSource;
+        this.secretStore = secretStore;
+        this.hostProvisionerProvider = hostProvisionerProvider;
+        this.configServerDB = configServerDB;
+        this.zone = zone;
+        this.clock = clock;
+        this.modelFactoryRegistry = modelFactoryRegistry;
+        this.configDefinitionRepo = configDefinitionRepo;
+        this.reloadListener = reloadListener;
+        this.tenantListener = tenantListener;
+        this.configCurator = configCurator;
+
         curator.framework().getConnectionStateListenable().addListener(this::stateChanged);
 
         curator.create(tenantsPath);
@@ -124,14 +214,14 @@ public class TenantRepository {
     }
 
     private void notifyTenantsLoaded() {
-        for (TenantListener tenantListener : tenantListeners) {
-            tenantListener.onTenantsLoaded();
-        }
+        tenantListener.onTenantsLoaded();
     }
 
-    public synchronized Tenant addTenant(TenantName tenantName) {
-        writeTenantPath(tenantName);
-        return createTenant(tenantName, componentRegistry.getClock().instant());
+    public Tenant addTenant(TenantName tenantName) {
+        try (Lock lock = tenantLocks.lock(tenantName)) {
+            writeTenantPath(tenantName);
+            return createTenant(tenantName, clock.instant());
+        }
     }
 
     public void createAndWriteTenantMetaData(Tenant tenant) {
@@ -168,19 +258,6 @@ public class TenantRepository {
         return curator.getChildren(tenantsPath).stream().map(TenantName::from).collect(Collectors.toSet());
     }
 
-    /** Public for testing. */
-    public synchronized void updateTenants() {
-        Set<TenantName> allTenants = readTenantsFromZooKeeper(curator);
-        log.log(Level.FINE, "Create tenants, tenants found in zookeeper: " + allTenants);
-        for (TenantName tenantName : Set.copyOf(tenants.keySet()))
-            if ( ! allTenants.contains(tenantName))
-                zkWatcherExecutor.execute(tenantName, () -> closeTenant(tenantName));
-        for (TenantName tenantName : allTenants)
-            if ( ! tenants.containsKey(tenantName))
-                zkWatcherExecutor.execute(tenantName, () -> bootstrapTenant(tenantName));
-        metricUpdater.setTenants(tenants.size());
-    }
-
     private void bootstrapTenants() {
         // Keep track of tenants created
         Map<TenantName, Future<?>> futures = new HashMap<>();
@@ -214,7 +291,9 @@ public class TenantRepository {
 
     // Use when bootstrapping an existing tenant based on ZooKeeper data
     protected void bootstrapTenant(TenantName tenantName) {
-        createTenant(tenantName, readCreatedTimeFromZooKeeper(tenantName));
+        try (Lock lock = tenantLocks.lock(tenantName)) {
+            createTenant(tenantName, readCreatedTimeFromZooKeeper(tenantName));
+        }
     }
 
     public Instant readCreatedTimeFromZooKeeper(TenantName tenantName) {
@@ -222,36 +301,61 @@ public class TenantRepository {
         if (stat.isPresent())
             return Instant.ofEpochMilli(stat.get().getCtime());
         else
-            return componentRegistry.getClock().instant();
+            return clock.instant();
     }
 
     // Creates tenant and all its dependencies. This also includes loading active applications
     private Tenant createTenant(TenantName tenantName, Instant created) {
-        if (tenants.containsKey(tenantName)) {
-            Tenant tenant = getTenant(tenantName);
-            createAndWriteTenantMetaData(tenant);
-            return tenant;
-        }
+        if (tenants.containsKey(tenantName)) return getTenant(tenantName);
 
+        Instant start = Instant.now();
+        log.log(Level.FINE, "Adding tenant '" + tenantName);
         TenantApplications applicationRepo =
                 new TenantApplications(tenantName,
                                        curator,
-                                       componentRegistry.getZkWatcherExecutor(),
-                                       componentRegistry.getZkCacheExecutor(),
-                                       componentRegistry.getMetrics(),
-                                       componentRegistry.getReloadListener(),
-                                       componentRegistry.getConfigserverConfig(),
-                                       componentRegistry.getHostRegistries().createApplicationHostRegistry(tenantName),
-                                       new TenantFileSystemDirs(componentRegistry.getConfigServerDB(), tenantName));
+                                       zkWatcherExecutor,
+                                       zkCacheExecutor,
+                                       metrics,
+                                       reloadListener,
+                                       configserverConfig,
+                                       hostRegistry,
+                                       new TenantFileSystemDirs(configServerDB, tenantName),
+                                       clock);
+        PermanentApplicationPackage permanentApplicationPackage = new PermanentApplicationPackage(configserverConfig);
+        SessionPreparer sessionPreparer = new SessionPreparer(modelFactoryRegistry,
+                                                              fileDistributionFactory,
+                                                              hostProvisionerProvider,
+                                                              permanentApplicationPackage,
+                                                              configserverConfig,
+                                                              configDefinitionRepo,
+                                                              curator,
+                                                              zone,
+                                                              flagSource,
+                                                              secretStore);
         SessionRepository sessionRepository = new SessionRepository(tenantName,
-                                                                    componentRegistry,
                                                                     applicationRepo,
-                                                                    componentRegistry.getSessionPreparer());
-        log.log(Level.INFO, "Adding tenant '" + tenantName + "'" + ", created " + created);
+                                                                    sessionPreparer,
+                                                                    configCurator,
+                                                                    metrics,
+                                                                    zkWatcherExecutor,
+                                                                    permanentApplicationPackage,
+                                                                    flagSource,
+                                                                    zkCacheExecutor,
+                                                                    secretStore,
+                                                                    hostProvisionerProvider,
+                                                                    configserverConfig,
+                                                                    configServerDB,
+                                                                    zone,
+                                                                    clock,
+                                                                    modelFactoryRegistry,
+                                                                    configDefinitionRepo,
+                                                                    tenantListener);
+        log.log(Level.INFO, "Adding tenant '" + tenantName + "'" + ", created " + created +
+                            ". Bootstrapping in " + Duration.between(start, Instant.now()));
         Tenant tenant = new Tenant(tenantName, sessionRepository, applicationRepo, applicationRepo, created);
-        notifyNewTenant(tenant);
-        tenants.putIfAbsent(tenantName, tenant);
         createAndWriteTenantMetaData(tenant);
+        tenants.putIfAbsent(tenantName, tenant);
+        notifyNewTenant(tenant);
         return tenant;
     }
 
@@ -260,8 +364,10 @@ public class TenantRepository {
      *
      * @return default tenant
      */
-    public synchronized Tenant defaultTenant() {
-        return tenants.get(DEFAULT_TENANT);
+    public Tenant defaultTenant() {
+        try (Lock lock = tenantLocks.lock(DEFAULT_TENANT)) {
+            return tenants.get(DEFAULT_TENANT);
+        }
     }
 
     private void removeUnusedApplications() {
@@ -269,15 +375,11 @@ public class TenantRepository {
     }
 
     private void notifyNewTenant(Tenant tenant) {
-        for (TenantListener listener : tenantListeners) {
-            listener.onTenantCreate(tenant);
-        }
+        tenantListener.onTenantCreate(tenant);
     }
 
     private void notifyRemovedTenant(TenantName name) {
-        for (TenantListener listener : tenantListeners) {
-            listener.onTenantDelete(name);
-        }
+        tenantListener.onTenantDelete(name);
     }
 
     /**
@@ -285,7 +387,7 @@ public class TenantRepository {
      * already exists, as this is OK and might happen when several config servers start at the
      * same time and try to call this method.
      */
-    private synchronized void createSystemTenants(ConfigserverConfig configserverConfig) {
+    private void createSystemTenants(ConfigserverConfig configserverConfig) {
         List<TenantName> systemTenants = new ArrayList<>();
         systemTenants.add(DEFAULT_TENANT);
         if (configserverConfig.hostedVespa()) systemTenants.add(HOSTED_VESPA_TENANT);
@@ -307,11 +409,13 @@ public class TenantRepository {
      *
      * @param name name of the tenant
      */
-    private synchronized void writeTenantPath(TenantName name) {
-        curator.createAtomically(TenantRepository.getTenantPath(name),
-                                 TenantRepository.getSessionsPath(name),
-                                 TenantRepository.getApplicationsPath(name),
-                                 TenantRepository.getLocksPath(name));
+    private void writeTenantPath(TenantName name) {
+        try (Lock lock = tenantLocks.lock(name)) {
+            curator.createAtomically(TenantRepository.getTenantPath(name),
+                                     TenantRepository.getSessionsPath(name),
+                                     TenantRepository.getApplicationsPath(name),
+                                     TenantRepository.getLocksPath(name));
+        }
     }
 
     /**
@@ -319,7 +423,7 @@ public class TenantRepository {
      *
      * @param name name of the tenant
      */
-    public synchronized void deleteTenant(TenantName name) {
+    public void deleteTenant(TenantName name) {
         if (name.equals(DEFAULT_TENANT))
             throw new IllegalArgumentException("Deleting 'default' tenant is not allowed");
         if ( ! tenants.containsKey(name))
@@ -328,44 +432,52 @@ public class TenantRepository {
         log.log(Level.INFO, "Deleting tenant '" + name + "'");
         // Deletes the tenant tree from ZooKeeper (application and session status for the tenant)
         // and triggers Tenant.close().
-        curator.delete(tenants.get(name).getPath());
+        try (Lock lock = tenantLocks.lock(name)) {
+            Path path = tenants.get(name).getPath();
+            closeTenant(name);
+            curator.delete(path);
+        }
     }
 
-    private synchronized void closeTenant(TenantName name) {
-        Tenant tenant = tenants.remove(name);
-        if (tenant == null)
-            throw new IllegalArgumentException("Closing '" + name + "' failed, tenant does not exist");
+    private void closeTenant(TenantName name) {
+        try (Lock lock = tenantLocks.lock(name)) {
+            Tenant tenant = tenants.remove(name);
+            if (tenant == null)
+                throw new IllegalArgumentException("Closing '" + name + "' failed, tenant does not exist");
 
-        log.log(Level.INFO, "Closing tenant '" + name + "'");
-        notifyRemovedTenant(name);
-        tenant.close();
+            log.log(Level.INFO, "Closing tenant '" + name + "'");
+            notifyRemovedTenant(name);
+            tenant.close();
+        }
     }
 
     /**
      * A helper to format a log preamble for messages with a tenant and app id
+     *
      * @param app the app
      * @return the log string
      */
     public static String logPre(ApplicationId app) {
         if (DEFAULT_TENANT.equals(app.tenant())) return "";
         StringBuilder ret = new StringBuilder()
-            .append(logPre(app.tenant()))
-            .append("app:"+app.application().value())
-            .append(":"+app.instance().value())
-            .append(" ");
+                .append(logPre(app.tenant()))
+                .append("app:" + app.application().value())
+                .append(":" + app.instance().value())
+                .append(" ");
         return ret.toString();
-    }    
+    }
 
     /**
      * A helper to format a log preamble for messages with a tenant
+     *
      * @param tenant tenant
      * @return the log string
      */
     public static String logPre(TenantName tenant) {
         if (DEFAULT_TENANT.equals(tenant)) return "";
         StringBuilder ret = new StringBuilder()
-            .append("tenant:" + tenant.value())
-            .append(" ");
+                .append("tenant:" + tenant.value())
+                .append(" ");
         return ret.toString();
     }
 
@@ -392,10 +504,27 @@ public class TenantRepository {
     private void childEvent(CuratorFramework framework, PathChildrenCacheEvent event) {
         switch (event.getType()) {
             case CHILD_ADDED:
-            case CHILD_REMOVED:
-                updateTenants();
+                TenantName t1 = getTenantNameFromEvent(event);
+                if ( ! tenants.containsKey(t1))
+                    zkWatcherExecutor.execute(t1, () -> bootstrapTenant(t1));
                 break;
+            case CHILD_REMOVED:
+                TenantName t2 = getTenantNameFromEvent(event);
+                if (tenants.containsKey(t2))
+                    zkWatcherExecutor.execute(t2, () -> deleteTenant(t2));
+                break;
+            default:
+                break; // Nothing to do
         }
+        metricUpdater.setTenants(tenants.size());
+    }
+
+    private TenantName getTenantNameFromEvent(PathChildrenCacheEvent event) {
+        String path = event.getData().getPath();
+        String[] pathElements = path.split("/");
+        if (pathElements.length == 0)
+            throw new IllegalArgumentException("Path " + path + " does not contain a tenant name");
+        return TenantName.from(pathElements[pathElements.length - 1]);
     }
 
     public void close() {
@@ -417,6 +546,7 @@ public class TenantRepository {
         return tenants.containsKey(tenant);
     }
 
+    /** Returns the tenant with the given name, or {@code null} if this does not exist. */
     public Tenant getTenant(TenantName tenantName) {
         return tenants.get(tenantName);
     }

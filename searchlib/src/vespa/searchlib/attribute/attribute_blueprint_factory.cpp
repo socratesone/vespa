@@ -8,7 +8,6 @@
 #include "attribute_blueprint_params.h"
 #include "document_weight_or_filter_search.h"
 #include <vespa/eval/eval/value.h>
-#include <vespa/eval/tensor/dense/dense_tensor_view.h>
 #include <vespa/searchlib/common/location.h>
 #include <vespa/searchlib/common/locationiterators.h>
 #include <vespa/searchlib/common/matching_elements_fields.h>
@@ -592,7 +591,7 @@ public:
     void visit(RangeTerm &n) override {
         const string stack = StackDumpCreator::create(n);
         const string term = queryeval::termAsString(n);
-        QueryTermSimple parsed_term(term, QueryTermSimple::WORD);
+        QueryTermSimple parsed_term(term, QueryTermSimple::Type::WORD);
         if (parsed_term.getMaxPerGroup() > 0) {
             const IAttributeVector *diversity(getRequestContext().getAttribute(parsed_term.getDiversityAttribute()));
             if (check_valid_diversity_attr(diversity)) {
@@ -637,9 +636,9 @@ public:
     extractTerm(const query::Node &node, bool isInteger) {
         vespalib::string term = queryeval::termAsString(node);
         if (isInteger) {
-            return std::make_unique<QueryTermSimple>(term, QueryTermSimple::WORD);
+            return std::make_unique<QueryTermSimple>(term, QueryTermSimple::Type::WORD);
         }
-        return std::make_unique<QueryTermUCS4>(term, QueryTermSimple::WORD);
+        return std::make_unique<QueryTermUCS4>(term, QueryTermSimple::Type::WORD);
     }
 
     template <typename WS, typename NODE>
@@ -737,6 +736,7 @@ public:
                                                                         n.get_target_num_hits(),
                                                                         n.get_allow_approximate(),
                                                                         n.get_explore_additional_hits(),
+                                                                        n.get_distance_threshold(),
                                                                         getRequestContext().get_attribute_blueprint_params().nearest_neighbor_brute_force_limit));
     }
 };

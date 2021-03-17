@@ -14,10 +14,13 @@ import java.time.LocalDate;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.Collection;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.logging.Level;
-import java.util.logging.Logger;
+import java.util.stream.Collectors;
 
 /**
  * A set of allows which suppresses specific validations in limited time periods.
@@ -48,13 +51,21 @@ public class ValidationOverrides {
         this.xmlForm = xmlForm;
     }
 
+    /** Throws a ValidationException unless all given validation is overridden at this time */
+    public void invalid(Map<ValidationId, ? extends Collection<String>> messagesByValidationId, Instant now) {
+        Map<ValidationId, Collection<String>> disallowed = new HashMap<>(messagesByValidationId);
+        disallowed.keySet().removeIf(id -> allows(id, now));
+        if ( ! disallowed.isEmpty())
+            throw new ValidationException(disallowed);
+    }
+
     /** Throws a ValidationException unless this validation is overridden at this time */
     public void invalid(ValidationId validationId, String message, Instant now) {
         if ( ! allows(validationId, now))
             throw new ValidationException(validationId, message);
     }
 
-    public final boolean allows(String validationIdString, Instant now) {
+    public boolean allows(String validationIdString, Instant now) {
         Optional<ValidationId> validationId = ValidationId.from(validationIdString);
         if ( ! validationId.isPresent()) return false; // unknown id -> not allowed
         return allows(validationId.get(), now);
@@ -76,7 +87,7 @@ public class ValidationOverrides {
 
     public static String toAllowMessage(ValidationId id) {
         return "To allow this add <allow until='yyyy-mm-dd'>" + id + "</allow> to validation-overrides.xml" +
-               ", see https://docs.vespa.ai/documentation/reference/validation-overrides.html";
+               ", see https://docs.vespa.ai/en/reference/validation-overrides.html";
     }
 
     /**
@@ -147,26 +158,21 @@ public class ValidationOverrides {
     /**
      * A deployment validation exception.
      * Deployment validations can be {@link ValidationOverrides overridden} based on their id.
-     * The purpose of this exception is to model that id as a separate field.
      */
     public static class ValidationException extends IllegalArgumentException {
 
         static final long serialVersionUID = 789984668;
 
-        private final ValidationId validationId;
-
         private ValidationException(ValidationId validationId, String message) {
-            super(message);
-            this.validationId = validationId;
+            super(validationId + ": " + message + ". " + toAllowMessage(validationId));
         }
 
-        /** Returns the unique id of this validation, which can be used to {@link ValidationOverrides override} it */
-        public ValidationId validationId() { return validationId; }
-
-        /** Returns "validationId: message" */
-        @Override
-        public String getMessage() {
-            return validationId + ": " + super.getMessage() + ". " + toAllowMessage(validationId);
+        private ValidationException(Map<ValidationId, Collection<String>> messagesById) {
+            super(messagesById.entrySet().stream()
+                              .map(messages -> messages.getKey() + ":\n\t" +
+                                               String.join("\n\t", messages.getValue()) + "\n" +
+                                               toAllowMessage(messages.getKey()))
+                              .collect(Collectors.joining("\n")));
         }
 
     }

@@ -1,6 +1,7 @@
 // Copyright 2017 Yahoo Holdings. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.model.application.validation.change.search;
 
+import com.yahoo.config.application.api.ValidationId;
 import com.yahoo.config.application.api.ValidationOverrides;
 import com.yahoo.config.provision.ClusterSpec;
 import com.yahoo.vespa.model.application.validation.change.VespaConfigChangeAction;
@@ -10,6 +11,7 @@ import java.time.Instant;
 import java.util.Arrays;
 import java.util.List;
 
+import static com.yahoo.vespa.model.application.validation.change.ConfigChangeTestUtils.newReindexAction;
 import static com.yahoo.vespa.model.application.validation.change.ConfigChangeTestUtils.newRestartAction;
 import static com.yahoo.vespa.model.application.validation.change.ConfigChangeTestUtils.newRefeedAction;
 
@@ -29,7 +31,7 @@ public class DocumentDatabaseChangeValidatorTest {
 
         @Override
         public List<VespaConfigChangeAction> validate() {
-            return validator.validate(ValidationOverrides.empty, Instant.now());
+            return validator.validate();
         }
 
     }
@@ -46,20 +48,17 @@ public class DocumentDatabaseChangeValidatorTest {
                 "field f2 type string { indexing: index | summary } " +
                 "field f3 type string { indexing: summary } " +
                 "field f4 type array<s> { struct-field s1 { indexing: attribute } }");
+        Instant.now();
         f.assertValidation(Arrays.asList(
                 newRestartAction(ClusterSpec.Id.from("test"),
                                  "Field 'f1' changed: add attribute aspect"),
                 newRestartAction(ClusterSpec.Id.from("test"),
                                  "Field 'f4.s1' changed: add attribute aspect"),
-                newRefeedAction(ClusterSpec.Id.from("test"),
-                                "indexing-change",
-                                ValidationOverrides.empty,
-                                "Field 'f2' changed: add index aspect, indexing script: '{ input f2 | summary f2; }' -> " +
-                                "'{ input f2 | tokenize normalize stem:\"BEST\" | index f2 | summary f2; }'", Instant.now()),
-                newRefeedAction(ClusterSpec.Id.from("test"),
-                                "field-type-change",
-                                ValidationOverrides.empty,
-                                "Field 'f3' changed: data type: 'int' -> 'string'", Instant.now())));
+                newReindexAction(ClusterSpec.Id.from("test"),
+                                 ValidationId.indexingChange,
+                                 "Field 'f2' changed: add index aspect, indexing script: '{ input f2 | summary f2; }' -> " +
+                                "'{ input f2 | tokenize normalize stem:\"BEST\" | index f2 | summary f2; }'"),
+                newRefeedAction(ClusterSpec.Id.from("test"), ValidationId.fieldTypeChange, "Field 'f3' changed: data type: 'int' -> 'string'")));
     }
 
     @Test

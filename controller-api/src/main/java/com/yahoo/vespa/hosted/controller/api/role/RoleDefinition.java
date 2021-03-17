@@ -56,13 +56,15 @@ public enum RoleDefinition {
               Policy.submission,
               Policy.paymentInstrumentRead,
               Policy.paymentInstrumentDelete,
-              Policy.billingInformationRead),
+              Policy.billingInformationRead,
+              Policy.secretStoreOperations),
 
     /** Admin — the administrative function for user management etc. */
     administrator(Policy.tenantUpdate,
                   Policy.tenantManager,
                   Policy.tenantDelete,
                   Policy.applicationManager,
+                  Policy.keyRevokal,
                   Policy.paymentInstrumentRead,
                   Policy.paymentInstrumentUpdate,
                   Policy.paymentInstrumentDelete,
@@ -91,7 +93,9 @@ public enum RoleDefinition {
 
     paymentProcessor(Policy.paymentProcessor),
 
-    hostedAccountant(Policy.hostedAccountant);
+    hostedAccountant(Policy.hostedAccountant,
+                     Policy.collectionMethodUpdate,
+                     Policy.planUpdate);
 
     private final Set<RoleDefinition> parents;
     private final Set<Policy> policies;

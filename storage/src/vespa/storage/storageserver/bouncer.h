@@ -12,7 +12,7 @@
 #pragma once
 
 #include <vespa/config/helper/configfetcher.h>
-#include <vespa/vdslib/state/clusterstate.h>
+#include <vespa/vdslib/state/nodestate.h>
 #include <vespa/storage/common/nodestateupdater.h>
 #include <vespa/storage/common/storagecomponent.h>
 #include <vespa/storage/common/storagelink.h>
@@ -66,6 +66,8 @@ private:
 
     void rejectDueToInsufficientPriority(api::StorageMessage&,
                                          api::StorageMessage::Priority);
+
+    void reject_due_to_too_few_bucket_bits(api::StorageMessage&);
 
     bool clusterIsUp() const;
 

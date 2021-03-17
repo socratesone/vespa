@@ -5,12 +5,13 @@
 #include "nearest_neighbor_index.h"
 #include "nearest_neighbor_index_saver.h"
 #include "tensor_attribute.hpp"
-#include <vespa/eval/tensor/dense/dense_tensor_view.h>
-#include <vespa/eval/tensor/dense/mutable_dense_tensor_view.h>
+#include <vespa/eval/eval/value.h>
 #include <vespa/fastlib/io/bufferedfile.h>
 #include <vespa/searchlib/attribute/load_utils.h>
 #include <vespa/searchlib/attribute/readerbase.h>
 #include <vespa/vespalib/data/slime/inserter.h>
+#include <vespa/vespalib/util/memory_allocator.h>
+#include <vespa/vespalib/util/mmap_file_allocator_factory.h>
 
 #include <vespa/log/log.h>
 LOG_SETUP(".searchlib.tensor.dense_tensor_attribute");
@@ -19,7 +20,6 @@ using search::attribute::LoadUtils;
 using vespalib::eval::Value;
 using vespalib::eval::ValueType;
 using vespalib::slime::ObjectInserter;
-using vespalib::tensor::MutableDenseTensorView;
 
 namespace search::tensor {
 
@@ -74,6 +74,15 @@ can_use_index_save_file(const search::attribute::Config &config, const search::a
     return true;
 }
 
+std::unique_ptr<vespalib::alloc::MemoryAllocator>
+make_memory_allocator(const vespalib::string& name, bool huge)
+{
+    if (huge) {
+        return vespalib::alloc::MmapFileAllocatorFactory::instance().make_memory_allocator(name);
+    }
+    return {};
+}
+
 }
 
 void
@@ -106,7 +115,7 @@ DenseTensorAttribute::memory_usage() const
 DenseTensorAttribute::DenseTensorAttribute(vespalib::stringref baseFileName, const Config& cfg,
                                            const NearestNeighborIndexFactory& index_factory)
     : TensorAttribute(baseFileName, cfg, _denseTensorStore),
-      _denseTensorStore(cfg.tensorType()),
+      _denseTensorStore(cfg.tensorType(), make_memory_allocator(getName(), cfg.huge())),
       _index()
 {
     if (cfg.hnsw_index_params().has_value()) {
@@ -173,14 +182,14 @@ DenseTensorAttribute::getTensor(DocId docId) const
     return _denseTensorStore.getTensor(ref);
 }
 
-void
-DenseTensorAttribute::extract_dense_view(DocId docId, MutableDenseTensorView &tensor) const
+vespalib::eval::TypedCells
+DenseTensorAttribute::extract_cells_ref(DocId docId) const
 {
     EntryRef ref;
     if (docId < getCommittedDocIdLimit()) {
         ref = _refVector[docId];
     }
-    _denseTensorStore.getTensor(ref, tensor);
+    return _denseTensorStore.get_typed_cells(ref);
 }
 
 bool

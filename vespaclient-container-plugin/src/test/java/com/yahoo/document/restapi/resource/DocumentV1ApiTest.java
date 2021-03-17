@@ -25,9 +25,9 @@ import com.yahoo.documentapi.DocumentAccessParams;
 import com.yahoo.documentapi.DocumentIdResponse;
 import com.yahoo.documentapi.DocumentOperationParameters;
 import com.yahoo.documentapi.DocumentResponse;
-import com.yahoo.documentapi.DumpVisitorDataHandler;
 import com.yahoo.documentapi.ProgressToken;
 import com.yahoo.documentapi.Response;
+import com.yahoo.documentapi.ResponseHandler;
 import com.yahoo.documentapi.Result;
 import com.yahoo.documentapi.SubscriptionParameters;
 import com.yahoo.documentapi.SubscriptionSession;
@@ -40,15 +40,18 @@ import com.yahoo.documentapi.VisitorDestinationSession;
 import com.yahoo.documentapi.VisitorParameters;
 import com.yahoo.documentapi.VisitorResponse;
 import com.yahoo.documentapi.VisitorSession;
+import com.yahoo.documentapi.messagebus.protocol.PutDocumentMessage;
 import com.yahoo.jdisc.Metric;
 import com.yahoo.messagebus.StaticThrottlePolicy;
 import com.yahoo.messagebus.Trace;
+import com.yahoo.messagebus.TraceNode;
 import com.yahoo.metrics.simple.MetricReceiver;
 import com.yahoo.searchdefinition.derived.Deriver;
 import com.yahoo.slime.Inspector;
 import com.yahoo.slime.JsonFormat;
 import com.yahoo.slime.SlimeUtils;
 import com.yahoo.test.ManualClock;
+import com.yahoo.vdslib.VisitorStatistics;
 import com.yahoo.vespa.config.content.AllClustersBucketSpacesConfig;
 import org.junit.After;
 import org.junit.Before;
@@ -57,10 +60,17 @@ import org.junit.Test;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.TreeMap;
+import java.util.concurrent.CopyOnWriteArraySet;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Phaser;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiFunction;
 import java.util.function.Consumer;
@@ -107,7 +117,6 @@ public class DocumentV1ApiTest {
     }
 
     final Map<String, StorageCluster> clusters = Map.of("content", new StorageCluster("content",
-                                                                                      "config-id",
                                                                                       Map.of("music", "default")));
     ManualClock clock;
     MockDocumentAccess access;
@@ -133,8 +142,8 @@ public class DocumentV1ApiTest {
     public void testResolveCluster() {
         assertEquals("content",
                      DocumentV1ApiHandler.resolveCluster(Optional.empty(), clusters).name());
-        assertEquals("[Storage:cluster=content;clusterconfigid=config-id]",
-                     DocumentV1ApiHandler.resolveCluster(Optional.of("content"), clusters).route());
+        assertEquals("content",
+                     DocumentV1ApiHandler.resolveCluster(Optional.of("content"), clusters).name());
         try {
             DocumentV1ApiHandler.resolveCluster(Optional.empty(), Map.of());
             fail("Should fail without any clusters");
@@ -151,8 +160,8 @@ public class DocumentV1ApiTest {
         }
         try {
             Map<String, StorageCluster> twoClusters = new TreeMap<>();
-            twoClusters.put("one", new StorageCluster("one", "one-config", Map.of()));
-            twoClusters.put("two", new StorageCluster("two", "two-config", Map.of()));
+            twoClusters.put("one", new StorageCluster("one", Map.of()));
+            twoClusters.put("two", new StorageCluster("two", Map.of()));
             DocumentV1ApiHandler.resolveCluster(Optional.empty(), twoClusters);
             fail("More than one cluster and no document type should fail");
         }
@@ -169,6 +178,7 @@ public class DocumentV1ApiTest {
     @Test
     public void testResponses() {
         RequestHandlerTestDriver driver = new RequestHandlerTestDriver(handler);
+        List<AckToken> tokens = List.of(new AckToken(null), new AckToken(null), new AckToken(null));
         // GET at non-existent path returns 404 with available paths
         var response = driver.sendRequest("http://localhost/document/v1/not-found");
         assertSameJson("{" +
@@ -178,29 +188,35 @@ public class DocumentV1ApiTest {
                        "/document/v1/{namespace}/{documentType}/docid/\\n" +
                        "/document/v1/{namespace}/{documentType}/group/{group}/\\n" +
                        "/document/v1/{namespace}/{documentType}/number/{number}/\\n" +
-                       "/document/v1/{namespace}/{documentType}/docid/{docid}\\n" +
-                       "/document/v1/{namespace}/{documentType}/group/{group}/{docid}\\n" +
-                       "/document/v1/{namespace}/{documentType}/number/{number}/{docid}\"" +
+                       "/document/v1/{namespace}/{documentType}/docid/{*}\\n" +
+                       "/document/v1/{namespace}/{documentType}/group/{group}/{*}\\n" +
+                       "/document/v1/{namespace}/{documentType}/number/{number}/{*}\"" +
                        "}", response.readAll());
         assertEquals("application/json; charset=UTF-8", response.getResponse().headers().getFirst("Content-Type"));
         assertEquals(404, response.getStatus());
 
         // GET at root is a visit. Numeric parameters have an upper bound.
+        access.expect(tokens);
         access.expect(parameters -> {
-            assertEquals("[Storage:cluster=content;clusterconfigid=config-id]", parameters.getRoute().toString());
+            assertEquals("content", parameters.getRoute().toString());
             assertEquals("default", parameters.getBucketSpace());
             assertEquals(1024, parameters.getMaxTotalHits());
             assertEquals(100, ((StaticThrottlePolicy) parameters.getThrottlePolicy()).getMaxPendingCount());
             assertEquals("[id]", parameters.getFieldSet());
             assertEquals("(all the things)", parameters.getDocumentSelection());
+            assertEquals(1000, parameters.getSessionTimeoutMs());
             // Put some documents in the response
-            ((DumpVisitorDataHandler) parameters.getLocalDataHandler()).onDocument(doc1, 0);
-            ((DumpVisitorDataHandler) parameters.getLocalDataHandler()).onDocument(doc2, 0);
-            ((DumpVisitorDataHandler) parameters.getLocalDataHandler()).onDocument(doc3, 0);
-            parameters.getControlHandler().onDone(VisitorControlHandler.CompletionCode.SUCCESS, "message");
+            parameters.getLocalDataHandler().onMessage(new PutDocumentMessage(new DocumentPut(doc1)), tokens.get(0));
+            parameters.getLocalDataHandler().onMessage(new PutDocumentMessage(new DocumentPut(doc2)), tokens.get(1));
+            parameters.getLocalDataHandler().onMessage(new PutDocumentMessage(new DocumentPut(doc3)), tokens.get(2));
+            VisitorStatistics statistics = new VisitorStatistics();
+            statistics.setBucketsVisited(1);
+            statistics.setDocumentsVisited(3);
+            parameters.getControlHandler().onVisitorStatistics(statistics);
+            parameters.getControlHandler().onDone(VisitorControlHandler.CompletionCode.TIMEOUT, "timeout is OK");
         });
         response = driver.sendRequest("http://localhost/document/v1?cluster=content&bucketSpace=default&wantedDocumentCount=1025&concurrency=123" +
-                                      "&selection=all%20the%20things&fieldSet=[id]");
+                                      "&selection=all%20the%20things&fieldSet=[id]&timeout=6");
         assertSameJson("{" +
                        "  \"pathId\": \"/document/v1\"," +
                        "  \"documents\": [" +
@@ -220,7 +236,8 @@ public class DocumentV1ApiTest {
                        "     \"id\": \"id:space:music:g=a:three\"," +
                        "     \"fields\": {}" +
                        "    }" +
-                       "  ]" +
+                       "  ]," +
+                       "  \"documentCount\": 3" +
                        "}", response.readAll());
         assertEquals(200, response.getStatus());
 
@@ -234,6 +251,127 @@ public class DocumentV1ApiTest {
         assertSameJson("{" +
                        "  \"pathId\": \"/document/v1/space/music/docid\"," +
                        "  \"message\": \"parse failure\"" +
+                       "}", response.readAll());
+        assertEquals(400, response.getStatus());
+
+        // POST with namespace and document type is a restricted visit with a required destination cluster ("destinationCluster")
+        access.expect(parameters -> {
+            fail("Not supposed to run");
+        });
+        response = driver.sendRequest("http://localhost/document/v1/space/music/docid", POST);
+        assertSameJson("{" +
+                       "  \"pathId\": \"/document/v1/space/music/docid\"," +
+                       "  \"message\": \"Must specify 'destinationCluster' at '/document/v1/space/music/docid'\"" +
+                       "}", response.readAll());
+        assertEquals(400, response.getStatus());
+
+        // POST with namespace and document type is a restricted visit with a required destination cluster ("destinationCluster")
+        access.expect(parameters -> {
+            assertEquals("[Content:cluster=content]", parameters.getRemoteDataHandler());
+            assertEquals("[all]", parameters.fieldSet());
+            assertEquals(55_000L, parameters.getSessionTimeoutMs());
+            parameters.getControlHandler().onDone(VisitorControlHandler.CompletionCode.SUCCESS, "We made it!");
+        });
+        response = driver.sendRequest("http://localhost/document/v1/space/music/docid?destinationCluster=content&selection=true&cluster=content&timeout=60", POST);
+        assertSameJson("{" +
+                       "  \"pathId\": \"/document/v1/space/music/docid\"" +
+                       "}", response.readAll());
+        assertEquals(200, response.getStatus());
+
+        // PUT with namespace and document type is a restricted visit with a required partial update to apply to visited documents.
+        access.expect(tokens.subList(2, 3));
+        access.expect(parameters -> {
+            assertEquals("(true) and (music) and (id.namespace=='space')", parameters.getDocumentSelection());
+            assertEquals("[id]", parameters.fieldSet());
+            assertEquals(10_000, parameters.getSessionTimeoutMs());
+            parameters.getLocalDataHandler().onMessage(new PutDocumentMessage(new DocumentPut(doc3)), tokens.get(2));
+            parameters.getControlHandler().onDone(VisitorControlHandler.CompletionCode.TIMEOUT, "Won't care");
+        });
+        access.session.expect((update, parameters) -> {
+            DocumentUpdate expectedUpdate = new DocumentUpdate(doc3.getDataType(), doc3.getId());
+            expectedUpdate.addFieldUpdate(FieldUpdate.createAssign(doc3.getField("artist"), new StringFieldValue("Lisa Ekdahl")));
+            expectedUpdate.setCondition(new TestAndSetCondition("true"));
+            assertEquals(expectedUpdate, update);
+            parameters.responseHandler().get().handleResponse(new UpdateResponse(0, false));
+            assertEquals(parameters().withRoute("content"), parameters);
+            return new Result(Result.ResultType.SUCCESS, null);
+        });
+        response = driver.sendRequest("http://localhost/document/v1/space/music/docid?selection=true&cluster=content&timeChunk=10", PUT,
+                                      "{" +
+                                      "  \"fields\": {" +
+                                      "    \"artist\": { \"assign\": \"Lisa Ekdahl\" }" +
+                                      "  }" +
+                                      "}");
+        assertSameJson("{" +
+                       "  \"pathId\": \"/document/v1/space/music/docid\"" +
+                       "}", response.readAll());
+        assertEquals(200, response.getStatus());
+
+        // PUT with namespace, document type and group is also a restricted visit which requires a cluster.
+        access.expect(parameters -> {
+            fail("Not supposed to run");
+        });
+        response = driver.sendRequest("http://localhost/document/v1/space/music/group/troupe?selection=false", PUT);
+        assertSameJson("{" +
+                       "  \"pathId\": \"/document/v1/space/music/group/troupe\"," +
+                       "  \"message\": \"Must specify 'cluster' at '/document/v1/space/music/group/troupe'\"" +
+                       "}", response.readAll());
+        assertEquals(400, response.getStatus());
+
+        // PUT with namespace, document type and group is also a restricted visit which requires a selection.
+        access.expect(parameters -> {
+            fail("Not supposed to run");
+        });
+        response = driver.sendRequest("http://localhost/document/v1/space/music/group/troupe?cluster=content", PUT);
+        assertSameJson("{" +
+                       "  \"pathId\": \"/document/v1/space/music/group/troupe\"," +
+                       "  \"message\": \"Must specify 'selection' at '/document/v1/space/music/group/troupe'\"" +
+                       "}", response.readAll());
+        assertEquals(400, response.getStatus());
+
+        // DELETE with namespace and document type is a restricted visit which deletes visited documents.
+        access.expect(tokens.subList(0, 1));
+        access.expect(parameters -> {
+            assertEquals("(false) and (music) and (id.namespace=='space')", parameters.getDocumentSelection());
+            assertEquals("[id]", parameters.fieldSet());
+            assertEquals(60_000, parameters.getSessionTimeoutMs());
+            parameters.getLocalDataHandler().onMessage(new PutDocumentMessage(new DocumentPut(doc2)), tokens.get(0));
+            parameters.getControlHandler().onDone(VisitorControlHandler.CompletionCode.ABORTED, "Huzzah?");
+        });
+        access.session.expect((remove, parameters) -> {
+            DocumentRemove expectedRemove = new DocumentRemove(doc2.getId());
+            expectedRemove.setCondition(new TestAndSetCondition("false"));
+            assertEquals(expectedRemove, remove);
+            assertEquals(parameters().withRoute("content"), parameters);
+            parameters.responseHandler().get().handleResponse(new DocumentIdResponse(0, doc2.getId(), "boom", Response.Outcome.ERROR));
+            return new Result(Result.ResultType.SUCCESS, null);
+        });
+        response = driver.sendRequest("http://localhost/document/v1/space/music/docid?selection=false&cluster=content", DELETE);
+        assertSameJson("{" +
+                       "  \"pathId\": \"/document/v1/space/music/docid\"," +
+                       "  \"message\": \"boom\"" +
+                       "}", response.readAll());
+        assertEquals(500, response.getStatus());
+
+        // DELETE at the root is also a deletion visit. These also require a selection.
+        access.expect(parameters -> {
+            fail("Not supposed to run");
+        });
+        response = driver.sendRequest("http://localhost/document/v1/", DELETE);
+        assertSameJson("{" +
+                       "  \"pathId\": \"/document/v1/\"," +
+                       "  \"message\": \"Must specify 'selection' at '/document/v1/'\"" +
+                       "}", response.readAll());
+        assertEquals(400, response.getStatus());
+
+        // DELETE at the root is also a deletion visit. These also require a cluster.
+        access.expect(parameters -> {
+            fail("Not supposed to run");
+        });
+        response = driver.sendRequest("http://localhost/document/v1/?selection=true", DELETE);
+        assertSameJson("{" +
+                       "  \"pathId\": \"/document/v1/\"," +
+                       "  \"message\": \"Must specify 'cluster' at '/document/v1/'\"" +
                        "}", response.readAll());
         assertEquals(400, response.getStatus());
 
@@ -265,11 +403,11 @@ public class DocumentV1ApiTest {
         // GET with full document ID is a document get operation which returns 404 when no document is found
         access.session.expect((id, parameters) -> {
             assertEquals(doc1.getId(), id);
-            assertEquals(parameters().withRoute("[Storage:cluster=content;clusterconfigid=config-id]").withFieldSet("go"), parameters);
+            assertEquals(parameters().withRoute("content").withFieldSet("go"), parameters);
             parameters.responseHandler().get().handleResponse(new DocumentResponse(0, null));
             return new Result(Result.ResultType.SUCCESS, null);
         });
-        response = driver.sendRequest("http://localhost/document/v1/space/music/docid/one?cluster=content&fieldSet=go");
+        response = driver.sendRequest("http://localhost/document/v1/space/music/docid/one?cluster=content&fieldSet=go&timeout=123");
         assertSameJson("{" +
                        "  \"pathId\": \"/document/v1/space/music/docid/one\"," +
                        "  \"id\": \"id:space:music::one\"" +
@@ -279,7 +417,7 @@ public class DocumentV1ApiTest {
         // GET with full document ID is a document get operation.
         access.session.expect((id, parameters) -> {
             assertEquals(doc1.getId(), id);
-            assertEquals(parameters(), parameters);
+            assertEquals(parameters().withFieldSet("music:[document]"), parameters);
             parameters.responseHandler().get().handleResponse(new DocumentResponse(0, doc1));
             return new Result(Result.ResultType.SUCCESS, null);
         });
@@ -293,10 +431,18 @@ public class DocumentV1ApiTest {
                        "}", response.readAll());
         assertEquals(200, response.getStatus());
 
-        // GET with not encoded / in user specified part of document id is a 404
-        access.session.expect((__, ___) -> { throw new AssertionError("Not supposed to happen"); });
+        // GET with not encoded / in user specified part of document id is perfectly OK ... щ(ಥДಥщ)
+        access.session.expect((id, parameters) -> {
+            assertEquals(new DocumentId("id:space:music::one/two/three"), id);
+            assertEquals(parameters().withFieldSet("music:[document]"), parameters);
+            parameters.responseHandler().get().handleResponse(new DocumentResponse(0));
+            return new Result(Result.ResultType.SUCCESS, null);
+        });
         response = driver.sendRequest("http://localhost/document/v1/space/music/docid/one/two/three");
-        response.readAll(); // Must drain body.
+        assertSameJson("{" +
+                       "  \"pathId\": \"/document/v1/space/music/docid/one/two/three\"," +
+                       "  \"id\": \"id:space:music::one/two/three\"" +
+                       "}", response.readAll());
         assertEquals(404, response.getStatus());
 
         // POST with a document payload is a document put operation.
@@ -304,11 +450,16 @@ public class DocumentV1ApiTest {
             DocumentPut expectedPut = new DocumentPut(doc2);
             expectedPut.setCondition(new TestAndSetCondition("test it"));
             assertEquals(expectedPut, put);
-            assertEquals(parameters(), parameters);
-            parameters.responseHandler().get().handleResponse(new DocumentResponse(0, doc2));
+            assertEquals(parameters().withTraceLevel(9), parameters);
+            Trace trace = new Trace(9);
+            trace.trace(7, "Tracy Chapman", false);
+            trace.getRoot().addChild(new TraceNode().setStrict(false)
+                                                    .addChild("Fast Car")
+                                                    .addChild("Baby Can I Hold You"));
+            parameters.responseHandler().get().handleResponse(new DocumentResponse(0, doc2, trace));
             return new Result(Result.ResultType.SUCCESS, null);
         });
-        response = driver.sendRequest("http://localhost/document/v1/space/music/number/1/two?condition=test%20it", POST,
+        response = driver.sendRequest("http://localhost/document/v1/space/music/number/1/two?condition=test%20it&tracelevel=9", POST,
                                       "{" +
                                       "  \"fields\": {" +
                                       "    \"artist\": \"Asa-Chan & Jun-Ray\"" +
@@ -316,7 +467,22 @@ public class DocumentV1ApiTest {
                                       "}");
         assertSameJson("{" +
                        "  \"pathId\": \"/document/v1/space/music/number/1/two\"," +
-                       "  \"id\": \"id:space:music:n=1:two\"" +
+                       "  \"id\": \"id:space:music:n=1:two\"," +
+                       "  \"trace\": [" +
+                       "    {" +
+                       "      \"message\": \"Tracy Chapman\"" +
+                       "    }," +
+                       "    {" +
+                       "      \"fork\": [" +
+                       "        {" +
+                       "          \"message\": \"Fast Car\"" +
+                       "        }," +
+                       "        {" +
+                       "          \"message\": \"Baby Can I Hold You\"" +
+                       "        }" +
+                       "      ]" +
+                       "    }" +
+                       "  ]" +
                        "}", response.readAll());
         assertEquals(200, response.getStatus());
 
@@ -330,7 +496,7 @@ public class DocumentV1ApiTest {
             parameters.responseHandler().get().handleResponse(new UpdateResponse(0, true));
             return new Result(Result.ResultType.SUCCESS, null);
         });
-        response = driver.sendRequest("http://localhost/document/v1/space/music/group/a/three?create=true", PUT,
+        response = driver.sendRequest("http://localhost/document/v1/space/music/group/a/three?create=true&timeout=1e1s", PUT,
                                       "{" +
                                       "  \"fields\": {" +
                                       "    \"artist\": { \"assign\": \"Lisa Ekdahl\" }" +
@@ -381,8 +547,8 @@ public class DocumentV1ApiTest {
         access.session.expect((remove, parameters) -> {
             DocumentRemove expectedRemove = new DocumentRemove(doc2.getId());
             expectedRemove.setCondition(new TestAndSetCondition("false"));
-            assertEquals(new DocumentRemove(doc2.getId()), remove);
-            assertEquals(parameters.withRoute("route"), parameters);
+            assertEquals(expectedRemove, remove);
+            assertEquals(parameters().withRoute("route"), parameters);
             parameters.responseHandler().get().handleResponse(new DocumentIdResponse(0, doc2.getId()));
             return new Result(Result.ResultType.SUCCESS, null);
         });
@@ -476,6 +642,21 @@ public class DocumentV1ApiTest {
                        "}", response2.readAll());
         assertEquals(500, response2.getStatus());
 
+        // Request response does not arrive before timeout has passed.
+        AtomicReference<ResponseHandler> handler = new AtomicReference<>();
+        access.session.expect((id, parameters) -> {
+            handler.set(parameters.responseHandler().get());
+            return new Result(Result.ResultType.SUCCESS, null);
+        });
+        var response4 = driver.sendRequest("http://localhost/document/v1/space/music/docid/one?timeout=1ms");
+        assertSameJson("{" +
+                       "  \"pathId\": \"/document/v1/space/music/docid/one\"," +
+                       "  \"message\": \"Request timeout after 1ms\"" +
+                       "}", response4.readAll());
+        assertEquals(504, response4.getStatus());
+        if (handler.get() != null)                          // Timeout may have occurred before dispatch, or ...
+            handler.get().handleResponse(new Response(0));  // response may eventually arrive, but too late.
+
         driver.close();
     }
 
@@ -483,6 +664,7 @@ public class DocumentV1ApiTest {
     static class MockDocumentAccess extends DocumentAccess {
 
         private final AtomicReference<Consumer<VisitorParameters>> expectations = new AtomicReference<>();
+        private final Set<AckToken> outstanding = new CopyOnWriteArraySet<>();
         private final MockAsyncSession session = new MockAsyncSession();
 
         MockDocumentAccess(DocumentmanagerConfig config) {
@@ -501,18 +683,24 @@ public class DocumentV1ApiTest {
 
         @Override
         public VisitorSession createVisitorSession(VisitorParameters parameters) {
-            expectations.get().accept(parameters);
-            return new VisitorSession() {
+            VisitorSession visitorSession = new VisitorSession() {
+                {
+                    parameters.getControlHandler().setSession(this);
+                    if (parameters.getLocalDataHandler() != null)
+                        parameters.getLocalDataHandler().setSession(this);
+                }
                 @Override public boolean isDone() { return false; }
                 @Override public ProgressToken getProgress() { return null; }
                 @Override public Trace getTrace() { return null; }
                 @Override public boolean waitUntilDone(long timeoutMs) { return false; }
-                @Override public void ack(AckToken token) { }
+                @Override public void ack(AckToken token) { assertTrue(outstanding.remove(token)); }
                 @Override public void abort() { }
                 @Override public VisitorResponse getNext() { return null; }
                 @Override public VisitorResponse getNext(int timeoutMilliseconds) { return null; }
-                @Override public void destroy() { }
+                @Override public void destroy() { assertEquals(Set.of(), outstanding); }
             };
+            expectations.get().accept(parameters);
+            return visitorSession;
         }
 
         @Override
@@ -532,6 +720,10 @@ public class DocumentV1ApiTest {
 
         public void expect(Consumer<VisitorParameters> expectations) {
             this.expectations.set(expectations);
+        }
+
+        public void expect(Collection<AckToken> tokens) {
+            outstanding.addAll(tokens);
         }
 
     }

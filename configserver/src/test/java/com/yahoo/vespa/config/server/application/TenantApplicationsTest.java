@@ -1,4 +1,4 @@
-// Copyright 2017 Yahoo Holdings. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Verizon Media. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.config.server.application;
 
 import com.yahoo.cloud.config.ConfigserverConfig;
@@ -11,11 +11,12 @@ import com.yahoo.text.Utf8;
 import com.yahoo.vespa.config.ConfigKey;
 import com.yahoo.vespa.config.server.ReloadListener;
 import com.yahoo.vespa.config.server.ServerCache;
-import com.yahoo.vespa.config.server.TestComponentRegistry;
+import com.yahoo.vespa.config.server.host.HostRegistry;
 import com.yahoo.vespa.config.server.model.TestModelFactory;
 import com.yahoo.vespa.config.server.modelfactory.ModelFactoryRegistry;
 import com.yahoo.vespa.config.server.monitoring.MetricUpdater;
 import com.yahoo.vespa.config.server.tenant.TenantRepository;
+import com.yahoo.vespa.config.server.tenant.TestTenantRepository;
 import com.yahoo.vespa.curator.Curator;
 import com.yahoo.vespa.curator.mock.MockCurator;
 import com.yahoo.vespa.model.VespaModel;
@@ -29,6 +30,7 @@ import org.xml.sax.SAXException;
 
 import java.io.File;
 import java.io.IOException;
+import java.time.Clock;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.LinkedHashMap;
@@ -53,32 +55,37 @@ public class TenantApplicationsTest {
     private static final TenantName tenantName = TenantName.from("tenant");
     private static final Version vespaVersion = new VespaModelFactory(new NullConfigModelRegistry()).version();
 
-    private final MockReloadListener listener = new MockReloadListener();
+    private Curator curator;
     private CuratorFramework curatorFramework;
-    private TestComponentRegistry componentRegistry;
     private TenantApplications applications;
+    private ConfigserverConfig configserverConfig;
 
     @Rule
     public TemporaryFolder tempFolder = new TemporaryFolder();
 
     @Before
     public void setup() throws IOException {
-        Curator curator = new MockCurator();
+        curator = new MockCurator();
         curatorFramework = curator.framework();
-        componentRegistry = new TestComponentRegistry.Builder()
-                .curator(curator)
-                .configServerConfig(new ConfigserverConfig.Builder()
-                                            .payloadCompressionType(ConfigserverConfig.PayloadCompressionType.Enum.UNCOMPRESSED)
-                                            .configServerDBDir(tempFolder.newFolder("configserverdb").getAbsolutePath())
-                                            .configDefinitionsDir(tempFolder.newFolder("configdefinitions").getAbsolutePath())
-                                            .build())
-                .modelFactoryRegistry(createRegistry())
-                .reloadListener(listener)
+        configserverConfig = new ConfigserverConfig.Builder()
+                .payloadCompressionType(ConfigserverConfig.PayloadCompressionType.Enum.UNCOMPRESSED)
+                .configServerDBDir(tempFolder.newFolder("configserverdb").getAbsolutePath())
+                .configDefinitionsDir(tempFolder.newFolder("configdefinitions").getAbsolutePath())
                 .build();
-        TenantRepository tenantRepository = new TenantRepository(componentRegistry);
+        HostRegistry hostRegistry = new HostRegistry();
+        TenantRepository tenantRepository = new TestTenantRepository.Builder()
+                .withConfigserverConfig(configserverConfig)
+                .withCurator(curator)
+                .withModelFactoryRegistry(createRegistry())
+                .build();
         tenantRepository.addTenant(TenantRepository.HOSTED_VESPA_TENANT);
         tenantRepository.addTenant(tenantName);
-        applications = TenantApplications.create(componentRegistry, tenantName);
+        applications = TenantApplications.create(hostRegistry,
+                                                 tenantName,
+                                                 curator,
+                                                 configserverConfig,
+                                                 Clock.systemUTC(),
+                                                 new TenantApplicationsTest.MockReloadListener());
     }
 
     @Test
@@ -151,12 +158,12 @@ public class TenantApplicationsTest {
         }
 
         @Override
-        public void hostsUpdated(TenantName tenant, Collection<String> newHosts) {
-            tenantHosts.put(tenant.value(), newHosts);
+        public void hostsUpdated(ApplicationId applicationId, Collection<String> newHosts) {
+            tenantHosts.put(applicationId.tenant().value(), newHosts);
         }
 
         @Override
-        public void verifyHostsAreAvailable(TenantName tenant, Collection<String> newHosts) {
+        public void verifyHostsAreAvailable(ApplicationId applicationId, Collection<String> newHosts) {
         }
 
         @Override
@@ -171,20 +178,25 @@ public class TenantApplicationsTest {
 
     @Test
     public void testListConfigs() throws IOException, SAXException {
-        applications = TenantApplications.create(componentRegistry, TenantName.defaultName());
+        applications = TenantApplications.create(new HostRegistry(),
+                                                 TenantName.defaultName(),
+                                                 new MockCurator(),
+                                                 configserverConfig,
+                                                 Clock.systemUTC(),
+                                                 new TenantApplicationsTest.MockReloadListener());
         assertdefaultAppNotFound();
 
         VespaModel model = new VespaModel(FilesApplicationPackage.fromFile(new File("src/test/apps/app")));
         ApplicationId applicationId = ApplicationId.defaultId();
         applications.createApplication(applicationId);
         applications.createPutTransaction(applicationId, 1).commit();
-        applications.reloadConfig(ApplicationSet.fromSingle(new Application(model,
-                                                                            new ServerCache(),
-                                                                            1,
-                                                                            false,
-                                                                            vespaVersion,
-                                                                            MetricUpdater.createTestUpdater(),
-                                                                            applicationId)));
+        applications.activateApplication(ApplicationSet.from(new Application(model,
+                                                                             new ServerCache(),
+                                                                             1,
+                                                                             vespaVersion,
+                                                                             MetricUpdater.createTestUpdater(),
+                                                                             applicationId)),
+                                         1);
         Set<ConfigKey<?>> configNames = applications.listConfigs(applicationId, Optional.of(vespaVersion), false);
         assertTrue(configNames.contains(new ConfigKey<>("sentinel", "hosts", "cloud.config")));
 
@@ -206,7 +218,12 @@ public class TenantApplicationsTest {
     }
 
     private TenantApplications createZKAppRepo() {
-        return TenantApplications.create(componentRegistry, tenantName);
+        return TenantApplications.create(new HostRegistry(),
+                                         tenantName,
+                                         curator,
+                                         configserverConfig,
+                                         Clock.systemUTC(),
+                                         new TenantApplicationsTest.MockReloadListener());
     }
 
     private static ApplicationId createApplicationId(String name) {

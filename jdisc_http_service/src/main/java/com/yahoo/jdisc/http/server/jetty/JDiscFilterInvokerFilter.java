@@ -22,11 +22,12 @@ import javax.servlet.http.HttpServletResponseWrapper;
 import java.io.IOException;
 import java.io.PrintWriter;
 import java.net.URI;
+import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicReference;
 
-import static com.yahoo.jdisc.http.server.jetty.Exceptions.throwUnchecked;
 import static com.yahoo.jdisc.http.server.jetty.JDiscHttpServlet.getConnector;
+import static com.yahoo.yolean.Exceptions.throwUnchecked;
 
 /**
  * Runs JDisc security filters for Servlets
@@ -76,7 +77,7 @@ class JDiscFilterInvokerFilter implements Filter {
 
     private void runChainAndResponseFilters(URI uri, HttpServletRequest request, HttpServletResponse response, FilterChain chain) throws IOException, ServletException {
         Optional<OneTimeRunnable> responseFilterInvoker =
-                Optional.ofNullable(jDiscContext.responseFilters.resolve(uri))
+                jDiscContext.filterResolver.resolveResponseFilter(request, uri)
                         .map(responseFilter ->
                                 new OneTimeRunnable(() ->
                                         filterInvoker.invokeResponseFilterChain(responseFilter, uri, request, response)));
@@ -106,7 +107,7 @@ class JDiscFilterInvokerFilter implements Filter {
 
     private HttpServletRequest runRequestFilterWithMatchingBinding(AtomicReference<Boolean> responseReturned, URI uri, HttpServletRequest request, HttpServletResponse response) throws IOException {
         try {
-            RequestFilter requestFilter = jDiscContext.requestFilters.resolve(uri);
+            RequestFilter requestFilter = jDiscContext.filterResolver.resolveRequestFilter(request, uri).orElse(null);
             if (requestFilter == null)
                 return request;
 
@@ -133,7 +134,7 @@ class JDiscFilterInvokerFilter implements Filter {
             final AccessLogEntry accessLogEntry = null; // Not used in this context.
             return new HttpRequestDispatch(jDiscContext,
                                            accessLogEntry,
-                                           getConnector(request).getRequestMetricContext(request),
+                                           getConnector(request).createRequestMetricContext(request, Map.of()),
                                            request, response);
         } catch (IOException e) {
             throw throwUnchecked(e);

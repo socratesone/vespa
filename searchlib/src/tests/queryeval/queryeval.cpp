@@ -15,10 +15,10 @@
 #include <vespa/searchlib/queryeval/sourceblendersearch.h>
 #include <vespa/searchlib/queryeval/leaf_blueprints.h>
 #include <vespa/searchlib/queryeval/intermediate_blueprints.h>
-#include <vespa/searchlib/attribute/singlenumericattribute.hpp>
+#include <vespa/searchlib/queryeval/isourceselector.h>
+#include <vespa/searchlib/query/query_term_simple.h>
 #include <vespa/searchlib/attribute/singleboolattribute.h>
 #include <vespa/vespalib/test/insertion_operators.h>
-#include <vespa/searchlib/queryeval/isourceselector.h>
 #include <vespa/searchlib/fef/fef.h>
 #include <vespa/vespalib/data/slime/slime.h>
 
@@ -350,7 +350,7 @@ public:
             _a.update(docId, 1);
         }
         _a.commit();
-        _sc = _a.getSearch(std::make_unique<search::QueryTermSimple>("1", search::QueryTermSimple::WORD),
+        _sc = _a.getSearch(std::make_unique<search::QueryTermSimple>("1", search::QueryTermSimple::Type::WORD),
                            SearchContextParams().useBitVector(true));
     }
     SearchIterator::UP

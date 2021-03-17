@@ -6,7 +6,6 @@
 #include <vespa/storage/distributor/maintenance/maintenanceprioritygenerator.h>
 #include <vespa/storage/distributor/maintenance/maintenanceoperationgenerator.h>
 #include <vespa/storageframework/generic/status/htmlstatusreporter.h>
-#include <vespa/vdslib/state/clusterstate.h>
 
 namespace storage::distributor {
 
@@ -78,10 +77,7 @@ public:
         getBucketStatus(out);
     }
 
-    DistributorComponent& getDistributorComponent() {
-        return _distributorComponent; }
-    StorageComponent::LoadTypeSetSP getLoadTypes() {
-        return _distributorComponent.getLoadTypes(); }
+    DistributorComponent& getDistributorComponent() { return _distributorComponent; }
     DistributorBucketSpaceRepo &getBucketSpaceRepo() { return _bucketSpaceRepo; }
     const DistributorBucketSpaceRepo &getBucketSpaceRepo() const { return _bucketSpaceRepo; }
 

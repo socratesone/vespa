@@ -20,6 +20,8 @@ import java.util.Collections;
  */
 public class ContainerDocumentApi {
 
+    public static final String DOCUMENT_V1_PREFIX = "/document/v1";
+
     private static final int FALLBACK_MAX_POOL_SIZE = 0; // Use fallback based on actual logical core count on host
     private static final int FALLBACK_CORE_POOL_SIZE = 0; // Use fallback based on actual logical core count on host
 
@@ -30,42 +32,29 @@ public class ContainerDocumentApi {
 
     private static void addFeedHandler(ContainerCluster<?> cluster, Options options) {
         String bindingSuffix = ContainerCluster.RESERVED_URI_PREFIX + "/feedapi";
-        var handler = newVespaClientHandler(
-                "com.yahoo.vespa.http.server.FeedHandler", bindingSuffix, options);
+        var handler = newVespaClientHandler("com.yahoo.vespa.http.server.FeedHandler", bindingSuffix, options);
         cluster.addComponent(handler);
-        var executor = new Threadpool(
-                "feedapi-handler", cluster, options.feedApiThreadpoolOptions, options.feedThreadPoolSizeFactor);
+        var executor = new Threadpool("feedapi-handler", cluster, options.feedApiThreadpoolOptions);
         handler.inject(executor);
         handler.addComponent(executor);
     }
 
 
     private static void addRestApiHandler(ContainerCluster<?> cluster, Options options) {
-        // TODO(bjorncs,jonmv) Cleanup once old restapi handler is gone
-        // We need to include the old handler implementation even when the new handler is enabled
-        // The internal legacy test framework requires that the name of the old handler is listed in /ApplicationStatus
-        String oldHandlerName = "com.yahoo.document.restapi.resource.RestApi";
-        String bindingSuffix = "/document/v1/*";
-        var oldHandler = newVespaClientHandler(oldHandlerName, options.useNewRestapiHandler ? null : bindingSuffix, options);
-        cluster.addComponent(oldHandler);
-        var executor = new Threadpool("restapi-handler", cluster, options.restApiThreadpoolOptions, options.feedThreadPoolSizeFactor);
-        oldHandler.inject(executor);
-        oldHandler.addComponent(executor);
+        var handler = newVespaClientHandler("com.yahoo.document.restapi.resource.DocumentV1ApiHandler", DOCUMENT_V1_PREFIX + "/*", options);
+        cluster.addComponent(handler);
 
-        if (options.useNewRestapiHandler) {
-            String newHandlerName = "com.yahoo.document.restapi.resource.DocumentV1ApiHandler";
-            var newHandler = newVespaClientHandler(newHandlerName, bindingSuffix, options);
-            cluster.addComponent(newHandler);
-        }
+        // We need to include a dummy implementation of the previous restapi handler (using the same class name).
+        // The internal legacy test framework requires that the name of the old handler is listed in /ApplicationStatus.
+        var oldHandlerDummy = handlerComponentSpecification("com.yahoo.document.restapi.resource.RestApi");
+        cluster.addComponent(oldHandlerDummy);
     }
 
     private static Handler<AbstractConfigProducer<?>> newVespaClientHandler(
             String componentId,
             String bindingSuffix,
             Options options) {
-        Handler<AbstractConfigProducer<?>> handler = new Handler<>(new ComponentModel(
-                BundleInstantiationSpecification.getFromStrings(componentId, null, "vespaclient-container-plugin"), ""));
-        if (bindingSuffix == null) return handler; // TODO(bjorncs,jonmv) Cleanup once old restapi handler is gone
+        Handler<AbstractConfigProducer<?>> handler = handlerComponentSpecification(componentId);
         if (options.bindings.isEmpty()) {
             handler.addServerBindings(
                     SystemBindingPattern.fromHttpPath(bindingSuffix),
@@ -81,38 +70,30 @@ public class ContainerDocumentApi {
         return handler;
     }
 
+    private static Handler<AbstractConfigProducer<?>> handlerComponentSpecification(String className) {
+        return new Handler<>(new ComponentModel(
+                BundleInstantiationSpecification.getFromStrings(className, null, "vespaclient-container-plugin"), ""));
+    }
+
     public static final class Options {
         private final Collection<String> bindings;
-        private final ContainerThreadpool.UserOptions restApiThreadpoolOptions;
         private final ContainerThreadpool.UserOptions feedApiThreadpoolOptions;
-        private final double feedThreadPoolSizeFactor;
-        private final boolean useNewRestapiHandler;
 
-        public Options(Collection<String> bindings,
-                       ContainerThreadpool.UserOptions restApiThreadpoolOptions,
-                       ContainerThreadpool.UserOptions feedApiThreadpoolOptions,
-                       double feedThreadPoolSizeFactor,
-                       boolean useNewRestapiHandler) {
+        public Options(Collection<String> bindings, ContainerThreadpool.UserOptions feedApiThreadpoolOptions) {
             this.bindings = Collections.unmodifiableCollection(bindings);
-            this.restApiThreadpoolOptions = restApiThreadpoolOptions;
             this.feedApiThreadpoolOptions = feedApiThreadpoolOptions;
-            this.feedThreadPoolSizeFactor = feedThreadPoolSizeFactor;
-            this.useNewRestapiHandler = useNewRestapiHandler;
         }
     }
 
     private static class Threadpool extends ContainerThreadpool {
 
         private final ContainerCluster<?> cluster;
-        private final double feedThreadPoolSizeFactor;
 
         Threadpool(String name,
                    ContainerCluster<?> cluster,
-                   ContainerThreadpool.UserOptions threadpoolOptions,
-                   double feedThreadPoolSizeFactor ) {
+                   ContainerThreadpool.UserOptions threadpoolOptions) {
             super(name, threadpoolOptions);
             this.cluster = cluster;
-            this.feedThreadPoolSizeFactor = feedThreadPoolSizeFactor;
         }
 
         @Override
@@ -128,15 +109,15 @@ public class ContainerDocumentApi {
         }
 
         private int maxPoolSize() {
-            double vcpu = vcpu(cluster).orElse(0);
+            double vcpu = cluster.vcpu().orElse(0);
             if (vcpu == 0) return FALLBACK_MAX_POOL_SIZE;
-            return Math.max(2, (int)Math.ceil(vcpu * feedThreadPoolSizeFactor));
+            return Math.max(2, (int)Math.ceil(vcpu * 4.0));
         }
 
         private int minPoolSize() {
-            double vcpu = vcpu(cluster).orElse(0);
+            double vcpu = cluster.vcpu().orElse(0);
             if (vcpu == 0) return FALLBACK_CORE_POOL_SIZE;
-            return Math.max(1, (int)Math.ceil(vcpu * feedThreadPoolSizeFactor * 0.5));
+            return Math.max(1, (int)Math.ceil(vcpu * 2.0));
         }
     }
 

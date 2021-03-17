@@ -1,6 +1,7 @@
 // Copyright 2017 Yahoo Holdings. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 #include <vespa/vespalib/testkit/test_kit.h>
 #include <vespa/vespalib/util/child_process.h>
+#include <vespa/vespalib/util/size_literals.h>
 #include <vespa/vespalib/util/stringfmt.h>
 #include <vespa/vespalib/util/thread.h>
 #include <atomic>
@@ -13,7 +14,7 @@ static const int PORT1 = 18571;
 using vespalib::ChildProcess;
 
 bool runProc(ChildProcess &proc, std::atomic<bool> &done) {
-    char buf[4096];
+    char buf[4_Ki];
     proc.close(); // close stdin
     while (proc.running() && !done) {
         if (!proc.eof()) {
@@ -115,13 +116,14 @@ TEST_MT_F("ping", 2, std::atomic<bool>()) {
 TEST_MT_F("ping times out", 2, std::atomic<bool>()) {
     if (thread_id == 0) {
         ChildProcess proc(vespalib::make_string("exec ../../examples/frt/rpc/fnet_rpc_server_app tcp/%d",
-                                             PORT0).c_str());
+                                                PORT0).c_str());
         TEST_BARRIER();
         EXPECT_TRUE(runProc(proc, f1));
     } else {
+        float timeout_s = 0.1;
         TEST_BARRIER();
-        EXPECT_TRUE(runProc(vespalib::make_string("exec ../../examples/ping/fnet_pingclient_app tcp/localhost:%d",
-                                                  PORT0).c_str()));
+        EXPECT_TRUE(runProc(vespalib::make_string("exec ../../examples/ping/fnet_pingclient_app tcp/localhost:%d %f",
+                                                  PORT0, timeout_s).c_str()));
         f1 = true;
     }
 }
@@ -129,12 +131,12 @@ TEST_MT_F("ping times out", 2, std::atomic<bool>()) {
 TEST_MT_F("ping with proxy", 3, std::atomic<bool>()) {
     if (thread_id == 0) {
         ChildProcess proc(vespalib::make_string("exec ../../examples/ping/fnet_pingserver_app tcp/%d",
-                                             PORT0).c_str());
+                                                PORT0).c_str());
         TEST_BARRIER();
         EXPECT_TRUE(runProc(proc, f1));
     } else if (thread_id == 1) {
         ChildProcess proc(vespalib::make_string("exec ../../examples/proxy/fnet_proxy_app tcp/%d tcp/localhost:%d",
-                                             PORT1, PORT0).c_str());
+                                                PORT1, PORT0).c_str());
         TEST_BARRIER();
         EXPECT_TRUE(runProc(proc, f1));
     } else {
@@ -148,7 +150,7 @@ TEST_MT_F("ping with proxy", 3, std::atomic<bool>()) {
 TEST_MT_F("rpc client server", 2, std::atomic<bool>()) {
     if (thread_id == 0) {
         ChildProcess proc(vespalib::make_string("exec ../../examples/frt/rpc/fnet_rpc_server_app tcp/%d",
-                                             PORT0).c_str());
+                                                PORT0).c_str());
         TEST_BARRIER();
         EXPECT_TRUE(runProc(proc, f1));
     } else {

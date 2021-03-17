@@ -50,6 +50,8 @@
       "public final java.lang.String getDefMd5()",
       "public final java.lang.String getDefName()",
       "public final java.lang.String getDefNamespace()",
+      "public final boolean getApplyOnRestart()",
+      "public final void setApplyOnRestart(boolean)",
       "public com.yahoo.jdisc.http.ConnectorConfig build()"
     ],
     "fields": [
@@ -375,6 +377,24 @@
       "public static final java.lang.String[] CONFIG_DEF_SCHEMA"
     ]
   },
+  "com.yahoo.jdisc.http.Cookie$SameSite": {
+    "superClass": "java.lang.Enum",
+    "interfaces": [],
+    "attributes": [
+      "public",
+      "final",
+      "enum"
+    ],
+    "methods": [
+      "public static com.yahoo.jdisc.http.Cookie$SameSite[] values()",
+      "public static com.yahoo.jdisc.http.Cookie$SameSite valueOf(java.lang.String)"
+    ],
+    "fields": [
+      "public static final enum com.yahoo.jdisc.http.Cookie$SameSite NONE",
+      "public static final enum com.yahoo.jdisc.http.Cookie$SameSite STRICT",
+      "public static final enum com.yahoo.jdisc.http.Cookie$SameSite LAX"
+    ]
+  },
   "com.yahoo.jdisc.http.Cookie": {
     "superClass": "java.lang.Object",
     "interfaces": [],
@@ -393,6 +413,8 @@
       "public com.yahoo.jdisc.http.Cookie setDomain(java.lang.String)",
       "public java.lang.String getPath()",
       "public com.yahoo.jdisc.http.Cookie setPath(java.lang.String)",
+      "public com.yahoo.jdisc.http.Cookie$SameSite getSameSite()",
+      "public com.yahoo.jdisc.http.Cookie setSameSite(com.yahoo.jdisc.http.Cookie$SameSite)",
       "public int getMaxAge(java.util.concurrent.TimeUnit)",
       "public com.yahoo.jdisc.http.Cookie setMaxAge(int, java.util.concurrent.TimeUnit)",
       "public boolean isSecure()",
@@ -740,23 +762,92 @@
       "public com.yahoo.jdisc.http.ServerConfig$Builder removeRawPostBodyForWwwUrlEncodedPost(boolean)",
       "public com.yahoo.jdisc.http.ServerConfig$Builder filter(com.yahoo.jdisc.http.ServerConfig$Filter$Builder)",
       "public com.yahoo.jdisc.http.ServerConfig$Builder filter(java.util.List)",
+      "public com.yahoo.jdisc.http.ServerConfig$Builder defaultFilters(com.yahoo.jdisc.http.ServerConfig$DefaultFilters$Builder)",
+      "public com.yahoo.jdisc.http.ServerConfig$Builder defaultFilters(java.util.List)",
+      "public com.yahoo.jdisc.http.ServerConfig$Builder strictFiltering(boolean)",
       "public com.yahoo.jdisc.http.ServerConfig$Builder maxWorkerThreads(int)",
+      "public com.yahoo.jdisc.http.ServerConfig$Builder minWorkerThreads(int)",
       "public com.yahoo.jdisc.http.ServerConfig$Builder stopTimeout(double)",
       "public com.yahoo.jdisc.http.ServerConfig$Builder jmx(com.yahoo.jdisc.http.ServerConfig$Jmx$Builder)",
       "public com.yahoo.jdisc.http.ServerConfig$Builder metric(com.yahoo.jdisc.http.ServerConfig$Metric$Builder)",
       "public com.yahoo.jdisc.http.ServerConfig$Builder accessLog(com.yahoo.jdisc.http.ServerConfig$AccessLog$Builder)",
+      "public com.yahoo.jdisc.http.ServerConfig$Builder connectionLog(com.yahoo.jdisc.http.ServerConfig$ConnectionLog$Builder)",
       "public final boolean dispatchGetConfig(com.yahoo.config.ConfigInstance$Producer)",
       "public final java.lang.String getDefMd5()",
       "public final java.lang.String getDefName()",
       "public final java.lang.String getDefNamespace()",
+      "public final boolean getApplyOnRestart()",
+      "public final void setApplyOnRestart(boolean)",
       "public com.yahoo.jdisc.http.ServerConfig build()"
     ],
     "fields": [
       "public java.util.List filter",
+      "public java.util.List defaultFilters",
       "public com.yahoo.jdisc.http.ServerConfig$Jmx$Builder jmx",
       "public com.yahoo.jdisc.http.ServerConfig$Metric$Builder metric",
-      "public com.yahoo.jdisc.http.ServerConfig$AccessLog$Builder accessLog"
+      "public com.yahoo.jdisc.http.ServerConfig$AccessLog$Builder accessLog",
+      "public com.yahoo.jdisc.http.ServerConfig$ConnectionLog$Builder connectionLog"
     ]
+  },
+  "com.yahoo.jdisc.http.ServerConfig$ConnectionLog$Builder": {
+    "superClass": "java.lang.Object",
+    "interfaces": [
+      "com.yahoo.config.ConfigBuilder"
+    ],
+    "attributes": [
+      "public"
+    ],
+    "methods": [
+      "public void <init>()",
+      "public void <init>(com.yahoo.jdisc.http.ServerConfig$ConnectionLog)",
+      "public com.yahoo.jdisc.http.ServerConfig$ConnectionLog$Builder enabled(boolean)",
+      "public com.yahoo.jdisc.http.ServerConfig$ConnectionLog build()"
+    ],
+    "fields": []
+  },
+  "com.yahoo.jdisc.http.ServerConfig$ConnectionLog": {
+    "superClass": "com.yahoo.config.InnerNode",
+    "interfaces": [],
+    "attributes": [
+      "public",
+      "final"
+    ],
+    "methods": [
+      "public void <init>(com.yahoo.jdisc.http.ServerConfig$ConnectionLog$Builder)",
+      "public boolean enabled()"
+    ],
+    "fields": []
+  },
+  "com.yahoo.jdisc.http.ServerConfig$DefaultFilters$Builder": {
+    "superClass": "java.lang.Object",
+    "interfaces": [
+      "com.yahoo.config.ConfigBuilder"
+    ],
+    "attributes": [
+      "public"
+    ],
+    "methods": [
+      "public void <init>()",
+      "public void <init>(com.yahoo.jdisc.http.ServerConfig$DefaultFilters)",
+      "public com.yahoo.jdisc.http.ServerConfig$DefaultFilters$Builder filterId(java.lang.String)",
+      "public com.yahoo.jdisc.http.ServerConfig$DefaultFilters$Builder localPort(int)",
+      "public com.yahoo.jdisc.http.ServerConfig$DefaultFilters build()"
+    ],
+    "fields": []
+  },
+  "com.yahoo.jdisc.http.ServerConfig$DefaultFilters": {
+    "superClass": "com.yahoo.config.InnerNode",
+    "interfaces": [],
+    "attributes": [
+      "public",
+      "final"
+    ],
+    "methods": [
+      "public void <init>(com.yahoo.jdisc.http.ServerConfig$DefaultFilters$Builder)",
+      "public java.lang.String filterId()",
+      "public int localPort()"
+    ],
+    "fields": []
   },
   "com.yahoo.jdisc.http.ServerConfig$Filter$Builder": {
     "superClass": "java.lang.Object",
@@ -893,11 +984,16 @@
       "public boolean removeRawPostBodyForWwwUrlEncodedPost()",
       "public java.util.List filter()",
       "public com.yahoo.jdisc.http.ServerConfig$Filter filter(int)",
+      "public java.util.List defaultFilters()",
+      "public com.yahoo.jdisc.http.ServerConfig$DefaultFilters defaultFilters(int)",
+      "public boolean strictFiltering()",
       "public int maxWorkerThreads()",
+      "public int minWorkerThreads()",
       "public double stopTimeout()",
       "public com.yahoo.jdisc.http.ServerConfig$Jmx jmx()",
       "public com.yahoo.jdisc.http.ServerConfig$Metric metric()",
-      "public com.yahoo.jdisc.http.ServerConfig$AccessLog accessLog()"
+      "public com.yahoo.jdisc.http.ServerConfig$AccessLog accessLog()",
+      "public com.yahoo.jdisc.http.ServerConfig$ConnectionLog connectionLog()"
     ],
     "fields": [
       "public static final java.lang.String CONFIG_DEF_MD5",
@@ -924,6 +1020,8 @@
       "public final java.lang.String getDefMd5()",
       "public final java.lang.String getDefName()",
       "public final java.lang.String getDefNamespace()",
+      "public final boolean getApplyOnRestart()",
+      "public final void setApplyOnRestart(boolean)",
       "public com.yahoo.jdisc.http.ServletPathsConfig build()"
     ],
     "fields": [

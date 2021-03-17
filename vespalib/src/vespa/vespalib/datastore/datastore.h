@@ -54,7 +54,10 @@ public:
     /**
      * Hold element(s).
      */
-    void holdElem(EntryRef ref, size_t numElems, size_t extraBytes = 0);
+    void holdElem(EntryRef ref, size_t numElems) {
+        holdElem(ref, numElems, 0);
+    }
+    void holdElem(EntryRef ref, size_t numElems, size_t extraBytes);
 
     /**
      * Trim elem hold list, freeing elements that no longer needs to be held.
@@ -92,11 +95,11 @@ class DataStore : public DataStoreT<RefT>
 protected:
     typedef DataStoreT<RefT> ParentType;
     using ParentType::ensureBufferCapacity;
-    using ParentType::_activeBufferIds;
+    using ParentType::_primary_buffer_ids;
     using ParentType::_freeListLists;
     using ParentType::getEntry;
     using ParentType::dropBuffers;
-    using ParentType::initActiveBuffers;
+    using ParentType::init_primary_buffers;
     using ParentType::addType;
     using BufferTypeUP = std::unique_ptr<BufferType<EntryType>>;
 

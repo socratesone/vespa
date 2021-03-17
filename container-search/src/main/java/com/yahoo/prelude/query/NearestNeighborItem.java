@@ -22,9 +22,10 @@ public class NearestNeighborItem extends SimpleTaggableItem {
 
     private int targetNumHits = 0;
     private int hnswExploreAdditionalHits = 0;
+    private double distanceThreshold = Double.POSITIVE_INFINITY;
     private boolean approximate = true;
     private String field;
-    private String queryTensorName;
+    private final String queryTensorName;
 
     public NearestNeighborItem(String fieldName, String queryTensorName) {
         this.field = fieldName;
@@ -37,6 +38,9 @@ public class NearestNeighborItem extends SimpleTaggableItem {
     /** Returns the field name */
     public String getIndexName() { return field; }
 
+    /** Returns the distance threshold for nearest-neighbor hits */
+    public double getDistanceThreshold () { return this.distanceThreshold ; }
+
     /** Returns the number of extra hits to explore in HNSW algorithm */
     public int getHnswExploreAdditionalHits() { return hnswExploreAdditionalHits; }
 
@@ -48,6 +52,9 @@ public class NearestNeighborItem extends SimpleTaggableItem {
 
     /** Set the K number of hits to produce */
     public void setTargetNumHits(int target) { this.targetNumHits = target; }
+
+    /** Set the distance threshold for nearest-neighbor hits */
+    public void setDistanceThreshold(double threshold) { this.distanceThreshold = threshold; }
 
     /** Set the number of extra hits to explore in HNSW algorithm */
     public void setHnswExploreAdditionalHits(int num) { this.hnswExploreAdditionalHits = num; }
@@ -72,9 +79,20 @@ public class NearestNeighborItem extends SimpleTaggableItem {
         super.encodeThis(buffer);
         putString(field, buffer);
         putString(queryTensorName, buffer);
+        int approxNum = (approximate ? 1 : 0);
+        // XXX remove this flag later, after backend change:
+        boolean sendDistanceThreshold = true;
+        if (sendDistanceThreshold) {
+            // XXX and remove this bit:
+            approxNum |= 0x40; // temporary flag bit
+        }
         IntegerCompressor.putCompressedPositiveNumber(targetNumHits, buffer);
-        IntegerCompressor.putCompressedPositiveNumber((approximate ? 1 : 0), buffer);
+        IntegerCompressor.putCompressedPositiveNumber(approxNum, buffer);
         IntegerCompressor.putCompressedPositiveNumber(hnswExploreAdditionalHits, buffer);
+        // XXX and remove this if:
+        if (sendDistanceThreshold) {
+            buffer.putDouble(distanceThreshold);
+        }
         return 1;  // number of encoded stack dump items
     }
 
@@ -83,6 +101,7 @@ public class NearestNeighborItem extends SimpleTaggableItem {
         buffer.append("{field=").append(field);
         buffer.append(",queryTensorName=").append(queryTensorName);
         buffer.append(",hnsw.exploreAdditionalHits=").append(hnswExploreAdditionalHits);
+        buffer.append(",distanceThreshold=").append(distanceThreshold);
         buffer.append(",approximate=").append(approximate);
         buffer.append(",targetHits=").append(targetNumHits).append("}");
     }
@@ -93,6 +112,7 @@ public class NearestNeighborItem extends SimpleTaggableItem {
         discloser.addProperty("field", field);
         discloser.addProperty("queryTensorName", queryTensorName);
         discloser.addProperty("hnsw.exploreAdditionalHits", hnswExploreAdditionalHits);
+        discloser.addProperty("distanceThreshold", distanceThreshold);
         discloser.addProperty("approximate", approximate);
         discloser.addProperty("targetHits", targetNumHits);
     }

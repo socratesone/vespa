@@ -4,7 +4,6 @@ package com.yahoo.jdisc.http.server.jetty;
 import com.google.common.base.Preconditions;
 import com.yahoo.jdisc.Request;
 import com.yahoo.jdisc.Response;
-import com.yahoo.jdisc.application.BindingSet;
 import com.yahoo.jdisc.handler.AbstractRequestHandler;
 import com.yahoo.jdisc.handler.BindingNotFoundException;
 import com.yahoo.jdisc.handler.CompletionHandler;
@@ -13,10 +12,10 @@ import com.yahoo.jdisc.handler.RequestDeniedException;
 import com.yahoo.jdisc.handler.RequestHandler;
 import com.yahoo.jdisc.handler.ResponseHandler;
 import com.yahoo.jdisc.http.HttpRequest;
-import com.yahoo.jdisc.http.core.CompletionHandlers;
 import com.yahoo.jdisc.http.filter.RequestFilter;
 import com.yahoo.jdisc.http.filter.ResponseFilter;
 
+import javax.servlet.http.HttpServletRequest;
 import java.nio.ByteBuffer;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -42,13 +41,12 @@ class FilteringRequestHandler extends AbstractRequestHandler {
 
     };
 
-    private final BindingSet<RequestFilter> requestFilters;
-    private final BindingSet<ResponseFilter> responseFilters;
+    private final FilterResolver filterResolver;
+    private final HttpServletRequest servletRequest;
 
-    public FilteringRequestHandler(BindingSet<RequestFilter> requestFilters, 
-                                   BindingSet<ResponseFilter> responseFilters) {
-        this.requestFilters = requestFilters;
-        this.responseFilters = responseFilters;
+    public FilteringRequestHandler(FilterResolver filterResolver, HttpServletRequest servletRequest) {
+        this.filterResolver = filterResolver;
+        this.servletRequest = servletRequest;
     }
 
     @Override
@@ -56,8 +54,11 @@ class FilteringRequestHandler extends AbstractRequestHandler {
         Preconditions.checkArgument(request instanceof HttpRequest, "Expected HttpRequest, got " + request);
         Objects.requireNonNull(originalResponseHandler, "responseHandler");
 
-        RequestFilter requestFilter = requestFilters.resolve(request.getUri());
-        ResponseFilter responseFilter = responseFilters.resolve(request.getUri());
+        RequestFilter requestFilter = filterResolver.resolveRequestFilter(servletRequest, request.getUri())
+                .orElse(null);
+        ResponseFilter responseFilter = filterResolver.resolveResponseFilter(servletRequest, request.getUri())
+                .orElse(null);
+
         // Not using request.connect() here - it adds logic for error handling that we'd rather leave to the framework.
         RequestHandler resolvedRequestHandler = request.container().resolveHandler(request);
 

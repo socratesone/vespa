@@ -13,6 +13,7 @@
   "currentRebootGeneration": 0,
   "failCount": 0,
   "wantToRetire": false,
+  "preferToRetire": false,
   "wantToDeprovision": false,
   "history": [
     {
@@ -25,5 +26,6 @@
     "127.0.9.1",
     "::9:1"
   ],
-  "additionalIpAddresses": []
+  "additionalIpAddresses": [],
+  "additionalHostnames": ["node9-1.yahoo.com"]
 }

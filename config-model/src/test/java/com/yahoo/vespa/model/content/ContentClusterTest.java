@@ -1,4 +1,4 @@
-// Copyright 2017 Yahoo Holdings. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Verizon Media. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.model.content;
 
 import com.yahoo.config.model.api.ModelContext;
@@ -10,19 +10,23 @@ import com.yahoo.config.model.test.TestRoot;
 import com.yahoo.config.provision.Environment;
 import com.yahoo.config.provision.RegionName;
 import com.yahoo.config.provision.Zone;
+import com.yahoo.container.ComponentsConfig;
 import com.yahoo.messagebus.routing.RoutingTableSpec;
 import com.yahoo.metrics.MetricsmanagerConfig;
 import com.yahoo.vespa.config.content.AllClustersBucketSpacesConfig;
+import com.yahoo.vespa.config.content.DistributionConfig;
 import com.yahoo.vespa.config.content.FleetcontrollerConfig;
 import com.yahoo.vespa.config.content.StorDistributionConfig;
 import com.yahoo.vespa.config.content.StorFilestorConfig;
-import com.yahoo.vespa.config.content.core.StorCommunicationmanagerConfig;
 import com.yahoo.vespa.config.content.core.StorDistributormanagerConfig;
 import com.yahoo.vespa.config.content.core.StorServerConfig;
 import com.yahoo.vespa.config.search.DispatchConfig;
 import com.yahoo.vespa.config.search.core.ProtonConfig;
 import com.yahoo.vespa.model.VespaModel;
+import com.yahoo.vespa.model.admin.clustercontroller.ClusterControllerContainer;
+import com.yahoo.vespa.model.admin.clustercontroller.ClusterControllerContainerCluster;
 import com.yahoo.vespa.model.container.ContainerCluster;
+import com.yahoo.vespa.model.container.component.Component;
 import com.yahoo.vespa.model.content.cluster.ContentCluster;
 import com.yahoo.vespa.model.content.engines.ProtonEngine;
 import com.yahoo.vespa.model.content.utils.ContentClusterBuilder;
@@ -30,7 +34,6 @@ import com.yahoo.vespa.model.content.utils.ContentClusterUtils;
 import com.yahoo.vespa.model.content.utils.SchemaBuilder;
 import com.yahoo.vespa.model.routing.DocumentProtocol;
 import com.yahoo.vespa.model.routing.Routing;
-import com.yahoo.vespa.model.search.SearchNode;
 import com.yahoo.vespa.model.test.utils.ApplicationPackageUtils;
 import com.yahoo.vespa.model.test.utils.VespaModelCreatorWithMockPkg;
 import org.junit.Rule;
@@ -40,12 +43,15 @@ import org.junit.rules.ExpectedException;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
+import static java.util.stream.Collectors.toList;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNotSame;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
@@ -99,12 +105,22 @@ public class ContentClusterTest extends ContentBaseTest {
             "  </group>" +
             "</content>"
         );
+        DistributionConfig.Builder distributionBuilder = new DistributionConfig.Builder();
+        cc.getConfig(distributionBuilder);
+        DistributionConfig distributionConfig = distributionBuilder.build();
+        assertEquals(3, distributionConfig.cluster("storage").ready_copies());
+        assertEquals(15, distributionConfig.cluster("storage").initial_redundancy());
+        assertEquals(15, distributionConfig.cluster("storage").redundancy());
+        assertEquals(4, distributionConfig.cluster("storage").group().size());
+        assertEquals(1, distributionConfig.cluster().size());
+
         StorDistributionConfig.Builder storBuilder = new StorDistributionConfig.Builder();
         cc.getConfig(storBuilder);
         StorDistributionConfig storConfig = new StorDistributionConfig(storBuilder);
         assertEquals(15, storConfig.initial_redundancy());
         assertEquals(15, storConfig.redundancy());
         assertEquals(3, storConfig.ready_copies());
+
         ProtonConfig.Builder protonBuilder = new ProtonConfig.Builder();
         cc.getSearch().getConfig(protonBuilder);
         ProtonConfig protonConfig = new ProtonConfig(protonBuilder);
@@ -132,12 +148,20 @@ public class ContentClusterTest extends ContentBaseTest {
             "  </group>" +
             "</content>"
         );
+        DistributionConfig.Builder distributionBuilder = new DistributionConfig.Builder();
+        cc.getConfig(distributionBuilder);
+        DistributionConfig distributionConfig = distributionBuilder.build();
+        assertEquals(3, distributionConfig.cluster("storage").ready_copies());
+        assertEquals(4, distributionConfig.cluster("storage").initial_redundancy());
+        assertEquals(5, distributionConfig.cluster("storage").redundancy());
+
         StorDistributionConfig.Builder storBuilder = new StorDistributionConfig.Builder();
         cc.getConfig(storBuilder);
         StorDistributionConfig storConfig = new StorDistributionConfig(storBuilder);
         assertEquals(4, storConfig.initial_redundancy());
         assertEquals(5, storConfig.redundancy());
         assertEquals(3, storConfig.ready_copies());
+
         ProtonConfig.Builder protonBuilder = new ProtonConfig.Builder();
         cc.getSearch().getConfig(protonBuilder);
         ProtonConfig protonConfig = new ProtonConfig(protonBuilder);
@@ -163,8 +187,7 @@ public class ContentClusterTest extends ContentBaseTest {
 
     @Test
     public void testRedundancyDefaults() {
-        StorDistributionConfig.Builder builder = new StorDistributionConfig.Builder();
-        parse(
+        ContentCluster cc = parse(
             "<content version=\"1.0\" id=\"storage\">\n" +
             "  <documents/>" +
             "  <group>" +
@@ -173,8 +196,15 @@ public class ContentClusterTest extends ContentBaseTest {
             "    <node hostalias=\"mockhost\" distribution-key=\"2\"/>\"" +
             "  </group>" +
             "</content>"
-        ).getConfig(builder);
+        );
 
+        DistributionConfig.Builder distributionBuilder = new DistributionConfig.Builder();
+        cc.getConfig(distributionBuilder);
+        DistributionConfig distributionConfig = distributionBuilder.build();
+        assertEquals(3, distributionConfig.cluster("storage").redundancy());
+
+        StorDistributionConfig.Builder builder = new StorDistributionConfig.Builder();
+        cc.getConfig(builder);
         StorDistributionConfig config = new StorDistributionConfig(builder);
         assertEquals(2, config.initial_redundancy());
         assertEquals(3, config.redundancy());
@@ -219,55 +249,59 @@ public class ContentClusterTest extends ContentBaseTest {
             "</services>";
 
         List<String> sds = ApplicationPackageUtils.generateSchemas("type1", "type2");
-        VespaModel model = (new VespaModelCreatorWithMockPkg(null, xml, sds)).create();
+        VespaModel model = new VespaModelCreatorWithMockPkg(null, xml, sds).create();
         assertEquals(2, model.getContentClusters().get("bar").getDocumentDefinitions().size());
-        ContainerCluster cluster = model.getAdmin().getClusterControllers();
+        ContainerCluster<?> cluster = model.getAdmin().getClusterControllers();
         assertEquals(3, cluster.getContainers().size());
     }
 
     VespaModel createEnd2EndOneNode(ModelContext.Properties properties) {
         String services =
                 "<?xml version='1.0' encoding='UTF-8' ?>" +
-                        "<services version='1.0'>" +
-                        "  <admin version='2.0'>" +
-                        "    <adminserver hostalias='node1'/>" +
-                        "  </admin>"  +
-                        "   <container id='default' version='1.0'>" +
-                        "     <search/>" +
-                        "     <nodes>" +
-                        "       <node hostalias='node1'/>" +
-                        "     </nodes>" +
-                        "   </container>" +
-                        "   <content id='storage' version='1.0'>" +
-                        "     <redundancy>2</redundancy>" +
-                        "     <group>" +
-                        "       <node distribution-key='0' hostalias='node1'/>" +
-                        "       <node distribution-key='1' hostalias='node1'/>" +
-                        "     </group>" +
-                        "     <tuning>" +
-                        "       <cluster-controller>" +
-                        "         <transition-time>0</transition-time>" +
-                        "       </cluster-controller>" +
-                        "     </tuning>" +
-                        "     <documents>" +
-                        "       <document mode='index' type='type1'/>" +
-                        "     </documents>" +
-                        "     <engine>" +
-                        "       <proton/>" +
-                        "     </engine>" +
-                        "   </content>" +
-                        " </services>";
+                "<services version='1.0'>" +
+                "  <admin version='2.0'>" +
+                "    <adminserver hostalias='node1'/>" +
+                "  </admin>" +
+                "   <container id='default' version='1.0'>" +
+                "     <search/>" +
+                "     <nodes>" +
+                "       <node hostalias='node1'/>" +
+                "     </nodes>" +
+                "   </container>" +
+                "   <content id='storage' version='1.0'>" +
+                "     <redundancy>2</redundancy>" +
+                "     <group>" +
+                "       <node distribution-key='0' hostalias='node1'/>" +
+                "       <node distribution-key='1' hostalias='node1'/>" +
+                "     </group>" +
+                "     <tuning>" +
+                "       <cluster-controller>" +
+                "         <transition-time>0</transition-time>" +
+                "       </cluster-controller>" +
+                "     </tuning>" +
+                "     <documents>" +
+                "       <document mode='index' type='type1'/>" +
+                "     </documents>" +
+                "     <engine>" +
+                "       <proton/>" +
+                "     </engine>" +
+                "   </content>" +
+                " </services>";
+        return createEnd2EndOneNode(properties, services);
+    }
 
+    VespaModel createEnd2EndOneNode(ModelContext.Properties properties, String services) {
         DeployState.Builder deployStateBuilder = new DeployState.Builder().properties(properties);
         List<String> sds = ApplicationPackageUtils.generateSchemas("type1");
         return (new VespaModelCreatorWithMockPkg(null, services, sds)).create(deployStateBuilder);
     }
+
     @Test
     public void testEndToEndOneNode() {
         VespaModel model = createEnd2EndOneNode(new TestProperties());
 
         assertEquals(1, model.getContentClusters().get("storage").getDocumentDefinitions().size());
-        ContainerCluster cluster = model.getAdmin().getClusterControllers();
+        ContainerCluster<?> cluster = model.getAdmin().getClusterControllers();
         assertEquals(1, cluster.getContainers().size());
     }
 
@@ -361,8 +395,7 @@ public class ContentClusterTest extends ContentBaseTest {
                 "</content>"
             );
             fail("no exception thrown");
-        } catch (Exception e) {
-        }
+        } catch (Exception e) { /* ignore */ }
     }
 
     @Test
@@ -382,8 +415,7 @@ public class ContentClusterTest extends ContentBaseTest {
                 "</content>"
             );
             fail("no exception thrown");
-        } catch (Exception e) {
-        }
+        } catch (Exception e) { /* ignore */ }
     }
 
     FleetcontrollerConfig getFleetControllerConfig(String xml) {
@@ -547,6 +579,13 @@ public class ContentClusterTest extends ContentBaseTest {
             "  </nodes>\n" +
             "</content>"
         );
+
+        DistributionConfig.Builder bob = new DistributionConfig.Builder();
+        cluster.getConfig(bob);
+        DistributionConfig.Cluster.Group group = bob.build().cluster("test").group(0);
+        assertEquals("invalid", group.name());
+        assertEquals("invalid", group.index());
+        assertEquals(2, group.nodes().size());
 
         StorDistributionConfig.Builder builder = new StorDistributionConfig.Builder();
 
@@ -950,22 +989,6 @@ public class ContentClusterTest extends ContentBaseTest {
         verifyTopKProbabilityPropertiesControl();
     }
 
-    private boolean resolveContentNodeBtreeDbConfigWithFeatureFlag(boolean flagEnabledBtreeDb) {
-        VespaModel model = createEnd2EndOneNode(new TestProperties().setUseContentNodeBtreeDB(flagEnabledBtreeDb));
-
-        ContentCluster cc = model.getContentClusters().get("storage");
-        var builder = new StorServerConfig.Builder();
-        cc.getStorageNodes().getConfig(builder);
-
-        return (new StorServerConfig(builder)).use_content_node_btree_bucket_db();
-    }
-
-    @Test
-    public void default_content_node_btree_usage_controlled_by_properties() {
-        assertFalse(resolveContentNodeBtreeDbConfigWithFeatureFlag(false));
-        assertTrue(resolveContentNodeBtreeDbConfigWithFeatureFlag(true));
-    }
-
     private boolean resolveThreePhaseUpdateConfigWithFeatureFlag(boolean flagEnableThreePhase) {
         VespaModel model = createEnd2EndOneNode(new TestProperties().setUseThreePhaseUpdates(flagEnableThreePhase));
 
@@ -982,56 +1005,137 @@ public class ContentClusterTest extends ContentBaseTest {
         assertTrue(resolveThreePhaseUpdateConfigWithFeatureFlag(true));
     }
 
-    void assertDirectStorageApiRpcConfig(boolean expUseDirectStorageApiRpc, ContentNode node) {
-        var builder = new StorCommunicationmanagerConfig.Builder();
-        node.getConfig(builder);
-        var config = new StorCommunicationmanagerConfig(builder);
-        assertEquals(expUseDirectStorageApiRpc, config.use_direct_storageapi_rpc());
+    private double resolveMaxDeadBytesRatio(double maxDeadBytesRatio) {
+        VespaModel model = createEnd2EndOneNode(new TestProperties().maxDeadBytesRatio(maxDeadBytesRatio));
+        ContentCluster cc = model.getContentClusters().get("storage");
+        ProtonConfig.Builder protonBuilder = new ProtonConfig.Builder();
+        cc.getSearch().getConfig(protonBuilder);
+        ProtonConfig protonConfig = new ProtonConfig(protonBuilder);
+        assertEquals(1, protonConfig.documentdb().size());
+        return protonConfig.documentdb(0).allocation().max_dead_bytes_ratio();
     }
 
-    void assertDirectStorageApiRpcFlagIsPropagatedToConfig(boolean useDirectStorageApiRpc) {
-        VespaModel model = createEnd2EndOneNode(new TestProperties().setUseDirectStorageApiRpc(useDirectStorageApiRpc));
+    @Test
+    public void default_max_dead_bytes_ratio_config_controlled_by_properties() {
+        assertEquals(0.2, resolveMaxDeadBytesRatio(0.2), 1e-5);
+        assertEquals(0.1, resolveMaxDeadBytesRatio(0.1), 1e-5);
+    }
+
+    void assertZookeeperServerImplementation(String expectedClassName) {
+        VespaModel model = createEnd2EndOneNode(new TestProperties().setMultitenant(true));
 
         ContentCluster cc = model.getContentClusters().get("storage");
-        assertFalse(cc.getDistributorNodes().getChildren().isEmpty());
-        for (Distributor d : cc.getDistributorNodes().getChildren().values()) {
-            assertDirectStorageApiRpcConfig(useDirectStorageApiRpc, d);
-        }
-        assertFalse(cc.getStorageNodes().getChildren().isEmpty());
-        for (StorageNode node : cc.getStorageNodes().getChildren().values()) {
-            assertDirectStorageApiRpcConfig(useDirectStorageApiRpc, node);
+        for (ClusterControllerContainer c : cc.getClusterControllers().getContainers()) {
+            var builder = new ComponentsConfig.Builder();
+            c.getConfig(builder);
+            assertEquals(1, new ComponentsConfig(builder).components().stream()
+                    .filter(component -> component.classId().equals(expectedClassName))
+                    .count());
         }
     }
 
     @Test
-    public void use_direct_storage_api_rpc_config_is_controlled_by_properties() {
-        assertDirectStorageApiRpcFlagIsPropagatedToConfig(false);
-        assertDirectStorageApiRpcFlagIsPropagatedToConfig(true);
+    public void reconfigurableZookeeperServerComponentsForClusterController() {
+        assertZookeeperServerImplementation("com.yahoo.vespa.zookeeper.ReconfigurableVespaZooKeeperServer");
+        assertZookeeperServerImplementation("com.yahoo.vespa.zookeeper.Reconfigurer");
+        assertZookeeperServerImplementation("com.yahoo.vespa.zookeeper.VespaZooKeeperAdminImpl");
     }
 
+    private int resolveMaxInhibitedGroupsConfigWithFeatureFlag(int maxGroups) {
+        VespaModel model = createEnd2EndOneNode(new TestProperties().maxActivationInhibitedOutOfSyncGroups(maxGroups));
+
+        ContentCluster cc = model.getContentClusters().get("storage");
+        var builder = new StorDistributormanagerConfig.Builder();
+        cc.getDistributorNodes().getConfig(builder);
+
+        return (new StorDistributormanagerConfig(builder)).max_activation_inhibited_out_of_sync_groups();
+    }
 
     @Test
-    public void use_fast_value_tensor_implementation_config_is_controlled_by_properties() {
-        assertUseFastValueTensorImplementationFlagIsPropagatedToConfig(false);
-        assertUseFastValueTensorImplementationFlagIsPropagatedToConfig(true);
+    public void default_distributor_max_inhibited_group_activation_config_controlled_by_properties() {
+        assertEquals(0, resolveMaxInhibitedGroupsConfigWithFeatureFlag(0));
+        assertEquals(2, resolveMaxInhibitedGroupsConfigWithFeatureFlag(2));
     }
 
-    void assertUseFastValueTensorImplementationFlagIsPropagatedToConfig(boolean useFastValueTensorImplementation) {
-        VespaModel model = createEnd2EndOneNode(new TestProperties().setUseFastValueTensorImplementation(useFastValueTensorImplementation));
-        ContentCluster cc = model.getContentClusters().get("storage");
-        var node = cc.getSearch().getSearchNodes().get(0);
-        if (useFastValueTensorImplementation) {
-            assertTensorImplementationConfig(ProtonConfig.Tensor_implementation.FAST_VALUE, node);
-        } else {
-            assertTensorImplementationConfig(ProtonConfig.Tensor_implementation.TENSOR_ENGINE, node);
-        }
-    }
+    @Test
+    public void testDedicatedClusterControllers() {
+        VespaModel noContentModel = createEnd2EndOneNode(new TestProperties().setHostedVespa(true)
+                                                                             .setMultitenant(true),
+                                                         "<?xml version='1.0' encoding='UTF-8' ?>" +
+                                                         "<services version='1.0'>" +
+                                                         "  <container id='default' version='1.0' />" +
+                                                         " </services>");
+        assertEquals(Map.of(), noContentModel.getContentClusters());
+        assertNull("No cluster controller without content", noContentModel.getAdmin().getClusterControllers());
 
-    void assertTensorImplementationConfig(ProtonConfig.Tensor_implementation.Enum exp, SearchNode node) {
-        var builder = new ProtonConfig.Builder();
-        node.getConfig(builder);
-        var config = new ProtonConfig(builder);
-        assertEquals(exp, config.tensor_implementation());
+        VespaModel oneContentModel = createEnd2EndOneNode(new TestProperties().setHostedVespa(true)
+                                                                              .setMultitenant(true),
+                                                          "<?xml version='1.0' encoding='UTF-8' ?>" +
+                                                          "<services version='1.0'>" +
+                                                          "  <container id='default' version='1.0' />" +
+                                                          "  <content id='storage' version='1.0'>" +
+                                                          "    <redundancy>1</redundancy>" +
+                                                          "    <documents>" +
+                                                          "      <document mode='index' type='type1' />" +
+                                                          "    </documents>" +
+                                                          "  </content>" +
+                                                          " </services>");
+        assertNull("No own cluster controller for content", oneContentModel.getContentClusters().get("storage").getClusterControllers());
+        assertNotNull("Shared cluster controller with content", oneContentModel.getAdmin().getClusterControllers());
+
+        String twoContentServices = "<?xml version='1.0' encoding='UTF-8' ?>" +
+                                    "<services version='1.0'>" +
+                                    "  <container id='default' version='1.0' />" +
+                                    "  <content id='storage' version='1.0'>" +
+                                    "    <redundancy>1</redundancy>" +
+                                    "    <documents>" +
+                                    "      <document mode='index' type='type1' />" +
+                                    "    </documents>" +
+                                    "    <tuning>" +
+                                    "      <cluster-controller>" +
+                                    "        <min-distributor-up-ratio>0.618</min-distributor-up-ratio>" +
+                                    "      </cluster-controller>" +
+                                    "    </tuning>" +
+                                    "  </content>" +
+                                    "  <content id='dev-null' version='1.0'>" +
+                                    "    <redundancy>1</redundancy>" +
+                                    "    <documents>" +
+                                    "      <document mode='index' type='type1' />" +
+                                    "    </documents>" +
+                                    "    <tuning>" +
+                                    "      <cluster-controller>" +
+                                    "        <min-distributor-up-ratio>0.418</min-distributor-up-ratio>" +
+                                    "      </cluster-controller>" +
+                                    "    </tuning>" +
+                                    "  </content>" +
+                                    " </services>";
+        VespaModel twoContentModel = createEnd2EndOneNode(new TestProperties().setHostedVespa(true)
+                                                                              .setMultitenant(true),
+                                                          twoContentServices);
+        assertNull("No own cluster controller for content", twoContentModel.getContentClusters().get("storage").getClusterControllers());
+        assertNull("No own cluster controller for content", twoContentModel.getContentClusters().get("dev-null").getClusterControllers());
+        assertNotNull("Shared cluster controller with content", twoContentModel.getAdmin().getClusterControllers());
+
+        Map<String, ContentCluster> clustersWithOwnCCC = createEnd2EndOneNode(new TestProperties().setMultitenant(true), twoContentServices).getContentClusters();
+        ClusterControllerContainerCluster clusterControllers = twoContentModel.getAdmin().getClusterControllers();
+        assertEquals("Union of components in own clusters is equal to those in shared cluster",
+                     clusterControllers.getAllComponents().stream()
+                                    .map(Component::getComponentId)
+                                    .collect(toList()),
+                     clustersWithOwnCCC.values().stream()
+                                       .flatMap(cluster -> Optional.ofNullable(cluster.getClusterControllers()).stream()
+                                                                   .flatMap(c -> c.getAllComponents().stream()))
+                                       .map(Component::getComponentId)
+                                       .collect(toList()));
+
+        assertEquals(1, clusterControllers.reindexingContext().documentTypesForCluster("storage").size());
+        assertEquals(1, clusterControllers.reindexingContext().documentTypesForCluster("dev-null").size());
+        var storageBuilder = new FleetcontrollerConfig.Builder();
+        var devNullBuilder = new FleetcontrollerConfig.Builder();
+        twoContentModel.getConfig(storageBuilder, "admin/standalone/cluster-controllers/0/components/clustercontroller-storage-configurer");
+        twoContentModel.getConfig(devNullBuilder, "admin/standalone/cluster-controllers/0/components/clustercontroller-dev-null-configurer");
+        assertEquals(0.618, storageBuilder.build().min_distributor_up_ratio(), 1e-9);
+        assertEquals(0.418, devNullBuilder.build().min_distributor_up_ratio(), 1e-9);
     }
 
 }

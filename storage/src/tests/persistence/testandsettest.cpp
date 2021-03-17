@@ -1,6 +1,6 @@
 // Copyright 2017 Yahoo Holdings. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 // @author Vegard Sjonfjell
-#include <vespa/storage/persistence/persistencethread.h>
+#include <vespa/storage/persistence/persistencehandler.h>
 #include <tests/persistence/persistencetestutils.h>
 #include <vespa/document/test/make_document_bucket.h>
 #include <vespa/documentapi/messagebus/messages/testandsetcondition.h>
@@ -9,6 +9,7 @@
 #include <vespa/document/update/assignvalueupdate.h>
 #include <vespa/document/fieldset/fieldsets.h>
 #include <vespa/persistence/spi/test.h>
+#include <vespa/persistence/spi/persistenceprovider.h>
 #include <functional>
 
 using std::unique_ptr;
@@ -32,13 +33,16 @@ struct TestAndSetTest : SingleDiskPersistenceTestUtils {
     const document::StringFieldValue NEW_CONTENT{"Freshly pressed and squeezed content"};
     const document::Bucket BUCKET = makeDocumentBucket(BUCKET_ID);
 
-    unique_ptr<PersistenceThread> thread;
+    unique_ptr<PersistenceHandler> persistenceHandler;
+    const AsyncHandler * asyncHandler;
     shared_ptr<document::Document> testDoc;
     document::DocumentId testDocId;
     spi::Context context;
 
     TestAndSetTest()
-        : context(spi::LoadType(0, "default"), 0, 0)
+        : persistenceHandler(),
+          asyncHandler(nullptr),
+          context(0, 0)
     {}
 
     void SetUp() override {
@@ -47,14 +51,12 @@ struct TestAndSetTest : SingleDiskPersistenceTestUtils {
         createBucket(BUCKET_ID);
         getPersistenceProvider().createBucket(makeSpiBucket(BUCKET_ID),context);
 
-        thread = createPersistenceThread();
         testDoc = createTestDocument();
         testDocId = testDoc->getId();
+        asyncHandler = &_persistenceHandler->asyncHandler();
     }
 
     void TearDown() override {
-        thread->flush();
-        thread.reset();
         SingleDiskPersistenceTestUtils::TearDown();
     }
 
@@ -86,7 +88,7 @@ TEST_F(TestAndSetTest, conditional_put_not_executed_on_condition_mismatch) {
     auto putTwo = std::make_shared<api::PutCommand>(BUCKET, testDoc, timestampTwo);
     setTestCondition(*putTwo);
 
-    ASSERT_EQ(fetchResult(thread->asyncHandler().handlePut(*putTwo, createTracker(putTwo, BUCKET))).getResult(),
+    ASSERT_EQ(fetchResult(asyncHandler->handlePut(*putTwo, createTracker(putTwo, BUCKET))).getResult(),
               api::ReturnCode::Result::TEST_AND_SET_CONDITION_FAILED);
     EXPECT_EQ(expectedDocEntryString(timestampOne, testDocId), dumpBucket(BUCKET_ID));
 }
@@ -106,7 +108,7 @@ TEST_F(TestAndSetTest, conditional_put_executed_on_condition_match) {
     auto putTwo = std::make_shared<api::PutCommand>(BUCKET, testDoc, timestampTwo);
     setTestCondition(*putTwo);
 
-    ASSERT_EQ(fetchResult(thread->asyncHandler().handlePut(*putTwo, createTracker(putTwo, BUCKET))).getResult(), api::ReturnCode::Result::OK);
+    ASSERT_EQ(fetchResult(asyncHandler->handlePut(*putTwo, createTracker(putTwo, BUCKET))).getResult(), api::ReturnCode::Result::OK);
     EXPECT_EQ(expectedDocEntryString(timestampOne, testDocId) +
               expectedDocEntryString(timestampTwo, testDocId),
               dumpBucket(BUCKET_ID));
@@ -126,7 +128,7 @@ TEST_F(TestAndSetTest, conditional_remove_not_executed_on_condition_mismatch) {
     auto remove = std::make_shared<api::RemoveCommand>(BUCKET, testDocId, timestampTwo);
     setTestCondition(*remove);
 
-    ASSERT_EQ(fetchResult(thread->asyncHandler().handleRemove(*remove, createTracker(remove, BUCKET))).getResult(),
+    ASSERT_EQ(fetchResult(asyncHandler->handleRemove(*remove, createTracker(remove, BUCKET))).getResult(),
               api::ReturnCode::Result::TEST_AND_SET_CONDITION_FAILED);
     EXPECT_EQ(expectedDocEntryString(timestampOne, testDocId), dumpBucket(BUCKET_ID));
 
@@ -146,7 +148,7 @@ TEST_F(TestAndSetTest, conditional_remove_executed_on_condition_match) {
     auto remove = std::make_shared<api::RemoveCommand>(BUCKET, testDocId, timestampTwo);
     setTestCondition(*remove);
 
-    ASSERT_EQ(fetchResult(thread->asyncHandler().handleRemove(*remove, createTracker(remove, BUCKET))).getResult(), api::ReturnCode::Result::OK);
+    ASSERT_EQ(fetchResult(asyncHandler->handleRemove(*remove, createTracker(remove, BUCKET))).getResult(), api::ReturnCode::Result::OK);
     EXPECT_EQ(expectedDocEntryString(timestampOne, testDocId) +
               expectedDocEntryString(timestampTwo, testDocId, spi::REMOVE_ENTRY),
               dumpBucket(BUCKET_ID));
@@ -172,7 +174,7 @@ TEST_F(TestAndSetTest, conditional_update_not_executed_on_condition_mismatch) {
     putTestDocument(false, timestampOne);
     auto updateUp = conditional_update_test(false, timestampTwo);
 
-    ASSERT_EQ(fetchResult(thread->asyncHandler().handleUpdate(*updateUp, createTracker(updateUp, BUCKET))).getResult(),
+    ASSERT_EQ(fetchResult(asyncHandler->handleUpdate(*updateUp, createTracker(updateUp, BUCKET))).getResult(),
               api::ReturnCode::Result::TEST_AND_SET_CONDITION_FAILED);
     EXPECT_EQ(expectedDocEntryString(timestampOne, testDocId), dumpBucket(BUCKET_ID));
 
@@ -185,7 +187,7 @@ TEST_F(TestAndSetTest, conditional_update_executed_on_condition_match) {
     putTestDocument(true, timestampOne);
     auto updateUp = conditional_update_test(false, timestampTwo);
 
-    ASSERT_EQ(fetchResult(thread->asyncHandler().handleUpdate(*updateUp, createTracker(updateUp, BUCKET))).getResult(), api::ReturnCode::Result::OK);
+    ASSERT_EQ(fetchResult(asyncHandler->handleUpdate(*updateUp, createTracker(updateUp, BUCKET))).getResult(), api::ReturnCode::Result::OK);
     EXPECT_EQ(expectedDocEntryString(timestampOne, testDocId) +
               expectedDocEntryString(timestampTwo, testDocId),
               dumpBucket(BUCKET_ID));
@@ -197,7 +199,7 @@ TEST_F(TestAndSetTest, conditional_update_not_executed_when_no_document_and_no_a
     api::Timestamp updateTimestamp = 200;
     auto updateUp = conditional_update_test(false, updateTimestamp);
 
-    ASSERT_EQ(fetchResult(thread->asyncHandler().handleUpdate(*updateUp, createTracker(updateUp, BUCKET))).getResult(),
+    ASSERT_EQ(fetchResult(asyncHandler->handleUpdate(*updateUp, createTracker(updateUp, BUCKET))).getResult(),
               api::ReturnCode::Result::TEST_AND_SET_CONDITION_FAILED);
     EXPECT_EQ("", dumpBucket(BUCKET_ID));
 }
@@ -206,7 +208,7 @@ TEST_F(TestAndSetTest, conditional_update_executed_when_no_document_but_auto_cre
     api::Timestamp updateTimestamp = 200;
     auto updateUp = conditional_update_test(true, updateTimestamp);
 
-    ASSERT_EQ(fetchResult(thread->asyncHandler().handleUpdate(*updateUp, createTracker(updateUp, BUCKET))).getResult(), api::ReturnCode::Result::OK);
+    ASSERT_EQ(fetchResult(asyncHandler->handleUpdate(*updateUp, createTracker(updateUp, BUCKET))).getResult(), api::ReturnCode::Result::OK);
     EXPECT_EQ(expectedDocEntryString(updateTimestamp, testDocId), dumpBucket(BUCKET_ID));
     assertTestDocumentFoundAndMatchesContent(NEW_CONTENT);
 }
@@ -218,7 +220,7 @@ TEST_F(TestAndSetTest, invalid_document_selection_should_fail) {
     auto put = std::make_shared<api::PutCommand>(BUCKET, testDoc, timestamp);
     put->setCondition(documentapi::TestAndSetCondition("bjarne"));
 
-    ASSERT_EQ(fetchResult(thread->asyncHandler().handlePut(*put, createTracker(put, BUCKET))).getResult(), api::ReturnCode::Result::ILLEGAL_PARAMETERS);
+    ASSERT_EQ(fetchResult(asyncHandler->handlePut(*put, createTracker(put, BUCKET))).getResult(), api::ReturnCode::Result::ILLEGAL_PARAMETERS);
     EXPECT_EQ("", dumpBucket(BUCKET_ID));
 }
 
@@ -228,9 +230,9 @@ TEST_F(TestAndSetTest, conditional_put_to_non_existing_document_should_fail) {
     api::Timestamp timestamp = 0;
     auto put = std::make_shared<api::PutCommand>(BUCKET, testDoc, timestamp);
     setTestCondition(*put);
-    thread->asyncHandler().handlePut(*put, createTracker(put, BUCKET));
+    asyncHandler->handlePut(*put, createTracker(put, BUCKET));
 
-    ASSERT_EQ(fetchResult(thread->asyncHandler().handlePut(*put, createTracker(put, BUCKET))).getResult(),
+    ASSERT_EQ(fetchResult(asyncHandler->handlePut(*put, createTracker(put, BUCKET))).getResult(),
               api::ReturnCode::Result::TEST_AND_SET_CONDITION_FAILED);
     EXPECT_EQ("", dumpBucket(BUCKET_ID));
 }
@@ -251,10 +253,11 @@ TestAndSetTest::createTestDocument()
     return doc;
 }
 
-document::Document::SP TestAndSetTest::retrieveTestDocument()
+document::Document::SP
+TestAndSetTest::retrieveTestDocument()
 {
     auto get = std::make_shared<api::GetCommand>(BUCKET, testDocId, document::AllFields::NAME);
-    auto tracker = thread->handleGet(*get, createTracker(get, BUCKET));
+    auto tracker = _persistenceHandler->simpleMessageHandler().handleGet(*get, createTracker(get, BUCKET));
     assert(tracker->getResult() == api::ReturnCode::Result::OK);
 
     auto & reply = static_cast<api::GetReply &>(tracker->getReply());
@@ -274,7 +277,7 @@ void TestAndSetTest::putTestDocument(bool matchingHeader, api::Timestamp timesta
     }
 
     auto put = std::make_shared<api::PutCommand>(BUCKET, testDoc, timestamp);
-    fetchResult(thread->asyncHandler().handlePut(*put, createTracker(put, BUCKET)));
+    fetchResult(asyncHandler->handlePut(*put, createTracker(put, BUCKET)));
 }
 
 void TestAndSetTest::assertTestDocumentFoundAndMatchesContent(const document::FieldValue & value)

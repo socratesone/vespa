@@ -1,6 +1,7 @@
 // Copyright 2018 Yahoo Holdings. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.hosted.node.admin.task.util.yum;
 
+import com.yahoo.component.Version;
 import org.junit.Test;
 
 import java.util.Optional;
@@ -12,7 +13,11 @@ import static org.junit.Assert.assertThat;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
+/**
+ * @author hakonhall
+ */
 public class YumPackageNameTest {
+
     @Test
     public void testBuilder() {
         YumPackageName yumPackage = new YumPackageName.Builder("docker")
@@ -21,7 +26,8 @@ public class YumPackageNameTest {
                 .setRelease("71.git3e8e77d.el7.centos.1")
                 .setArchitecture("x86_64")
                 .build();
-        assertEquals("2:docker-1.12.6-71.git3e8e77d.el7.centos.1.x86_64", yumPackage.toName());
+        assertEquals("2:docker-1.12.6-71.git3e8e77d.el7.centos.1.x86_64", yumPackage.toName(Version.fromString("3")));
+        assertEquals("docker-2:1.12.6-71.git3e8e77d.el7.centos.1.x86_64", yumPackage.toName(Version.fromString("4")));
     }
 
     @Test
@@ -35,6 +41,17 @@ public class YumPackageNameTest {
                 null,
                 null,
                 "docker-engine-selinux",
+                null);
+
+        // name with parenthesis
+        verifyPackageName(
+                "dnf-command(versionlock)",
+                null,
+                "dnf-command(versionlock)",
+                null,
+                null,
+                null,
+                "dnf-command(versionlock)",
                 null);
 
         // name.arch
@@ -89,6 +106,17 @@ public class YumPackageNameTest {
                 "x86_64",
                 "2:docker-1.12.6-71.git3e8e77d.el7.centos.1.x86_64",
                 "2:docker-1.12.6-71.git3e8e77d.el7.centos.1.*");
+
+        // name-ver-rel.arch (RHEL 8)
+        verifyPackageName("podman-1.9.3-2.module+el8.2.1+6867+366c07d6.x86_64",
+                          null,
+                          "podman",
+                          "1.9.3",
+                          "2.module+el8.2.1+6867+366c07d6",
+                          "x86_64",
+                          "podman-0:1.9.3-2.module+el8.2.1+6867+366c07d6.x86_64",
+                          "podman-0:1.9.3-2.module+el8.2.1+6867+366c07d6.*",
+                          YumVersion.rhel8);
     }
 
     private void verifyPackageName(String packageName,
@@ -99,23 +127,35 @@ public class YumPackageNameTest {
                                    String architecture,
                                    String toName,
                                    String toVersionName) {
+        verifyPackageName(packageName, epoch, name, version, release, architecture, toName, toVersionName, YumVersion.rhel7);
+    }
+
+    private void verifyPackageName(String packageName,
+                                   String epoch,
+                                   String name,
+                                   String version,
+                                   String release,
+                                   String architecture,
+                                   String toName,
+                                   String toVersionName,
+                                   YumVersion yumVersion) {
         YumPackageName yumPackageName = YumPackageName.fromString(packageName);
         verifyValue(epoch, yumPackageName.getEpoch());
         verifyValue(name, Optional.of(yumPackageName.getName()));
         verifyValue(version, yumPackageName.getVersion());
         verifyValue(release, yumPackageName.getRelease());
         verifyValue(architecture, yumPackageName.getArchitecture());
-        verifyValue(toName, Optional.of(yumPackageName.toName()));
+        verifyValue(toName, Optional.of(yumPackageName.toName(yumVersion.asVersion())));
 
         if (toVersionName == null) {
             try {
-                yumPackageName.toVersionLockName();
+                yumPackageName.toVersionLockName(yumVersion.asVersion());
                 fail();
             } catch (IllegalStateException e) {
                 assertThat(e.getMessage(), containsStringIgnoringCase("Version is missing "));
             }
         } else {
-            assertEquals(toVersionName, yumPackageName.toVersionLockName());
+            assertEquals(toVersionName, yumPackageName.toVersionLockName(yumVersion.asVersion()));
         }
     }
 
@@ -168,4 +208,5 @@ public class YumPackageNameTest {
                 .setVersion("1.13.1")
                 .build()));
     }
+
 }

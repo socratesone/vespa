@@ -36,28 +36,23 @@ private:
     const IAttributeWriter::SP _attributeWriter;
     DocIdLimit                 &_docIdLimit;
 
-    void putAttributes(SerialNum serialNum, search::DocumentIdT lid, const Document &doc,
-                       bool immediateCommit, OnPutDoneType onWriteDone) override;
+    void putAttributes(SerialNum serialNum, search::DocumentIdT lid, const Document &doc, OnPutDoneType onWriteDone) override;
 
     void updateAttributes(SerialNum serialNum, search::DocumentIdT lid, const document::DocumentUpdate &upd,
-                          bool immediateCommit, OnOperationDoneType onWriteDone, IFieldUpdateCallback & onUpdate) override;
-    void updateAttributes(SerialNum serialNum, Lid lid, FutureDoc doc,
-                          bool immediateCommit, OnOperationDoneType onWriteDone) override;
-    void removeAttributes(SerialNum serialNum, search::DocumentIdT lid,
-                          bool immediateCommit, OnRemoveDoneType onWriteDone) override;
+                          OnOperationDoneType onWriteDone, IFieldUpdateCallback & onUpdate) override;
+    void updateAttributes(SerialNum serialNum, Lid lid, FutureDoc doc, OnOperationDoneType onWriteDone) override;
+    void removeAttributes(SerialNum serialNum, search::DocumentIdT lid, OnRemoveDoneType onWriteDone) override;
 
-    void removeAttributes(SerialNum serialNum, const LidVector &lidsToRemove,
-                          bool immediateCommit, OnWriteDoneType onWriteDone) override;
+    void removeAttributes(SerialNum serialNum, const LidVector &lidsToRemove, OnWriteDoneType onWriteDone) override;
 
     void heartBeatAttributes(SerialNum serialNum) override;
 
 protected:
-    void internalForceCommit(SerialNum serialNum, OnForceCommitDoneType onCommitDone) override;
+    void internalForceCommit(const CommitParam & param, OnForceCommitDoneType onCommitDone) override;
 
 public:
-    FastAccessFeedView(const StoreOnlyFeedView::Context &storeOnlyCtx,
-                       const PersistentParams &params, const Context &ctx);
-    ~FastAccessFeedView();
+    FastAccessFeedView(StoreOnlyFeedView::Context storeOnlyCtx, const PersistentParams &params, const Context &ctx);
+    ~FastAccessFeedView() override;
 
     virtual const IAttributeWriter::SP &getAttributeWriter() const {
         return _attributeWriter;

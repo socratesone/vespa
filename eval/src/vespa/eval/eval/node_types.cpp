@@ -109,7 +109,7 @@ struct TypeResolver : public NodeVisitor, public NodeTraverser {
     }
 
     void resolve_op1(const Node &node) {
-        bind(type(node.get_child(0)), node);
+        bind(type(node.get_child(0)).map(), node);
     }
 
     void resolve_op2(const Node &node) {
@@ -177,6 +177,9 @@ struct TypeResolver : public NodeVisitor, public NodeTraverser {
         bind(ValueType::concat(type(node.get_child(0)),
                                type(node.get_child(1)), node.dimension()), node);
     }
+    void visit(const TensorCellCast &node) override {
+        bind(type(node.get_child(0)).cell_cast(node.cell_type()), node);
+    }
     void visit(const TensorCreate &node) override {
         for (size_t i = 0; i < node.num_children(); ++i) {
             if (!type(node.get_child(i)).is_double()) {
@@ -231,7 +234,7 @@ struct TypeResolver : public NodeVisitor, public NodeTraverser {
                 }
             }
         }
-        bind(param_type.reduce(dimensions), node);
+        bind(param_type.peek(dimensions), node);
     }
     void visit(const Add &node) override { resolve_op2(node); }
     void visit(const Sub &node) override { resolve_op2(node); }
@@ -307,7 +310,12 @@ struct TypeExporter : public NodeTraverser {
         : parent_type_map(parent_type_map_in),
           exported_type_map(exported_type_map_out),
           missing_cnt(0) {}
-    bool open(const Node &) override { return true; }
+    bool open(const Node &node) override {
+        if (auto lambda = as<TensorLambda>(node)) {
+            lambda->lambda().root().traverse(*this);
+        }
+        return true;
+    }
     void close(const Node &node) override {
         auto pos = parent_type_map.find(&node);
         if (pos != parent_type_map.end()) {
@@ -325,6 +333,15 @@ NodeTypes::NodeTypes()
     : _not_found(ValueType::error_type()),
       _type_map()
 {
+}
+
+NodeTypes::NodeTypes(const nodes::Node &const_node)
+    : _not_found(ValueType::error_type()),
+      _type_map()
+{
+    std::vector<ValueType> no_input_types;
+    nodes::TypeResolver resolver(no_input_types, _type_map, _errors);
+    const_node.traverse(resolver);
 }
 
 NodeTypes::NodeTypes(const Function &function, const std::vector<ValueType> &input_types)

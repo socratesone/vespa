@@ -4,13 +4,13 @@
 #include <vespa/searchcore/proton/attribute/ifieldupdatecallback.h>
 #include <vespa/searchcore/proton/test/bucketfactory.h>
 #include <vespa/searchcore/proton/common/feedtoken.h>
-#include <vespa/searchcore/proton/documentmetastore/lid_reuse_delayer_config.h>
 #include <vespa/searchcore/proton/index/i_index_writer.h>
 #include <vespa/searchcore/proton/server/executorthreadingservice.h>
 #include <vespa/searchcore/proton/server/isummaryadapter.h>
 #include <vespa/searchcore/proton/server/matchview.h>
 #include <vespa/searchcore/proton/server/searchable_feed_view.h>
 #include <vespa/searchcore/proton/feedoperation/operations.h>
+#include <vespa/searchcore/proton/bucketdb/bucket_db_owner.h>
 #include <vespa/searchcore/proton/test/document_meta_store_context_observer.h>
 #include <vespa/searchcore/proton/test/dummy_document_store.h>
 #include <vespa/searchcore/proton/test/dummy_summary_manager.h>
@@ -34,11 +34,10 @@ using document::DocumentId;
 using document::DocumentUpdate;
 using proton::matching::SessionManager;
 using proton::test::MockGidToLidChangeHandler;
-using proton::documentmetastore::LidReuseDelayerConfig;
 using search::AttributeVector;
 using search::CacheStats;
 using search::DocumentMetaData;
-using search::IDestructorCallback;
+using vespalib::IDestructorCallback;
 using search::SearchableStats;
 using search::index::schema::CollectionType;
 using search::index::schema::DataType;
@@ -92,20 +91,17 @@ struct MyTracer
         _os << ")";
     }
 
-    void tracePut(const vespalib::string &adapterType,
-                  SerialNum serialNum, uint32_t lid, bool immediateCommit) {
+    void tracePut(const vespalib::string &adapterType, SerialNum serialNum, uint32_t lid) {
         Guard guard(_mutex);
         addComma();
         _os << "put(adapter=" << adapterType <<
-            ",serialNum=" << serialNum << ",lid=" << lid << ",commit=" << immediateCommit << ")";
+            ",serialNum=" << serialNum << ",lid=" << lid << ")";
     }
 
-    void traceRemove(const vespalib::string &adapterType,
-                     SerialNum serialNum, uint32_t lid, bool immediateCommit) {
+    void traceRemove(const vespalib::string &adapterType, SerialNum serialNum, uint32_t lid) {
         Guard guard(_mutex);
         addComma();
-        _os << "remove(adapter=" << adapterType <<
-            ",serialNum=" << serialNum << ",lid=" << lid << ",commit=" << immediateCommit << ")";
+        _os << "remove(adapter=" << adapterType << ",serialNum=" << serialNum << ",lid=" << lid << ")";
     }
 
     void traceCommit(const vespalib::string &adapterType, SerialNum serialNum) {
@@ -151,12 +147,12 @@ struct MyIndexWriter : public test::MockIndexWriter
     {}
     void put(SerialNum serialNum, const document::Document &doc, const DocumentIdT lid) override {
         (void) doc;
-        _tracer.tracePut(indexAdapterTypeName, serialNum, lid, false);
+        _tracer.tracePut(indexAdapterTypeName, serialNum, lid);
     }
     void remove(SerialNum serialNum, const search::DocumentIdT lid) override {
         LOG(info, "MyIndexAdapter::remove(): serialNum(%" PRIu64 "), docId(%u)", serialNum, lid);
         _removes.push_back(lid);
-        _tracer.traceRemove(indexAdapterTypeName, serialNum, lid, false);
+        _tracer.traceRemove(indexAdapterTypeName, serialNum, lid);
     }
     void commit(SerialNum serialNum, OnWriteDoneType) override {
         ++_commitCount;
@@ -184,21 +180,18 @@ public:
     {
     }
 
-    void notifyPutDone(IDestructorCallbackSP, document::GlobalId gid, uint32_t lid, SerialNum)  override {
+    void notifyPut(IDestructorCallbackSP, document::GlobalId gid, uint32_t lid, SerialNum) override {
         _changeGid = gid;
         _changeLid = lid;
         _gidToLid[gid] = lid;
         ++_changes;
     }
 
-    void notifyRemove(IDestructorCallbackSP, document::GlobalId gid, SerialNum)  override {
+    void notifyRemove(IDestructorCallbackSP, document::GlobalId gid, SerialNum) override {
         _changeGid = gid;
         _changeLid = 0;
         _gidToLid[gid] = 0;
         ++_changes;
-    }
-
-    void notifyRemoveDone(document::GlobalId, SerialNum)  override {
     }
 
     void assertChanges(document::GlobalId expGid, uint32_t expLid, uint32_t expChanges) {
@@ -335,35 +328,26 @@ struct MyAttributeWriter : public IAttributeWriter
         AttrMap::const_iterator itr = _attrMap.find(attrName);
         return ((itr == _attrMap.end()) ? nullptr : itr->second.get());
     }
-    void put(SerialNum serialNum, const document::Document &doc, DocumentIdT lid,
-             bool immediateCommit, OnWriteDoneType) override {
+    void put(SerialNum serialNum, const document::Document &doc, DocumentIdT lid, OnWriteDoneType) override {
         _putSerial = serialNum;
         _putDocId = doc.getId();
         _putLid = lid;
-        _tracer.tracePut(attributeAdapterTypeName, serialNum, lid, immediateCommit);
-        if (immediateCommit) {
-            ++_commitCount;
-        }
+        _tracer.tracePut(attributeAdapterTypeName, serialNum, lid);
     }
-    void remove(SerialNum serialNum, DocumentIdT lid,
-                bool immediateCommit, OnWriteDoneType) override {
+    void remove(SerialNum serialNum, DocumentIdT lid, OnWriteDoneType) override {
         _removeSerial = serialNum;
         _removeLid = lid;
-        _tracer.traceRemove(attributeAdapterTypeName, serialNum, lid, immediateCommit);
-        if (immediateCommit) {
-            ++_commitCount;
-        }
+        _tracer.traceRemove(attributeAdapterTypeName, serialNum, lid);
     }
-    void remove(const LidVector & lidsToRemove, SerialNum serialNum,
-                bool immediateCommit, OnWriteDoneType) override {
+    void remove(const LidVector & lidsToRemove, SerialNum serialNum, OnWriteDoneType) override {
         for (uint32_t lid : lidsToRemove) {
             LOG(info, "MyAttributeAdapter::remove(): serialNum(%" PRIu64 "), docId(%u)", serialNum, lid);
            _removes.push_back(lid);
-           _tracer.traceRemove(attributeAdapterTypeName, serialNum, lid, immediateCommit);
+           _tracer.traceRemove(attributeAdapterTypeName, serialNum, lid);
         }
     }
     void update(SerialNum serialNum, const document::DocumentUpdate &upd,
-                DocumentIdT lid, bool, OnWriteDoneType, IFieldUpdateCallback & onUpdate) override {
+                DocumentIdT lid, OnWriteDoneType, IFieldUpdateCallback & onUpdate) override {
         _updateSerial = serialNum;
         _updateDocId = upd.getId();
         _updateLid = lid;
@@ -372,12 +356,10 @@ struct MyAttributeWriter : public IAttributeWriter
             onUpdate.onUpdateField(fieldUpdate.getField().getName(), attr);
         }
     }
-    void update(SerialNum serialNum, const document::Document &doc, DocumentIdT lid,
-                bool immediateCommit, OnWriteDoneType) override {
+    void update(SerialNum serialNum, const document::Document &doc, DocumentIdT lid, OnWriteDoneType) override {
         (void) serialNum;
         (void) doc;
         (void) lid;
-        (void) immediateCommit;
     }
     void heartBeat(SerialNum) override { ++_heartBeatCount; }
     void compactLidSpace(uint32_t wantedLidLimit, SerialNum ) override {
@@ -386,9 +368,9 @@ struct MyAttributeWriter : public IAttributeWriter
     const proton::IAttributeManager::SP &getAttributeManager() const override {
         return _mgr;
     }
-    void forceCommit(SerialNum serialNum, OnWriteDoneType) override {
+    void forceCommit(const CommitParam & param, OnWriteDoneType) override {
         ++_commitCount;
-        _tracer.traceCommit(attributeAdapterTypeName, serialNum);
+        _tracer.traceCommit(attributeAdapterTypeName, param.lastSerialNum());
     }
 
     void onReplayDone(uint32_t ) override { }
@@ -505,6 +487,7 @@ FeedTokenContext::~FeedTokenContext() = default;
 struct FixtureBase
 {
     MyTracer             _tracer;
+    std::shared_ptr<PendingLidTracker>    _pendingLidsForCommit;
     SchemaContext        sc;
     IIndexWriter::SP     iw;
     ISummaryAdapter::SP  sa;
@@ -519,10 +502,9 @@ struct FixtureBase
     vespalib::ThreadStackExecutor _sharedExecutor;
     ExecutorThreadingService _writeServiceReal;
     test::ThreadingServiceObserver _writeService;
-    vespalib::duration             _visibilityDelay;
     SerialNum             serial;
     std::shared_ptr<MyGidToLidChangeHandler> _gidToLidChangeHandler;
-    FixtureBase(vespalib::duration visibilityDelay);
+    FixtureBase();
 
     virtual ~FixtureBase();
 
@@ -560,7 +542,7 @@ struct FixtureBase
         return msa._store;
     }
 
-    BucketDBOwner::Guard getBucketDB() const {
+    bucketdb::Guard getBucketDB() const {
         return getMetaStore().getBucketDB().takeGuard();
     }
 
@@ -692,8 +674,9 @@ struct FixtureBase
 };
 
 
-FixtureBase::FixtureBase(vespalib::duration visibilityDelay)
+FixtureBase::FixtureBase()
     : _tracer(),
+      _pendingLidsForCommit(std::make_shared<PendingLidTracker>()),
       sc(),
       iw(std::make_shared<MyIndexWriter>(_tracer)),
       sa(std::make_shared<MySummaryAdapter>(*sc._builder->getDocumentTypeRepo())),
@@ -702,13 +685,12 @@ FixtureBase::FixtureBase(vespalib::duration visibilityDelay)
       msa(static_cast<MySummaryAdapter&>(*sa)),
       maw(static_cast<MyAttributeWriter&>(*aw)),
       _docIdLimit(0u),
-      _dmscReal(std::make_shared<DocumentMetaStoreContext>(std::make_shared<BucketDBOwner>())),
+      _dmscReal(std::make_shared<DocumentMetaStoreContext>(std::make_shared<bucketdb::BucketDBOwner>())),
       _dmsc(std::make_shared<test::DocumentMetaStoreContextObserver>(*_dmscReal)),
       pc(sc._builder->getDocumentType().getName(), "fileconfig_test"),
       _sharedExecutor(1, 0x10000),
       _writeServiceReal(_sharedExecutor),
       _writeService(_writeServiceReal),
-      _visibilityDelay(visibilityDelay),
       serial(0),
       _gidToLidChangeHandler(std::make_shared<MyGidToLidChangeHandler>())
 {
@@ -724,24 +706,25 @@ FixtureBase::populateBeforeCompactLidSpace()
 {
     putAndWait(makeDummyDocs(0, 2, 1000));
     removeAndWait(makeDummyDocs(1, 1, 2000));
+    forceCommitAndWait();
 }
 
 struct SearchableFeedViewFixture : public FixtureBase
 {
     SearchableFeedView fv;
-    SearchableFeedViewFixture(vespalib::duration visibilityDelay = 0ms) :
-        FixtureBase(visibilityDelay),
-        fv(StoreOnlyFeedView::Context(sa,
-                sc._schema,
-                _dmsc,
-                *_gidToLidChangeHandler,
-                sc.getRepo(),
-                _writeService,
-                LidReuseDelayerConfig(_visibilityDelay, true)),
+    SearchableFeedViewFixture() :
+        FixtureBase(),
+        fv(StoreOnlyFeedView::Context(sa, sc._schema, _dmsc,
+                                      sc.getRepo(), _pendingLidsForCommit,
+                                      *_gidToLidChangeHandler, _writeService),
            pc.getParams(),
            FastAccessFeedView::Context(aw, _docIdLimit),
            SearchableFeedView::Context(iw))
     {
+    }
+    ~SearchableFeedViewFixture() override
+    {
+        forceCommitAndWait();
     }
     IFeedView &getFeedView() override { return fv; }
 };
@@ -749,18 +732,17 @@ struct SearchableFeedViewFixture : public FixtureBase
 struct FastAccessFeedViewFixture : public FixtureBase
 {
     FastAccessFeedView fv;
-    FastAccessFeedViewFixture(vespalib::duration  visibilityDelay = vespalib::duration::zero()) :
-        FixtureBase(visibilityDelay),
-        fv(StoreOnlyFeedView::Context(sa,
-                sc._schema,
-                _dmsc,
-                *_gidToLidChangeHandler,
-                sc.getRepo(),
-                _writeService,
-                LidReuseDelayerConfig(_visibilityDelay, false)),
+    FastAccessFeedViewFixture() :
+        FixtureBase(),
+        fv(StoreOnlyFeedView::Context(sa, sc._schema, _dmsc, sc.getRepo(), _pendingLidsForCommit,
+                                      *_gidToLidChangeHandler, _writeService),
            pc.getParams(),
            FastAccessFeedView::Context(aw, _docIdLimit))
     {
+    }
+    ~FastAccessFeedViewFixture() override
+    {
+        forceCommitAndWait();
     }
     IFeedView &getFeedView() override { return fv; }
 };
@@ -775,7 +757,6 @@ assertBucketInfo(const BucketId &ebid,
     EXPECT_TRUE(metaStore.getGid(lid, gid));
     search::DocumentMetaData meta = metaStore.getMetaData(gid);
     EXPECT_TRUE(meta.valid());
-    BucketId abid;
     EXPECT_EQUAL(ebid, meta.bucketId);
     Timestamp ats;
     EXPECT_EQUAL(ets, meta.timestamp);
@@ -818,6 +799,7 @@ TEST_F("require that put() calls attribute adapter", SearchableFeedViewFixture)
     DocumentContext dc = f.doc1();
     EXPECT_EQUAL(0u, f._docIdLimit.get());
     f.putAndWait(dc);
+    f.forceCommitAndWait();
 
     EXPECT_EQUAL(1u, f.maw._putSerial);
     EXPECT_EQUAL(DocumentId("id:ns:searchdocument::1"), f.maw._putDocId);
@@ -920,12 +902,14 @@ TEST_F("require that remove() calls removeComplete() via delayed thread service"
 {
     EXPECT_TRUE(assertThreadObserver(0, 0, 0, f.writeServiceObserver()));
     f.putAndWait(f.doc1(10));
+    f.forceCommitAndWait();
     // put index fields handled in index thread
-    EXPECT_TRUE(assertThreadObserver(1, 1, 1, f.writeServiceObserver()));
+    EXPECT_TRUE(assertThreadObserver(2, 2, 2, f.writeServiceObserver()));
     f.removeAndWait(f.doc1(20));
+    f.forceCommitAndWait();
     // remove index fields handled in index thread
     // delayed remove complete handled in same index thread, then master thread
-    EXPECT_TRUE(assertThreadObserver(3, 2, 2, f.writeServiceObserver()));
+    EXPECT_TRUE(assertThreadObserver(5, 4, 4, f.writeServiceObserver()));
     EXPECT_EQUAL(1u, f.metaStoreObserver()._removeCompleteCnt);
     EXPECT_EQUAL(1u, f.metaStoreObserver()._removeCompleteLid);
 }
@@ -1008,18 +992,25 @@ TEST_F("require that removes are not remembered", SearchableFeedViewFixture)
     docs.push_back(f.doc("id:test:searchdocument:n=2:2", 14));
 
     f.putAndWait(docs);
+    f.forceCommitAndWait();
     f.removeAndWait(docs[0]);
+    f.forceCommitAndWait();
     f.removeAndWait(docs[3]);
+    f.forceCommitAndWait();
     assertPostConditionAfterRemoves(docs, f);
 
     // try to remove again : should have little effect
     f.removeAndWait(docs[0]);
+    f.forceCommitAndWait();
     f.removeAndWait(docs[3]);
+    f.forceCommitAndWait();
     assertPostConditionAfterRemoves(docs, f);
 
     // re-add docs
     f.putAndWait(docs[3]);
+    f.forceCommitAndWait();
     f.putAndWait(docs[0]);
+    f.forceCommitAndWait();
     EXPECT_EQUAL(5u, f.getMetaStore().getNumUsedLids());
     EXPECT_TRUE(f.getMetaData(docs[0]).valid());
     EXPECT_TRUE(f.getMetaData(docs[1]).valid());
@@ -1043,7 +1034,9 @@ TEST_F("require that removes are not remembered", SearchableFeedViewFixture)
     EXPECT_EQUAL(5u, f.msa._store._docs.size());
 
     f.removeAndWait(docs[0]);
+    f.forceCommitAndWait();
     f.removeAndWait(docs[3]);
+    f.forceCommitAndWait();
     EXPECT_EQUAL(3u, f.msa._store._docs.size());
 }
 
@@ -1060,11 +1053,13 @@ void putDocumentAndUpdate(Fixture &f, const vespalib::string &fieldName)
 {
     DocumentContext dc1 = f.doc1();
     f.putAndWait(dc1);
+    f.forceCommitAndWait();
     EXPECT_EQUAL(1u, f.msa._store._lastSyncToken);
 
     DocumentContext dc2("id:ns:searchdocument::1", 20, f.getBuilder());
     dc2.addFieldUpdate(f.getBuilder(), fieldName);
     f.updateAndWait(dc2);
+    f.forceCommitAndWait();
 }
 
 template <typename Fixture>
@@ -1140,11 +1135,11 @@ TEST_F("require that compactLidSpace() propagates to document meta store and doc
        SearchableFeedViewFixture)
 {
     f.populateBeforeCompactLidSpace();
-    EXPECT_TRUE(assertThreadObserver(4, 3, 3, f.writeServiceObserver()));
+    EXPECT_TRUE(assertThreadObserver(5, 4, 4, f.writeServiceObserver()));
     f.compactLidSpaceAndWait(2);
     // performIndexForceCommit in index thread, then completion callback
     // in master thread.
-    EXPECT_TRUE(assertThreadObserver(6, 5, 5, f.writeServiceObserver()));
+    EXPECT_TRUE(assertThreadObserver(7, 6, 6, f.writeServiceObserver()));
     EXPECT_EQUAL(2u, f.metaStoreObserver()._compactLidSpaceLidLimit);
     EXPECT_EQUAL(2u, f.getDocumentStore()._compactLidSpaceLidLimit);
     EXPECT_EQUAL(1u, f.metaStoreObserver()._holdUnblockShrinkLidSpaceCnt);
@@ -1157,12 +1152,12 @@ TEST_F("require that compactLidSpace() doesn't propagate to "
        SearchableFeedViewFixture)
 {
     f.populateBeforeCompactLidSpace();
-    EXPECT_TRUE(assertThreadObserver(4, 3, 3, f.writeServiceObserver()));
+    EXPECT_TRUE(assertThreadObserver(5, 4, 4, f.writeServiceObserver()));
     CompactLidSpaceOperation op(0, 2);
     op.setSerialNum(0);
     f.runInMaster([&] () { f.fv.handleCompactLidSpace(op); });
     // Delayed holdUnblockShrinkLidSpace() in index thread, then master thread
-    EXPECT_TRUE(assertThreadObserver(5, 4, 3, f.writeServiceObserver()));
+    EXPECT_TRUE(assertThreadObserver(6, 5, 4, f.writeServiceObserver()));
     EXPECT_EQUAL(0u, f.metaStoreObserver()._compactLidSpaceLidLimit);
     EXPECT_EQUAL(0u, f.getDocumentStore()._compactLidSpaceLidLimit);
     EXPECT_EQUAL(0u, f.metaStoreObserver()._holdUnblockShrinkLidSpaceCnt);
@@ -1184,34 +1179,11 @@ TEST_F("require that compactLidSpace() propagates to index writer",
     EXPECT_EQUAL(2u, f.miw._wantedLidLimit);
 }
 
-TEST_F("require that commit is called if visibility delay is 0",
+TEST_F("require that commit is not implicitly called",
        SearchableFeedViewFixture)
 {
     DocumentContext dc = f.doc1();
     f.putAndWait(dc);
-    EXPECT_EQUAL(1u, f.miw._commitCount);
-    EXPECT_EQUAL(1u, f.maw._commitCount);
-    f.removeAndWait(dc);
-    EXPECT_EQUAL(2u, f.miw._commitCount);
-    EXPECT_EQUAL(2u, f.maw._commitCount);
-    f.assertTrace("put(adapter=attribute,serialNum=1,lid=1,commit=1),"
-                  "put(adapter=index,serialNum=1,lid=1,commit=0),"
-                  "commit(adapter=index,serialNum=1),"
-                  "ack(Result(0, )),"
-                  "remove(adapter=attribute,serialNum=2,lid=1,commit=1),"
-                  "remove(adapter=index,serialNum=2,lid=1,commit=0),"
-                  "commit(adapter=index,serialNum=2),"
-                  "ack(Result(0, ))");
-}
-
-const vespalib::duration LONG_DELAY = 60s;
-const vespalib::duration SHORT_DELAY = 500ms;
-
-TEST_F("require that commit is not called when inside a commit interval",
-       SearchableFeedViewFixture(LONG_DELAY))
-{
-    DocumentContext dc = f.doc1();
-    f.putAndWait(dc);
     EXPECT_EQUAL(0u, f.miw._commitCount);
     EXPECT_EQUAL(0u, f.maw._commitCount);
     EXPECT_EQUAL(0u, f._docIdLimit.get());
@@ -1219,40 +1191,17 @@ TEST_F("require that commit is not called when inside a commit interval",
     EXPECT_EQUAL(0u, f.miw._commitCount);
     EXPECT_EQUAL(0u, f.maw._commitCount);
     EXPECT_EQUAL(0u, f._docIdLimit.get());
-    f.assertTrace("put(adapter=attribute,serialNum=1,lid=1,commit=0),"
-                  "put(adapter=index,serialNum=1,lid=1,commit=0),"
+    f.assertTrace("put(adapter=attribute,serialNum=1,lid=1),"
+                  "put(adapter=index,serialNum=1,lid=1),"
                   "ack(Result(0, )),"
-                  "remove(adapter=attribute,serialNum=2,lid=1,commit=0),"
-                  "remove(adapter=index,serialNum=2,lid=1,commit=0),"
-                  "ack(Result(0, ))");
-    f.forceCommitAndWait();
-}
-
-TEST_F("require that commit is not implicitly called",
-       SearchableFeedViewFixture(SHORT_DELAY))
-{
-    std::this_thread::sleep_for(SHORT_DELAY + 100ms);
-    DocumentContext dc = f.doc1();
-    f.putAndWait(dc);
-    EXPECT_EQUAL(0u, f.miw._commitCount);
-    EXPECT_EQUAL(0u, f.maw._commitCount);
-    EXPECT_EQUAL(0u, f._docIdLimit.get());
-    std::this_thread::sleep_for(SHORT_DELAY + 100ms);
-    f.removeAndWait(dc);
-    EXPECT_EQUAL(0u, f.miw._commitCount);
-    EXPECT_EQUAL(0u, f.maw._commitCount);
-    EXPECT_EQUAL(0u, f._docIdLimit.get());
-    f.assertTrace("put(adapter=attribute,serialNum=1,lid=1,commit=0),"
-                  "put(adapter=index,serialNum=1,lid=1,commit=0),"
-                  "ack(Result(0, )),"
-                  "remove(adapter=attribute,serialNum=2,lid=1,commit=0),"
-                  "remove(adapter=index,serialNum=2,lid=1,commit=0),"
+                  "remove(adapter=attribute,serialNum=2,lid=1),"
+                  "remove(adapter=index,serialNum=2,lid=1),"
                   "ack(Result(0, ))");
     f.forceCommitAndWait();
 }
 
 TEST_F("require that forceCommit updates docid limit",
-       SearchableFeedViewFixture(LONG_DELAY))
+       SearchableFeedViewFixture)
 {
     DocumentContext dc = f.doc1();
     f.putAndWait(dc);
@@ -1263,14 +1212,14 @@ TEST_F("require that forceCommit updates docid limit",
     EXPECT_EQUAL(1u, f.miw._commitCount);
     EXPECT_EQUAL(1u, f.maw._commitCount);
     EXPECT_EQUAL(2u, f._docIdLimit.get());
-    f.assertTrace("put(adapter=attribute,serialNum=1,lid=1,commit=0),"
-                  "put(adapter=index,serialNum=1,lid=1,commit=0),"
+    f.assertTrace("put(adapter=attribute,serialNum=1,lid=1),"
+                  "put(adapter=index,serialNum=1,lid=1),"
                   "ack(Result(0, )),"
                   "commit(adapter=attribute,serialNum=1),"
                   "commit(adapter=index,serialNum=1)");
 }
 
-TEST_F("require that forceCommit updates docid limit during shrink", SearchableFeedViewFixture(LONG_DELAY))
+TEST_F("require that forceCommit updates docid limit during shrink", SearchableFeedViewFixture)
 {
     f.putAndWait(f.makeDummyDocs(0, 3, 1000));
     EXPECT_EQUAL(0u, f._docIdLimit.get());
@@ -1295,13 +1244,17 @@ TEST_F("require that move() notifies gid to lid change handler", SearchableFeedV
     DocumentContext dc1 = f.doc("id::searchdocument::1", 10);
     DocumentContext dc2 = f.doc("id::searchdocument::2", 20);
     f.putAndWait(dc1);
+    f.forceCommitAndWait();
     TEST_DO(f.assertChangeHandler(dc1.gid(), 1u, 1u));
     f.putAndWait(dc2);
+    f.forceCommitAndWait();
     TEST_DO(f.assertChangeHandler(dc2.gid(), 2u, 2u));
     DocumentContext dc3 = f.doc("id::searchdocument::1", 30);
     f.removeAndWait(dc3);
+    f.forceCommitAndWait();
     TEST_DO(f.assertChangeHandler(dc3.gid(), 0u, 3u));
     f.moveAndWait(dc2, 2, 1);
+    f.forceCommitAndWait();
     TEST_DO(f.assertChangeHandler(dc2.gid(), 1u, 4u));
 }
 

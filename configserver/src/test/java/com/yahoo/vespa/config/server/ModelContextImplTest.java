@@ -1,15 +1,20 @@
-// Copyright 2017 Yahoo Holdings. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Verizon Media. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.config.server;
 
+import com.yahoo.cloud.config.ConfigserverConfig;
 import com.yahoo.component.Version;
+import com.yahoo.config.application.api.ApplicationPackage;
 import com.yahoo.config.model.api.ContainerEndpoint;
+import com.yahoo.config.model.api.HostProvisioner;
 import com.yahoo.config.model.api.ModelContext;
 import com.yahoo.config.model.api.Provisioned;
 import com.yahoo.config.model.application.provider.BaseDeployLogger;
 import com.yahoo.config.model.application.provider.MockFileRegistry;
+import com.yahoo.config.model.deploy.DeployState;
 import com.yahoo.config.model.test.MockApplicationPackage;
 import com.yahoo.config.provision.ApplicationId;
 import com.yahoo.config.provision.Zone;
+import com.yahoo.container.jdisc.SecretStoreProvider;
 import com.yahoo.vespa.config.server.deploy.ModelContextImpl;
 import com.yahoo.vespa.flags.InMemoryFlagSource;
 import org.junit.Test;
@@ -39,23 +44,26 @@ public class ModelContextImplTest {
         Set<ContainerEndpoint> endpoints = Collections.singleton(endpoint);
         InMemoryFlagSource flagSource = new InMemoryFlagSource();
 
+        ConfigserverConfig configserverConfig = new ConfigserverConfig.Builder()
+                .multitenant(true)
+                .hostedVespa(false)
+                .build();
+
+        ApplicationPackage applicationPackage = MockApplicationPackage.createEmpty();
+        HostProvisioner hostProvisioner = DeployState.getDefaultModelHostProvisioner(applicationPackage);
         ModelContext context = new ModelContextImpl(
-                MockApplicationPackage.createEmpty(),
+                applicationPackage,
                 Optional.empty(),
                 Optional.empty(),
                 new BaseDeployLogger(),
                 new StaticConfigDefinitionRepo(),
                 new MockFileRegistry(),
                 Optional.empty(),
+                hostProvisioner,
                 new Provisioned(),
                 new ModelContextImpl.Properties(
                         ApplicationId.defaultId(),
-                        true,
-                        Collections.emptyList(),
-                        null,
-                        null,
-                        null,
-                        false,
+                        configserverConfig,
                         Zone.defaultZone(),
                         endpoints,
                         false,
@@ -64,13 +72,15 @@ public class ModelContextImplTest {
                         null,
                         Optional.empty(),
                         Optional.empty(),
-                        Optional.empty()),
+                        Optional.empty(),
+                        List.of(),
+                        new SecretStoreProvider().get()),
                 Optional.empty(),
                 Optional.empty(),
                 new Version(7),
                 new Version(8));
         assertTrue(context.applicationPackage() instanceof MockApplicationPackage);
-        assertFalse(context.hostProvisioner().isPresent());
+        assertEquals(hostProvisioner, context.getHostProvisioner());
         assertFalse(context.permanentApplicationPackage().isPresent());
         assertFalse(context.previousModel().isPresent());
         assertTrue(context.getFileRegistry() instanceof MockFileRegistry);
@@ -86,7 +96,9 @@ public class ModelContextImplTest {
         assertEquals(Optional.empty(), context.wantedDockerImageRepo());
         assertEquals(new Version(7), context.modelVespaVersion());
         assertEquals(new Version(8), context.wantedNodeVespaVersion());
-        assertEquals(1.0, context.properties().defaultTermwiseLimit(), 0.0);
+        assertEquals(1.0, context.properties().featureFlags().defaultTermwiseLimit(), 0.0);
+        assertFalse(context.properties().featureFlags().useAsyncMessageHandlingOnSchedule());
+        assertEquals(0.5, context.properties().featureFlags().feedConcurrency(), 0.0);
     }
 
 }

@@ -4,8 +4,7 @@
 #include <vespa/searchlib/fef/properties.h>
 #include <vespa/searchlib/fef/onnx_model.h>
 #include <vespa/searchlib/fef/featureexecutor.h>
-#include <vespa/eval/tensor/dense/dense_tensor_view.h>
-#include <vespa/eval/tensor/dense/mutable_dense_tensor_view.h>
+#include <vespa/eval/eval/value.h>
 #include <vespa/vespalib/util/stringfmt.h>
 #include <vespa/vespalib/util/stash.h>
 
@@ -21,8 +20,7 @@ using search::fef::ParameterList;
 using vespalib::Stash;
 using vespalib::eval::ValueType;
 using vespalib::make_string_short::fmt;
-using vespalib::tensor::MutableDenseTensorView;
-using vespalib::tensor::Onnx;
+using vespalib::eval::Onnx;
 
 namespace search::features {
 
@@ -109,6 +107,8 @@ OnnxBlueprint::setup(const IIndexEnvironment &env,
                             input_feature.value().c_str(), model_input.name.c_str(),
                             feature_input.type().to_spec().c_str(), model_input.type_as_string().c_str());
             }
+        } else {
+            return fail("undefined input: %s (->%s)", input_feature.value().c_str(), model_input.name.c_str());
         }
     }
     for (size_t i = 0; i < _model->outputs().size(); ++i) {

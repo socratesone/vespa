@@ -143,6 +143,12 @@
             <version>${project.version}</version>
             <scope>test</scope>
         </dependency>
+        <dependency>
+            <groupId>com.yahoo.vespa</groupId>
+            <artifactId>container-test</artifactId>
+            <version>${project.version}</version>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
     <build>
         <plugins>
@@ -153,6 +159,11 @@
                 <configuration>
                     <attachBundleArtifact>true</attachBundleArtifact>
                 </configuration>
+            </plugin>
+            <plugin>
+                <!-- Explicit for IntelliJ to detect correct language level from parent -->
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
             </plugin>
         </plugins>
     </build>

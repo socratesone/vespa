@@ -1,4 +1,4 @@
-// Copyright 2017 Yahoo Holdings. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Verizon Media. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.model.container;
 
 import com.yahoo.component.ComponentId;
@@ -58,10 +58,10 @@ public abstract class Container extends AbstractService implements
     public static final int BASEPORT = Defaults.getDefaults().vespaWebServicePort();
     public static final String SINGLENODE_CONTAINER_SERVICESPEC = "default_singlenode_container";
 
-    /** The cluster this contasiner belongs to, or null if it is not added to any cluster */
-    private ContainerCluster owner = null;
+    /** The cluster this container belongs to, or null if it is not added to any cluster */
+    private ContainerCluster<?> owner = null;
 
-    protected final AbstractConfigProducer parent;
+    protected final AbstractConfigProducer<?> parent;
     private final String name;
     private boolean requireSpecificPorts = true;
 
@@ -78,17 +78,17 @@ public abstract class Container extends AbstractService implements
 
     private final JettyHttpServer defaultHttpServer;
 
-    protected Container(AbstractConfigProducer parent, String name, int index, boolean isHostedVespa) {
+    protected Container(AbstractConfigProducer<?> parent, String name, int index, boolean isHostedVespa) {
         this(parent, name, false, index, isHostedVespa);
     }
 
-    protected Container(AbstractConfigProducer parent, String name, boolean retired, int index, boolean isHostedVespa) {
+    protected Container(AbstractConfigProducer<?> parent, String name, boolean retired, int index, boolean isHostedVespa) {
         super(parent, name);
         this.name = name;
         this.parent = parent;
         this.retired = retired;
         this.index = index;
-        this.defaultHttpServer = new JettyHttpServer(new ComponentId("DefaultHttpServer"), isHostedVespa);
+        this.defaultHttpServer = new JettyHttpServer(new ComponentId("DefaultHttpServer"), containerClusterOrNull(parent), isHostedVespa);
         if (getHttp() == null) {
             addChild(defaultHttpServer);
         }
@@ -106,7 +106,7 @@ public abstract class Container extends AbstractService implements
         return handlers;
     }
 
-    public ComponentGroup getComponents() {
+    public ComponentGroup<?> getComponents() {
         return components;
     }
 
@@ -118,7 +118,7 @@ public abstract class Container extends AbstractService implements
         addComponent(new SimpleComponent(new ComponentModel(idSpec, classSpec, bundleSpec)));
     }
 
-    public final void addHandler(Handler h) {
+    public final void addHandler(Handler<?> h) {
         handlers.addComponent(h);
     }
     
@@ -133,7 +133,7 @@ public abstract class Container extends AbstractService implements
     }
 
     public Http getHttp() {
-        return (parent instanceof ContainerCluster) ? ((ContainerCluster) parent).getHttp() : null;
+        return (parent instanceof ContainerCluster) ? ((ContainerCluster<?>) parent).getHttp() : null;
     }
 
     public JettyHttpServer getDefaultHttpServer() {
@@ -172,7 +172,7 @@ public abstract class Container extends AbstractService implements
     }
 
     private void initDefaultJettyConnector() {
-        defaultHttpServer.addConnector(new ConnectorFactory("SearchServer", getSearchPort()));
+        defaultHttpServer.addConnector(new ConnectorFactory.Builder("SearchServer", getSearchPort()).build());
     }
 
     private ContainerServiceType myServiceType = null;
@@ -306,9 +306,7 @@ public abstract class Container extends AbstractService implements
                         .port(getRpcPort())
                         .slobrokId(serviceSlobrokId()))
                 .filedistributor(filedistributorConfig())
-                .discriminator((clusterName != null ? clusterName + "." : "" ) + name)
-                .restartOnDeploy(owner != null && owner.getDeferChangesUntilRestart());
-
+                .discriminator((clusterName != null ? clusterName + "." : "" ) + name);
     }
 
     /** Returns the jvm args set explicitly for this node */
@@ -330,6 +328,7 @@ public abstract class Container extends AbstractService implements
 
     @Override
     public void getConfig(ComponentsConfig.Builder builder) {
+        builder.setApplyOnRestart(owner.getDeferChangesUntilRestart()); //  Sufficient to set on one config
         builder.components.addAll(ComponentsConfigGenerator.generate(allEnabledComponents()));
     }
 
@@ -390,8 +389,12 @@ public abstract class Container extends AbstractService implements
         return containerCluster().isPresent() && containerCluster().get().rpcServerEnabled();
     }
 
-    private Optional<ContainerCluster> containerCluster() {
-        return (parent instanceof ContainerCluster) ? Optional.of((ContainerCluster) parent) : Optional.empty();
+    protected Optional<ContainerCluster> containerCluster() {
+        return Optional.ofNullable(containerClusterOrNull(parent));
+    }
+
+    private static ContainerCluster containerClusterOrNull(AbstractConfigProducer producer) {
+        return producer instanceof ContainerCluster<?> ? (ContainerCluster<?>) producer : null;
     }
 
 }

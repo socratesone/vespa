@@ -4,16 +4,16 @@
 #include "nearest_neighbor_blueprint.h"
 #include "nearest_neighbor_iterator.h"
 #include "nns_index_iterator.h"
+#include <vespa/eval/eval/dense_cells_value.h>
 #include <vespa/searchlib/fef/termfieldmatchdataarray.h>
-#include <vespa/eval/tensor/dense/dense_tensor.h>
 #include <vespa/searchlib/tensor/dense_tensor_attribute.h>
 #include <vespa/searchlib/tensor/distance_function_factory.h>
 #include <vespa/log/log.h>
 
 LOG_SETUP(".searchlib.queryeval.nearest_neighbor_blueprint");
 
+using vespalib::eval::DenseCellsValue;
 using vespalib::eval::Value;
-using vespalib::tensor::DenseTensor;
 
 namespace search::queryeval {
 
@@ -21,25 +21,21 @@ namespace {
 
 template<typename LCT, typename RCT>
 void
-convert_cells(std::unique_ptr<Value> &original, vespalib::eval::ValueType want_type)
+convert_cells(std::unique_ptr<Value> &original, const vespalib::eval::ValueType &want_type)
 {
-    auto old_cells = original->cells().typify<LCT>();
-    std::vector<RCT> new_cells;
-    new_cells.reserve(old_cells.size());
-    for (LCT value : old_cells) {
-        RCT conv = value;
-        new_cells.push_back(conv);
+    if constexpr (std::is_same<LCT,RCT>::value) {
+        return;
+    } else {
+        auto old_cells = original->cells().typify<LCT>();
+        std::vector<RCT> new_cells;
+        new_cells.reserve(old_cells.size());
+        for (LCT value : old_cells) {
+            RCT conv(value);
+            new_cells.push_back(conv);
+        }
+        original = std::make_unique<DenseCellsValue<RCT>>(want_type, std::move(new_cells));
     }
-    original = std::make_unique<DenseTensor<RCT>>(want_type, std::move(new_cells));
 }
-
-template<>
-void
-convert_cells<float,float>(std::unique_ptr<Value> &, vespalib::eval::ValueType) {}
-
-template<>
-void
-convert_cells<double,double>(std::unique_ptr<Value> &, vespalib::eval::ValueType) {}
 
 struct ConvertCellsSelector
 {
@@ -52,13 +48,15 @@ struct ConvertCellsSelector
 NearestNeighborBlueprint::NearestNeighborBlueprint(const queryeval::FieldSpec& field,
                                                    const tensor::DenseTensorAttribute& attr_tensor,
                                                    std::unique_ptr<Value> query_tensor,
-                                                   uint32_t target_num_hits, bool approximate, uint32_t explore_additional_hits, double brute_force_limit)
+                                                   uint32_t target_num_hits, bool approximate, uint32_t explore_additional_hits,
+                                                   double distance_threshold, double brute_force_limit)
     : ComplexLeafBlueprint(field),
       _attr_tensor(attr_tensor),
       _query_tensor(std::move(query_tensor)),
       _target_num_hits(target_num_hits),
       _approximate(approximate),
       _explore_additional_hits(explore_additional_hits),
+      _distance_threshold(std::numeric_limits<double>::max()),
       _brute_force_limit(brute_force_limit),
       _fallback_dist_fun(),
       _distance_heap(target_num_hits),
@@ -72,9 +70,15 @@ NearestNeighborBlueprint::NearestNeighborBlueprint(const queryeval::FieldSpec& f
     fixup_fun(_query_tensor, _attr_tensor.getTensorType());
     _fallback_dist_fun = search::tensor::make_distance_function(_attr_tensor.getConfig().distance_metric(), rct);
     _dist_fun = _fallback_dist_fun.get();
+    assert(_dist_fun);
     auto nns_index = _attr_tensor.nearest_neighbor_index();
     if (nns_index) {
         _dist_fun = nns_index->distance_function();
+        assert(_dist_fun);
+    }
+    if (distance_threshold < std::numeric_limits<double>::max()) {
+        _distance_threshold = _dist_fun->convert_threshold(distance_threshold);
+        _distance_heap.set_distance_threshold(_distance_threshold);
     }
     uint32_t est_hits = _attr_tensor.getNumDocs();
     setEstimate(HitEstimate(est_hits, false));
@@ -127,9 +131,9 @@ NearestNeighborBlueprint::perform_top_k()
             uint32_t k = _target_num_hits;
             if (_global_filter->has_filter()) {
                 auto filter = _global_filter->filter();
-                _found_hits = nns_index->find_top_k_with_filter(k, lhs, *filter, k + _explore_additional_hits);
+                _found_hits = nns_index->find_top_k_with_filter(k, lhs, *filter, k + _explore_additional_hits, _distance_threshold);
             } else {
-                _found_hits = nns_index->find_top_k(k, lhs, k + _explore_additional_hits);
+                _found_hits = nns_index->find_top_k(k, lhs, k + _explore_additional_hits, _distance_threshold);
             }
         }
     }

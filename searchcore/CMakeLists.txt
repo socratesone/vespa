@@ -69,6 +69,7 @@ vespa_define_module(
     src/tests/proton/attribute/imported_attributes_repo
     src/tests/proton/bucketdb/bucketdb
     src/tests/proton/common
+    src/tests/proton/common/alloc_config
     src/tests/proton/common/attribute_updater
     src/tests/proton/common/document_type_inspector
     src/tests/proton/common/hw_info_sampler
@@ -124,6 +125,7 @@ vespa_define_module(
     src/tests/proton/metrics/metrics_engine
     src/tests/proton/persistenceconformance
     src/tests/proton/persistenceengine
+    src/tests/proton/persistenceengine/resource_usage_tracker
     src/tests/proton/persistenceengine/persistence_handler_map
     src/tests/proton/proton
     src/tests/proton/proton_config_fetcher
@@ -144,7 +146,6 @@ vespa_define_module(
     src/tests/proton/server/health_adapter
     src/tests/proton/server/memory_flush_config_updater
     src/tests/proton/server/memoryflush
-    src/tests/proton/server/visibility_handler
     src/tests/proton/statusreport
     src/tests/proton/summaryengine
     src/tests/proton/verify_ranksetup

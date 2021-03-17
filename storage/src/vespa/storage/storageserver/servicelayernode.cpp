@@ -13,17 +13,14 @@
 #include <vespa/storage/visiting/messagebusvisitormessagesession.h>
 #include <vespa/storage/visiting/visitormanager.h>
 #include <vespa/storage/bucketdb/bucketmanager.h>
-#include <vespa/storage/bucketdb/storagebucketdbinitializer.h>
 #include <vespa/storage/persistence/filestorage/filestormanager.h>
 #include <vespa/storage/persistence/filestorage/modifiedbucketchecker.h>
 #include <vespa/persistence/spi/exceptions.h>
+#include <vespa/vespalib/util/exceptions.h>
 #include <vespa/messagebus/rpcmessagebus.h>
 
 #include <vespa/log/log.h>
 LOG_SETUP(".node.servicelayer");
-
-
-using StorServerConfigBuilder = vespa::config::content::core::StorServerConfigBuilder;
 
 namespace storage {
 
@@ -36,8 +33,7 @@ ServiceLayerNode::ServiceLayerNode(const config::ConfigUri & configUri, ServiceL
       _persistenceProvider(persistenceProvider),
       _externalVisitors(externalVisitors),
       _fileStorManager(nullptr),
-      _init_has_been_called(false),
-      _noUsablePartitionMode(false)
+      _init_has_been_called(false)
 {
 }
 
@@ -78,18 +74,6 @@ ServiceLayerNode::subscribeToConfigs()
 {
     StorageNode::subscribeToConfigs();
     _configFetcher.reset(new config::ConfigFetcher(_configUri.getContext()));
-
-    std::lock_guard configLockGuard(_configLock);
-        // Verify and set disk count
-    if (_serverConfig->diskCount != 0
-        && _serverConfig->diskCount != 1u)
-    {
-        std::ostringstream ost;
-        ost << "Storage is configured to have " << _serverConfig->diskCount
-            << " disks but persistence provider states it has 1 disk.";
-        throw vespalib::IllegalStateException(ost.str(), VESPA_STRLOC);
-    }
-    _context.getComponentRegister().setDiskCount(1u);
 }
 
 void
@@ -103,33 +87,17 @@ void
 ServiceLayerNode::initializeNodeSpecific()
 {
     // Give node state to mount point initialization, such that we can
-    // get disk count and state of unavailable disks set in reported
-    // node state.
+    // get capacity set in reported node state.
     NodeStateUpdater::Lock::SP lock(_component->getStateUpdater().grabStateChangeLock());
     lib::NodeState ns(*_component->getStateUpdater().getReportedNodeState());
-    ns.setDiskCount(1u);
 
     ns.setCapacity(_serverConfig->nodeCapacity);
-    ns.setReliability(_serverConfig->nodeReliability);
-    for (uint16_t i=0; i<_serverConfig->diskCapacity.size(); ++i) {
-        if (i >= ns.getDiskCount()) {
-            LOG(warning, "Capacity configured for partition %zu but only %u partitions found.",
-                _serverConfig->diskCapacity.size(), ns.getDiskCount());
-            continue;
-        }
-        lib::DiskState ds(ns.getDiskState(i));
-        ds.setCapacity(_serverConfig->diskCapacity[i]);
-        ns.setDiskState(i, ds);
-    }
-    LOG(debug, "Adjusting reported node state to include partition count and states, capacity and reliability: %s",
-        ns.toString().c_str());
+    LOG(debug, "Adjusting reported node state to include capacity: %s", ns.toString().c_str());
     _component->getStateUpdater().setReportedNodeState(ns);
 }
 
 #define DIFFER(a) (!(oldC.a == newC.a))
 #define ASSIGN(a) { oldC.a = newC.a; updated = true; }
-#define DIFFERWARN(a, b) \
-    if (DIFFER(a)) { LOG(warning, "Live config failure: %s.", b); }
 
 void
 ServiceLayerNode::handleLiveConfigUpdate(const InitialGuard & initGuard)
@@ -138,7 +106,6 @@ ServiceLayerNode::handleLiveConfigUpdate(const InitialGuard & initGuard)
         bool updated = false;
         vespa::config::content::core::StorServerConfigBuilder oldC(*_serverConfig);
         StorServerConfig& newC(*_newServerConfig);
-        DIFFERWARN(diskCount, "Cannot alter partition count of node live");
         {
             updated = false;
             NodeStateUpdater::Lock::SP lock(_component->getStateUpdater().grabStateChangeLock());
@@ -148,24 +115,6 @@ ServiceLayerNode::handleLiveConfigUpdate(const InitialGuard & initGuard)
                     oldC.nodeCapacity, newC.nodeCapacity);
                 ASSIGN(nodeCapacity);
                 ns.setCapacity(newC.nodeCapacity);
-            }
-            if (DIFFER(diskCapacity)) {
-                for (uint32_t i=0; i<newC.diskCapacity.size() && i<ns.getDiskCount(); ++i) {
-                    if (newC.diskCapacity[i] != oldC.diskCapacity[i]) {
-                        lib::DiskState ds(ns.getDiskState(i));
-                        ds.setCapacity(newC.diskCapacity[i]);
-                        ns.setDiskState(i, ds);
-                        LOG(info, "Live config update: Disk capacity of disk %u changed from %f to %f.",
-                            i, oldC.diskCapacity[i], newC.diskCapacity[i]);
-                    }
-                }
-                ASSIGN(diskCapacity);
-            }
-            if (DIFFER(nodeReliability)) {
-                LOG(info, "Live config update: Node reliability changed from %u to %u.",
-                    oldC.nodeReliability, newC.nodeReliability);
-                ASSIGN(nodeReliability);
-                ns.setReliability(newC.nodeReliability);
             }
             if (updated) {
                 _serverConfig.reset(new vespa::config::content::core::StorServerConfig(oldC));
@@ -202,14 +151,6 @@ ServiceLayerNode::createChain(IStorageChainBuilder &builder)
     _communicationManager = communication_manager.get();
     builder.add(std::move(communication_manager));
     builder.add(std::make_unique<Bouncer>(compReg, _configUri));
-    if (_noUsablePartitionMode) {
-        /*
-         * No usable partitions. Use minimal chain. Still needs to be
-         * able to report state back to cluster controller.
-         */
-        builder.add(releaseStateManager());
-        return;
-    }
     builder.add(std::make_unique<OpsLogger>(compReg, _configUri));
     auto merge_throttler_up = std::make_unique<MergeThrottler>(_configUri, compReg);
     auto merge_throttler = merge_throttler_up.get();
@@ -219,11 +160,12 @@ ServiceLayerNode::createChain(IStorageChainBuilder &builder)
     builder.add(std::make_unique<VisitorManager>(_configUri, _context.getComponentRegister(), static_cast<VisitorMessageSessionFactory &>(*this), _externalVisitors));
     builder.add(std::make_unique<ModifiedBucketChecker>(
             _context.getComponentRegister(), _persistenceProvider, _configUri));
+    auto state_manager = releaseStateManager();
     auto filstor_manager = std::make_unique<FileStorManager>(_configUri, _persistenceProvider, _context.getComponentRegister(),
-                                                             getDoneInitializeHandler());
+                                                             getDoneInitializeHandler(), state_manager->getHostInfo());
     _fileStorManager = filstor_manager.get();
     builder.add(std::move(filstor_manager));
-    builder.add(releaseStateManager());
+    builder.add(std::move(state_manager));
 
     // Lifetimes of all referenced components shall outlive the last call going
     // through the SPI, as queues are flushed and worker threads joined when

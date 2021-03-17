@@ -39,6 +39,10 @@ public class Quota {
         return UNLIMITED;
     }
 
+    public boolean isUnlimited() {
+        return budget.isEmpty() && maxClusterSize().isEmpty();
+    }
+
     public Quota withBudget(BigDecimal budget) {
         return new Quota(maxClusterSize, Optional.ofNullable(budget));
     }
@@ -61,13 +65,19 @@ public class Quota {
         return budget;
     }
 
+    public Quota subtractUsage(double rate) {
+        if (budget().isEmpty()) return this; // (unlimited - rate) is still unlimited
+        return this.withBudget(budget().get().subtract(BigDecimal.valueOf(rate)));
+    }
+
     @Override
     public boolean equals(Object o) {
         if (this == o) return true;
         if (o == null || getClass() != o.getClass()) return false;
         Quota quota = (Quota) o;
         return maxClusterSize.equals(quota.maxClusterSize) &&
-                budget.equals(quota.budget);
+                this.budget.map(BigDecimal::stripTrailingZeros).equals(
+                        quota.budget.map(BigDecimal::stripTrailingZeros));
     }
 
     @Override

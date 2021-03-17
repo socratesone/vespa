@@ -1,10 +1,10 @@
-// Copyright 2017 Yahoo Holdings. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Verizon Media. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.model;
 
 import ai.vespa.rankingexpression.importer.configmodelview.ImportedMlModel;
+import ai.vespa.rankingexpression.importer.configmodelview.ImportedMlModels;
 import com.yahoo.collections.Pair;
 import com.yahoo.component.Version;
-import com.yahoo.config.ConfigBuilder;
 import com.yahoo.config.ConfigInstance;
 import com.yahoo.config.ConfigInstance.Builder;
 import com.yahoo.config.ConfigurationRuntimeException;
@@ -21,7 +21,6 @@ import com.yahoo.config.model.ConfigModelRepo;
 import com.yahoo.config.model.NullConfigModelRegistry;
 import com.yahoo.config.model.api.FileDistribution;
 import com.yahoo.config.model.api.HostInfo;
-import ai.vespa.rankingexpression.importer.configmodelview.ImportedMlModels;
 import com.yahoo.config.model.api.Model;
 import com.yahoo.config.model.api.Provisioned;
 import com.yahoo.config.model.deploy.DeployState;
@@ -30,32 +29,33 @@ import com.yahoo.config.model.producer.AbstractConfigProducerRoot;
 import com.yahoo.config.model.producer.UserConfigRepo;
 import com.yahoo.config.provision.AllocatedHosts;
 import com.yahoo.config.provision.ClusterSpec;
-import java.util.logging.Level;
+import com.yahoo.container.QrConfig;
 import com.yahoo.searchdefinition.RankProfile;
 import com.yahoo.searchdefinition.RankProfileRegistry;
 import com.yahoo.searchdefinition.RankingConstants;
 import com.yahoo.searchdefinition.derived.AttributeFields;
 import com.yahoo.searchdefinition.derived.RankProfileList;
+import com.yahoo.searchdefinition.document.SDField;
 import com.yahoo.searchdefinition.processing.Processing;
-import com.yahoo.vespa.model.InstanceResolver.PackagePrefix;
-import com.yahoo.vespa.model.container.ApplicationContainerCluster;
-import com.yahoo.vespa.model.container.search.QueryProfiles;
-import com.yahoo.vespa.model.ml.ConvertedModel;
 import com.yahoo.vespa.config.ConfigDefinitionKey;
 import com.yahoo.vespa.config.ConfigKey;
 import com.yahoo.vespa.config.ConfigPayload;
 import com.yahoo.vespa.config.ConfigPayloadBuilder;
-import com.yahoo.vespa.config.GenericConfig;
+import com.yahoo.vespa.config.GenericConfig.GenericConfigBuilder;
+import com.yahoo.vespa.model.InstanceResolver.PackagePrefix;
 import com.yahoo.vespa.model.admin.Admin;
 import com.yahoo.vespa.model.builder.VespaModelBuilder;
 import com.yahoo.vespa.model.builder.xml.dom.VespaDomBuilder;
 import com.yahoo.vespa.model.clients.Clients;
+import com.yahoo.vespa.model.container.ApplicationContainerCluster;
 import com.yahoo.vespa.model.container.ContainerModel;
+import com.yahoo.vespa.model.container.search.QueryProfiles;
 import com.yahoo.vespa.model.content.Content;
 import com.yahoo.vespa.model.content.cluster.ContentCluster;
 import com.yahoo.vespa.model.filedistribution.FileDistributionConfigProducer;
 import com.yahoo.vespa.model.filedistribution.FileDistributor;
 import com.yahoo.vespa.model.generic.service.ServiceCluster;
+import com.yahoo.vespa.model.ml.ConvertedModel;
 import com.yahoo.vespa.model.ml.ModelName;
 import com.yahoo.vespa.model.routing.Routing;
 import com.yahoo.vespa.model.search.AbstractSearchCluster;
@@ -73,13 +73,19 @@ import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.logging.Level;
 import java.util.logging.Logger;
 import java.util.stream.Collectors;
 
 import static com.yahoo.config.codegen.ConfiggenUtil.createClassName;
 import static com.yahoo.text.StringUtilities.quote;
+import static java.util.stream.Collectors.toMap;
+import static java.util.stream.Collectors.toSet;
+import static java.util.stream.Collectors.toUnmodifiableMap;
+import static java.util.stream.Collectors.toUnmodifiableSet;
 
 /**
  * <p>
@@ -88,7 +94,7 @@ import static com.yahoo.text.StringUtilities.quote;
  * <p>
  * The vespa model starts in an unfrozen state, where children can be added freely,
  * but no structure dependent information can be used.
- * When frozen, structure dependent information(such as config id and controller) are
+ * When frozen, structure dependent information (such as config id) are
  * made available, but no additional config producers can be added.
  *
  * @author gjoranv
@@ -97,7 +103,7 @@ public final class VespaModel extends AbstractConfigProducerRoot implements Seri
 
     private static final long serialVersionUID = 1L;
 
-    public static final Logger log = Logger.getLogger(VespaModel.class.getPackage().toString());
+    public static final Logger log = Logger.getLogger(VespaModel.class.getName());
 
     private final Version version;
     private final ConfigModelRepo configModelRepo = new ConfigModelRepo();
@@ -178,8 +184,6 @@ public final class VespaModel extends AbstractConfigProducerRoot implements Seri
                                                    deployState.getImportedModels(),
                                                    deployState.getProperties());
 
-
-
         HostSystem hostSystem = root.hostSystem();
         if (complete) { // create a a completed, frozen model
             configModelRepo.readConfigModels(deployState, this, builder, root, configModelRegistry);
@@ -192,12 +196,57 @@ public final class VespaModel extends AbstractConfigProducerRoot implements Seri
             configModelRepo.prepareConfigModels(deployState);
             validateWrapExceptions();
             hostSystem.dumpPortAllocations();
+            propagateRestartOnDeploy();
             // must happen after stuff above
             this.allocatedHosts = AllocatedHosts.withHosts(hostSystem.getHostSpecs());
         }
         else { // create a model with no services instantiated and the given file distributor
             this.allocatedHosts = AllocatedHosts.withHosts(hostSystem.getHostSpecs());
             this.fileDistributor = fileDistributor;
+        }
+
+    }
+
+    @Override
+    public Map<String, Set<String>> documentTypesByCluster() {
+        return getContentClusters().entrySet().stream()
+                                   .collect(toMap(cluster -> cluster.getKey(),
+                                             cluster -> cluster.getValue().getDocumentDefinitions().keySet()));
+    }
+
+    @Override
+    public Map<String, Set<String>> indexedDocumentTypesByCluster() {
+        return getContentClusters().entrySet().stream()
+                                   .collect(toUnmodifiableMap(cluster -> cluster.getKey(),
+                                                         cluster -> documentTypesWithIndex(cluster.getValue())));
+    }
+
+    private static Set<String> documentTypesWithIndex(ContentCluster content) {
+        Set<String> typesWithIndexMode = content.getSearch().getDocumentTypesWithIndexedCluster().stream()
+                                                .map(type -> type.getFullName().getName())
+                                                .collect(toSet());
+
+        Set<String> typesWithIndexedFields = content.getSearch().getIndexed() == null
+                                             ? Set.of()
+                                             : content.getSearch().getIndexed().getDocumentDbs().stream()
+                                                      .filter(database -> database.getDerivedConfiguration()
+                                                                                  .getSearch()
+                                                                                  .allConcreteFields()
+                                                                                  .stream().anyMatch(SDField::doesIndexing))
+                                                      .map(database -> database.getInputDocType())
+                                                      .collect(toSet());
+
+        return typesWithIndexMode.stream().filter(typesWithIndexedFields::contains).collect(toUnmodifiableSet());
+    }
+
+    private void propagateRestartOnDeploy() {
+        if (applicationPackage.getMetaData().isInternalRedeploy()) return;
+
+        // Propagate application config setting of restartOnDeploy to cluster deferChangesUntilRestart
+        for (ApplicationContainerCluster containerCluster : getContainerClusters().values()) {
+            QrConfig config = getConfig(QrConfig.class, containerCluster.getConfigId());
+            if (config.restartOnDeploy())
+                containerCluster.setDeferChangesUntilRestart(true);
         }
     }
 
@@ -315,6 +364,7 @@ public final class VespaModel extends AbstractConfigProducerRoot implements Seri
      * @param configId the config id
      * @return a config instance of the given type
      */
+    @Override
     public <CONFIGTYPE extends ConfigInstance> CONFIGTYPE getConfig(Class<CONFIGTYPE> clazz, String configId) {
         try {
             ConfigInstance.Builder builder = newBuilder(clazz);
@@ -346,7 +396,7 @@ public final class VespaModel extends AbstractConfigProducerRoot implements Seri
     }
 
     private static Builder newBuilder(Class<? extends ConfigInstance> configClass) throws ReflectiveOperationException {
-        Class builderClazz = configClass.getClassLoader().loadClass(configClass.getName() + "$Builder");
+        Class<?> builderClazz = configClass.getClassLoader().loadClass(configClass.getName() + "$Builder");
         return (Builder)builderClazz.getDeclaredConstructor().newInstance();
     }
 
@@ -368,7 +418,6 @@ public final class VespaModel extends AbstractConfigProducerRoot implements Seri
      * @param configId the config id for the config client
      * @return the builder if a producer was found, and it did apply config, null otherwise
      */
-    @SuppressWarnings("unchecked")
     @Override
     public ConfigInstance.Builder getConfig(ConfigInstance.Builder builder, String configId) {
         checkId(configId);
@@ -391,26 +440,14 @@ public final class VespaModel extends AbstractConfigProducerRoot implements Seri
     /**
      * Resolve config for a given key and config definition
      *
-     * @param configKey The key to resolve.
-     * @param targetDef The config definition to use for the schema
-     * @return The payload as a list of strings
+     * @param configKey the key to resolve.
+     * @param targetDef the config definition to use for the schema
+     * @return the resolved config instance
      */
     @Override
-    public ConfigPayload getConfig(ConfigKey configKey, com.yahoo.vespa.config.buildergen.ConfigDefinition targetDef) {
-        ConfigInstance.Builder builder = resolveToBuilder(configKey);
-        // TODO: remove if-statement, the builder can never be null.
-        if (builder != null) {
-            log.log(Level.FINE, () -> "Found builder for " + configKey);
-            ConfigPayload payload;
-            InnerCNode innerCNode = targetDef != null ?  targetDef.getCNode() : null;
-            if (builder instanceof GenericConfig.GenericConfigBuilder) {
-                payload = getConfigFromGenericBuilder(builder);
-            } else {
-                payload = getConfigFromBuilder(builder, innerCNode);
-            }
-            return (innerCNode != null) ? payload.applyDefaultsFromDef(innerCNode) : payload;
-        }
-        return null;
+    public ConfigInstance.Builder getConfigInstance(ConfigKey<?> configKey, com.yahoo.vespa.config.buildergen.ConfigDefinition targetDef) {
+        Objects.requireNonNull(targetDef, "config definition cannot be null");
+        return resolveToBuilder(configKey);
     }
 
     /**
@@ -420,13 +457,14 @@ public final class VespaModel extends AbstractConfigProducerRoot implements Seri
      * @return A new config builder with config from this model filled in,.
      */
     private ConfigInstance.Builder resolveToBuilder(ConfigKey<?> key) {
-        ConfigDefinitionKey defKey = new ConfigDefinitionKey(key);
-        ConfigInstance.Builder builder = createBuilder(defKey);
+        ConfigInstance.Builder builder = createBuilder(new ConfigDefinitionKey(key));
         getConfig(builder, key.getConfigId());
         return builder;
     }
 
     private ConfigPayload getConfigFromBuilder(ConfigInstance.Builder builder, InnerCNode targetDef) {
+        if (builder instanceof GenericConfigBuilder) return ((GenericConfigBuilder) builder).getPayload();
+
         try {
             ConfigInstance instance = InstanceResolver.resolveToInstance(builder, targetDef);
             log.log(Level.FINE, () -> "getConfigFromBuilder for builder " + builder.getClass().getName() + ", instance=" + instance);
@@ -439,10 +477,6 @@ public final class VespaModel extends AbstractConfigProducerRoot implements Seri
             log.log(Level.INFO, "Error resolving instance for builder '" + builder.getClass().getName() + "', returning empty config: " + Exceptions.toMessageString(e));
             return ConfigPayload.fromBuilder(new ConfigPayloadBuilder());
         }
-    }
-
-    private ConfigPayload getConfigFromGenericBuilder(ConfigBuilder builder)  {
-        return ((GenericConfig.GenericConfigBuilder) builder).getPayload();
     }
 
     @Override
@@ -474,7 +508,7 @@ public final class VespaModel extends AbstractConfigProducerRoot implements Seri
             // TODO: Enable config compiler when configserver is using new API.
             // ConfigCompiler compiler = new LazyConfigCompiler(Files.createTempDir());
             // return compiler.compile(targetDef.generateClass()).newInstance();
-            return new GenericConfig.GenericConfigBuilder(key, new ConfigPayloadBuilder());
+            return new GenericConfigBuilder(key, new ConfigPayloadBuilder());
         }
         Object i;
         try {
@@ -633,7 +667,5 @@ public final class VespaModel extends AbstractConfigProducerRoot implements Seri
                                       .map(spec -> spec.membership().get().cluster().id())
                                       .collect(Collectors.toSet());
     }
-
-
 
 }

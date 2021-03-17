@@ -26,6 +26,7 @@ import com.yahoo.slime.Slime;
 import com.yahoo.slime.SlimeUtils;
 import com.yahoo.slime.Type;
 import com.yahoo.vespa.hosted.provision.Node;
+import com.yahoo.vespa.hosted.provision.node.Address;
 import com.yahoo.vespa.hosted.provision.node.Agent;
 import com.yahoo.vespa.hosted.provision.node.Allocation;
 import com.yahoo.vespa.hosted.provision.node.Generation;
@@ -43,6 +44,7 @@ import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ExecutionException;
+import java.util.stream.Collectors;
 
 /**
  * Serializes a node to/from JSON.
@@ -66,6 +68,8 @@ public class NodeSerializer {
     private static final String hostnameKey = "hostname";
     private static final String ipAddressesKey = "ipAddresses";
     private static final String ipAddressPoolKey = "additionalIpAddresses";
+    private static final String containersKey = "containers";
+    private static final String containerHostnameKey = "hostname";
     private static final String idKey = "openStackId";
     private static final String parentHostnameKey = "parentHostname";
     private static final String historyKey = "history";
@@ -73,17 +77,19 @@ public class NodeSerializer {
     private static final String rebootGenerationKey = "rebootGeneration";
     private static final String currentRebootGenerationKey = "currentRebootGeneration";
     private static final String vespaVersionKey = "vespaVersion";
-    private static final String currentDockerImageKey = "currentDockerImage";
+    private static final String currentContainerImageKey = "currentDockerImage";
     private static final String failCountKey = "failCount";
     private static final String nodeTypeKey = "type";
     private static final String wantToRetireKey = "wantToRetire";
     private static final String wantToDeprovisionKey = "wantToDeprovision";
+    private static final String preferToRetireKey = "preferToRetire";
     private static final String osVersionKey = "osVersion";
     private static final String wantedOsVersionKey = "wantedOsVersion";
     private static final String firmwareCheckKey = "firmwareCheck";
     private static final String reportsKey = "reports";
     private static final String modelNameKey = "modelName";
     private static final String reservedToKey = "reservedTo";
+    private static final String exclusiveToKey = "exclusiveTo";
     private static final String switchHostnameKey = "switchHostname";
 
     // Node resource fields
@@ -102,7 +108,7 @@ public class NodeSerializer {
     private static final String removableKey = "removable";
     // Saved as part of allocation instead of serviceId, since serviceId serialized form is not easily extendable.
     private static final String wantedVespaVersionKey = "wantedVespaVersion";
-    private static final String wantedDockerImageRepoKey = "wantedDockerImageRepo";
+    private static final String wantedContainerImageRepoKey = "wantedDockerImageRepo";
 
     // History event fields
     private static final String historyEventTypeKey = "type";
@@ -145,16 +151,18 @@ public class NodeSerializer {
     private void toSlime(Node node, Cursor object) {
         object.setString(hostnameKey, node.hostname());
         toSlime(node.ipConfig().primary(), object.setArray(ipAddressesKey));
-        toSlime(node.ipConfig().pool().asSet(), object.setArray(ipAddressPoolKey));
+        toSlime(node.ipConfig().pool().getIpSet(), object.setArray(ipAddressPoolKey));
+        toSlime(node.ipConfig().pool().getAddressList(), object);
         object.setString(idKey, node.id());
         node.parentHostname().ifPresent(hostname -> object.setString(parentHostnameKey, hostname));
         toSlime(node.flavor(), object);
         object.setLong(rebootGenerationKey, node.status().reboot().wanted());
         object.setLong(currentRebootGenerationKey, node.status().reboot().current());
         node.status().vespaVersion().ifPresent(version -> object.setString(vespaVersionKey, version.toString()));
-        node.status().dockerImage().ifPresent(image -> object.setString(currentDockerImageKey, image.asString()));
+        node.status().containerImage().ifPresent(image -> object.setString(currentContainerImageKey, image.asString()));
         object.setLong(failCountKey, node.status().failCount());
         object.setBool(wantToRetireKey, node.status().wantToRetire());
+        object.setBool(preferToRetireKey, node.status().preferToRetire());
         object.setBool(wantToDeprovisionKey, node.status().wantToDeprovision());
         node.allocation().ifPresent(allocation -> toSlime(allocation, object.setObject(instanceKey)));
         toSlime(node.history(), object.setArray(historyKey));
@@ -166,6 +174,7 @@ public class NodeSerializer {
         node.reports().toSlime(object, reportsKey);
         node.modelName().ifPresent(modelName -> object.setString(modelNameKey, modelName));
         node.reservedTo().ifPresent(tenant -> object.setString(reservedToKey, tenant.value()));
+        node.exclusiveTo().ifPresent(applicationId -> object.setString(exclusiveToKey, applicationId.serializedForm()));
     }
 
     private void toSlime(Flavor flavor, Cursor object) {
@@ -191,7 +200,7 @@ public class NodeSerializer {
         object.setLong(currentRestartGenerationKey, allocation.restartGeneration().current());
         object.setBool(removableKey, allocation.isRemovable());
         object.setString(wantedVespaVersionKey, allocation.membership().cluster().vespaVersion().toString());
-        allocation.membership().cluster().dockerImageRepo().ifPresent(repo -> object.setString(wantedDockerImageRepoKey, repo.repository()));
+        allocation.membership().cluster().dockerImageRepo().ifPresent(repo -> object.setString(wantedContainerImageRepoKey, repo.untagged()));
         allocation.networkPorts().ifPresent(ports -> NetworkPortsSerializer.toSlime(ports, object.setArray(networkPortsKey)));
     }
 
@@ -212,6 +221,14 @@ public class NodeSerializer {
         ipAddresses.stream().map(IP::parse).sorted(IP.NATURAL_ORDER).map(IP::asString).forEach(array::addString);
     }
 
+    private void toSlime(List<Address> addresses, Cursor object) {
+        if (addresses.isEmpty()) return;
+        Cursor addressCursor = object.setArray(containersKey);
+        addresses.forEach(address -> {
+            addressCursor.addObject().setString(containerHostnameKey, address.hostname());
+        });
+    }
+
     // ---------------- Deserialization --------------------------------------------------
 
     public Node fromJson(Node.State state, byte[] data) {
@@ -230,7 +247,8 @@ public class NodeSerializer {
         Flavor flavor = flavorFromSlime(object);
         return new Node(object.field(idKey).asString(),
                         new IP.Config(ipAddressesFromSlime(object, ipAddressesKey),
-                                      ipAddressesFromSlime(object, ipAddressPoolKey)),
+                                      ipAddressesFromSlime(object, ipAddressPoolKey),
+                                      addressesFromSlime(object)),
                         object.field(hostnameKey).asString(),
                         parentHostnameFromSlime(object),
                         flavor,
@@ -242,16 +260,18 @@ public class NodeSerializer {
                         Reports.fromSlime(object.field(reportsKey)),
                         modelNameFromSlime(object),
                         reservedToFromSlime(object.field(reservedToKey)),
+                        exclusiveToFromSlime(object.field(exclusiveToKey)),
                         switchHostnameFromSlime(object.field(switchHostnameKey)));
     }
 
     private Status statusFromSlime(Inspector object) {
         return new Status(generationFromSlime(object, rebootGenerationKey, currentRebootGenerationKey),
                           versionFromSlime(object.field(vespaVersionKey)),
-                          dockerImageFromSlime(object.field(currentDockerImageKey)),
+                          containerImageFromSlime(object.field(currentContainerImageKey)),
                           (int) object.field(failCountKey).asLong(),
                           object.field(wantToRetireKey).asBool(),
                           object.field(wantToDeprovisionKey).asBool(),
+                          object.field(preferToRetireKey).asBool(),
                           new OsVersion(versionFromSlime(object.field(osVersionKey)),
                                         versionFromSlime(object.field(wantedOsVersionKey))),
                           instantFromSlime(object.field(firmwareCheckKey)));
@@ -316,9 +336,9 @@ public class NodeSerializer {
     }
 
     private ClusterMembership clusterMembershipFromSlime(Inspector object) {
-        return ClusterMembership.from(object.field(serviceIdKey).asString(), 
+        return ClusterMembership.from(object.field(serviceIdKey).asString(),
                                       versionFromSlime(object.field(wantedVespaVersionKey)).get(),
-                                      dockerImageRepoFromSlime(object.field(wantedDockerImageRepoKey)));
+                                      containerImageRepoFromSlime(object.field(wantedContainerImageRepoKey)));
     }
 
     private Optional<Version> versionFromSlime(Inspector object) {
@@ -326,12 +346,12 @@ public class NodeSerializer {
         return Optional.of(Version.fromString(object.asString()));
     }
 
-    private Optional<DockerImage> dockerImageRepoFromSlime(Inspector object) {
+    private Optional<DockerImage> containerImageRepoFromSlime(Inspector object) {
         if ( ! object.valid() || object.asString().isEmpty()) return Optional.empty();
         return Optional.of(DockerImage.fromString(object.asString()));
     }
 
-    private Optional<DockerImage> dockerImageFromSlime(Inspector object) {
+    private Optional<DockerImage> containerImageFromSlime(Inspector object) {
         if ( ! object.valid()) return Optional.empty();
         return Optional.of(DockerImage.fromString(object.asString()));
     }
@@ -355,6 +375,12 @@ public class NodeSerializer {
         return ipAddresses.build();
     }
 
+    private List<Address> addressesFromSlime(Inspector object) {
+        return SlimeUtils.entriesStream(object.field(containersKey))
+                .map(elem -> new Address(elem.field(containerHostnameKey).asString()))
+                .collect(Collectors.toList());
+    }
+
     private Optional<String> modelNameFromSlime(Inspector object) {
         if (object.field(modelNameKey).valid()) {
             return Optional.of(object.field(modelNameKey).asString());
@@ -367,6 +393,13 @@ public class NodeSerializer {
         if (object.type() != Type.STRING)
             throw new IllegalArgumentException("Expected 'reservedTo' to be a string but is " + object);
         return Optional.of(TenantName.from(object.asString()));
+    }
+
+    private Optional<ApplicationId> exclusiveToFromSlime(Inspector object) {
+        if (! object.valid()) return Optional.empty();
+        if (object.type() != Type.STRING)
+            throw new IllegalArgumentException("Expected 'exclusiveTo' to be a string but is " + object);
+        return Optional.of(ApplicationId.fromSerializedForm(object.asString()));
     }
 
     // ----------------- Enum <-> string mappings ----------------------------------------
@@ -390,6 +423,8 @@ public class NodeSerializer {
             case "rebooted" : return History.Event.Type.rebooted;
             case "osUpgraded" : return History.Event.Type.osUpgraded;
             case "firmwareVerified" : return History.Event.Type.firmwareVerified;
+            case "breakfixed" : return History.Event.Type.breakfixed;
+            case "preferToRetire" : return History.Event.Type.preferToRetire;
         }
         throw new IllegalArgumentException("Unknown node event type '" + eventTypeString + "'");
     }
@@ -412,6 +447,8 @@ public class NodeSerializer {
             case rebooted: return "rebooted";
             case osUpgraded: return "osUpgraded";
             case firmwareVerified: return "firmwareVerified";
+            case breakfixed: return "breakfixed";
+            case preferToRetire: return "preferToRetire";
         }
         throw new IllegalArgumentException("Serialized form of '" + nodeEventType + "' not defined");
     }
@@ -426,11 +463,13 @@ public class NodeSerializer {
             case "FailedExpirer" : return Agent.FailedExpirer;
             case "InactiveExpirer" : return Agent.InactiveExpirer;
             case "NodeFailer" : return Agent.NodeFailer;
+            case "NodeHealthTracker" : return Agent.NodeHealthTracker;
             case "ProvisionedExpirer" : return Agent.ProvisionedExpirer;
             case "Rebalancer" : return Agent.Rebalancer;
             case "ReservationExpirer" : return Agent.ReservationExpirer;
             case "RetiringUpgrader" : return Agent.RetiringUpgrader;
             case "SpareCapacityMaintainer": return Agent.SpareCapacityMaintainer;
+            case "SwitchRebalancer": return Agent.SwitchRebalancer;
         }
         throw new IllegalArgumentException("Unknown node event agent '" + eventAgentField.asString() + "'");
     }
@@ -444,11 +483,13 @@ public class NodeSerializer {
             case FailedExpirer : return "FailedExpirer";
             case InactiveExpirer : return "InactiveExpirer";
             case NodeFailer : return "NodeFailer";
+            case NodeHealthTracker: return "NodeHealthTracker";
             case ProvisionedExpirer : return "ProvisionedExpirer";
             case Rebalancer : return "Rebalancer";
             case ReservationExpirer : return "ReservationExpirer";
             case RetiringUpgrader: return "RetiringUpgrader";
             case SpareCapacityMaintainer: return "SpareCapacityMaintainer";
+            case SwitchRebalancer: return "SwitchRebalancer";
         }
         throw new IllegalArgumentException("Serialized form of '" + agent + "' not defined");
     }

@@ -2,15 +2,15 @@
 
 #pragma once
 
+#include <vespa/eval/eval/fast_value.h>
 #include <vespa/eval/eval/function.h>
 #include <vespa/eval/eval/tensor_spec.h>
 #include <vespa/eval/eval/tensor_function.h>
 #include <vespa/eval/eval/interpreted_function.h>
-#include <vespa/eval/eval/simple_tensor_engine.h>
-#include <vespa/eval/tensor/default_tensor_engine.h>
 #include <vespa/vespalib/util/stash.h>
 #include <set>
 #include <functional>
+#include "gen_spec.h"
 
 namespace vespalib::eval::test {
 
@@ -30,22 +30,17 @@ public:
         using gen_fun_t = std::function<double(size_t)>;
         static double gen_N(size_t seq) { return (seq + 1); }
         ParamRepo() : map() {}
-        ParamRepo &add(const vespalib::string &name, TensorSpec value_in, bool is_mutable_in);
-        ParamRepo &add(const vespalib::string &name, const TensorSpec &value) {
-            return add(name, value, false);
-        }
-        ParamRepo &add_mutable(const vespalib::string &name, const TensorSpec &value) {
-            return add(name, value, true);
-        }
-        ParamRepo &add_vector(const char *d1, size_t s1, gen_fun_t = gen_N);
-        ParamRepo &add_matrix(const char *d1, size_t s1, const char *d2, size_t s2, gen_fun_t gen = gen_N);
-        ParamRepo &add_cube(const char *d1, size_t s1, const char *d2, size_t s2, const char *d3, size_t s3, gen_fun_t gen = gen_N);
-        ParamRepo &add_dense(const std::vector<std::pair<vespalib::string, size_t> > &dims, gen_fun_t gen = gen_N);
+
+        ParamRepo &add(const vespalib::string &name, TensorSpec value);
+        ParamRepo &add_mutable(const vespalib::string &name, TensorSpec spec);
+
+        // produce 4 variants: float/double * mutable/const
+        ParamRepo &add_variants(const vespalib::string &name_base, const GenSpec &spec);
         ~ParamRepo() {}
     };
 
 private:
-    EngineOrFactory                 _engine;
+    const ValueBuilderFactory      &_factory;
     Stash                           _stash;
     std::shared_ptr<Function const> _function;
     NodeTypes                       _node_types;
@@ -74,7 +69,7 @@ private:
     void detect_param_tampering(const ParamRepo &param_repo, bool allow_mutable) const;
 
 public:
-    EvalFixture(EngineOrFactory engine, const vespalib::string &expr, const ParamRepo &param_repo,
+    EvalFixture(const ValueBuilderFactory &factory, const vespalib::string &expr, const ParamRepo &param_repo,
                 bool optimized = true, bool allow_mutable = false);
     ~EvalFixture() {}
     template <typename T>
@@ -86,11 +81,9 @@ public:
     const TensorSpec &result() const { return _result; }
     const TensorSpec get_param(size_t idx) const;
     size_t num_params() const;
-    static TensorSpec ref(const vespalib::string &expr, const ParamRepo &param_repo) {
-        return EvalFixture(SimpleTensorEngine::ref(), expr, param_repo, false, false).result();
-    }
+    static TensorSpec ref(const vespalib::string &expr, const ParamRepo &param_repo);
     static TensorSpec prod(const vespalib::string &expr, const ParamRepo &param_repo) {
-        return EvalFixture(tensor::DefaultTensorEngine::ref(), expr, param_repo, true, false).result();
+        return EvalFixture(FastValueBuilderFactory::get(), expr, param_repo, true, false).result();
     }
 };
 

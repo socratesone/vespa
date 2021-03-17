@@ -37,7 +37,7 @@ endif()
 # Note: this is not a union of C_WARN_OPTS, since CMAKE_CXX_FLAGS already includes CMAKE_C_FLAGS, which in turn includes C_WARN_OPTS transitively
 if ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Clang" OR "${CMAKE_CXX_COMPILER_ID}" STREQUAL "AppleClang")
   set(CXX_SPECIFIC_WARN_OPTS "-Wnon-virtual-dtor -Wformat-security -Wno-overloaded-virtual")
-  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-delete-null-pointer-checks")
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-delete-null-pointer-checks -fsized-deallocation")
   if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Darwin")
     set(VESPA_ATOMIC_LIB "")
     set(VESPA_GCC_LIB "")
@@ -78,10 +78,11 @@ set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -g -O3 -fno-omit-frame-pointer ${C_WARN_OPTS
 if (VESPA_USE_SANITIZER)
     set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fsanitize=${VESPA_USE_SANITIZER}")
 endif()
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${CMAKE_C_FLAGS} ${CXX_SPECIFIC_WARN_OPTS} -std=c++2a -fdiagnostics-color=auto ${EXTRA_CXX_FLAGS}")
 if ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "AppleClang")
-  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${CMAKE_C_FLAGS} ${CXX_SPECIFIC_WARN_OPTS} -std=c++1z -fdiagnostics-color=auto ${EXTRA_CXX_FLAGS}")
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ")
 else()
-  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${CMAKE_C_FLAGS} ${CXX_SPECIFIC_WARN_OPTS} -std=c++1z -fvisibility-inlines-hidden -fdiagnostics-color=auto ${EXTRA_CXX_FLAGS}")
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fvisibility-inlines-hidden ")
 endif()
 
 # Linker flags

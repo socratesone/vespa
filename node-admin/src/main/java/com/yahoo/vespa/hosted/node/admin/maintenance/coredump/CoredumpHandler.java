@@ -15,6 +15,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -37,7 +38,6 @@ import static com.yahoo.yolean.Exceptions.uncheck;
  */
 public class CoredumpHandler {
 
-    private static final Pattern JAVA_CORE_PATTERN = Pattern.compile("java_pid.*\\.hprof");
     private static final Pattern HS_ERR_PATTERN = Pattern.compile("hs_err_pid[0-9]+\\.log");
     private static final String LZ4_PATH = "/usr/bin/lz4";
     private static final String PROCESSING_DIRECTORY_NAME = "processing";
@@ -83,12 +83,6 @@ public class CoredumpHandler {
     public void converge(NodeAgentContext context, Supplier<Map<String, Object>> nodeAttributesSupplier) {
         Path containerCrashPathOnHost = context.pathOnHostFromPathInNode(crashPatchInContainer);
         Path containerProcessingPathOnHost = containerCrashPathOnHost.resolve(PROCESSING_DIRECTORY_NAME);
-
-        // Remove java core dumps
-        FileFinder.files(containerCrashPathOnHost)
-                .match(nameMatches(JAVA_CORE_PATTERN))
-                .maxDepth(1)
-                .deleteRecursively(context);
 
         updateMetrics(context, containerCrashPathOnHost);
 
@@ -162,7 +156,7 @@ public class CoredumpHandler {
         if (!Files.exists(metadataPath.toPath())) {
             Path coredumpFilePathOnHost = findCoredumpFileInProcessingDirectory(coredumpDirectory);
             Path coredumpFilePathInContainer = context.pathInNodeFromPathOnHost(coredumpFilePathOnHost);
-            Map<String, Object> metadata = coreCollector.collect(context, coredumpFilePathInContainer);
+            Map<String, Object> metadata = new HashMap<>(coreCollector.collect(context, coredumpFilePathInContainer));
             metadata.putAll(nodeAttributesSupplier.get());
             metadata.put("coredump_path", doneCoredumpsPath.resolve(context.containerName().asString()).resolve(coredumpDirectory.getFileName()).toString());
 
@@ -250,8 +244,7 @@ public class CoredumpHandler {
         );
 
         node.parentHostname().ifPresent(parent -> dimensionsBuilder.add("parentHostname", parent));
-        node.allowedToBeDown().ifPresent(allowed ->
-                dimensionsBuilder.add("orchestratorState", allowed ? "ALLOWED_TO_BE_DOWN" : "NO_REMARKS"));
+        dimensionsBuilder.add("orchestratorState", node.orchestratorStatus().asString());
         node.currentVespaVersion().ifPresent(vespaVersion -> dimensionsBuilder.add("vespaVersion", vespaVersion.toFullString()));
 
         return dimensionsBuilder.build();

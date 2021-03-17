@@ -1,59 +1,91 @@
 // Copyright 2017 Yahoo Holdings. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
-#include "filestorhandlerimpl.h"
 #include "filestormanager.h"
-
-#include <vespa/storage/bucketdb/lockablemap.hpp>
+#include "filestorhandlerimpl.h"
 #include <vespa/storage/bucketdb/minimumusedbitstracker.h>
 #include <vespa/storage/common/bucketmessages.h>
-#include <vespa/storage/common/bucketoperationlogger.h>
 #include <vespa/storage/common/content_bucket_space_repo.h>
 #include <vespa/storage/common/doneinitializehandler.h>
 #include <vespa/vdslib/state/cluster_state_bundle.h>
+#include <vespa/vdslib/state/clusterstate.h>
+#include <vespa/storage/common/hostreporter/hostinfo.h>
 #include <vespa/storage/common/messagebucket.h>
 #include <vespa/storage/config/config-stor-server.h>
 #include <vespa/storage/persistence/bucketownershipnotifier.h>
 #include <vespa/storage/persistence/persistencethread.h>
+#include <vespa/storage/persistence/persistencehandler.h>
+#include <vespa/storage/persistence/provider_error_wrapper.h>
 #include <vespa/storageapi/message/bucketsplitting.h>
 #include <vespa/storageapi/message/state.h>
-#include <vespa/vespalib/stllike/hash_map.hpp>
+#include <vespa/storageapi/message/persistence.h>
+#include <vespa/storageapi/message/removelocation.h>
+#include <vespa/storageapi/message/stat.h>
+#include <vespa/vespalib/stllike/asciistream.h>
 #include <vespa/vespalib/util/stringfmt.h>
+#include <vespa/vespalib/util/idestructorcallback.h>
 #include <vespa/vespalib/util/sequencedtaskexecutor.h>
+#include <thread>
 
 #include <vespa/log/bufferedlogger.h>
 LOG_SETUP(".persistence.filestor.manager");
 
 using std::shared_ptr;
 using document::BucketSpace;
+using vespalib::make_string_short::fmt;
+
+namespace {
+
+VESPA_THREAD_STACK_TAG(response_executor)
+
+}
 
 namespace storage {
+namespace {
+
+class BucketExecutorWrapper : public spi::BucketExecutor {
+public:
+    BucketExecutorWrapper(spi::BucketExecutor & executor) noexcept : _executor(executor) { }
+
+    void execute(const spi::Bucket &bucket, std::unique_ptr<spi::BucketTask> task) override {
+        _executor.execute(bucket, std::move(task));
+    }
+
+private:
+    spi::BucketExecutor & _executor;
+};
+
+}
 
 FileStorManager::
 FileStorManager(const config::ConfigUri & configUri, spi::PersistenceProvider& provider,
-                ServiceLayerComponentRegister& compReg, DoneInitializeHandler& init_handler)
+                ServiceLayerComponentRegister& compReg, DoneInitializeHandler& init_handler,
+                HostInfo& hostInfoReporterRegistrar)
     : StorageLinkQueued("File store manager", compReg),
       framework::HtmlStatusReporter("filestorman", "File store manager"),
       _compReg(compReg),
       _component(compReg, "filestormanager"),
-      _providerCore(provider),
-      _providerErrorWrapper(_providerCore),
-      _provider(&_providerErrorWrapper),
+      _provider(std::make_unique<ProviderErrorWrapper>(provider)),
       _init_handler(init_handler),
       _bucketIdFactory(_component.getBucketIdFactory()),
-      _configUri(configUri),
+      _persistenceHandlers(),
       _threads(),
       _bucketOwnershipNotifier(std::make_unique<BucketOwnershipNotifier>(_component, *this)),
-      _configFetcher(_configUri.getContext()),
-      _threadLockCheckInterval(60),
-      _failDiskOnError(false),
-      _metrics(std::make_unique<FileStorMetrics>(_component.getLoadTypes()->getMetricLoadTypes())),
-      _closed(false)
+      _configFetcher(configUri.getContext()),
+      _use_async_message_handling_on_schedule(false),
+      _metrics(std::make_unique<FileStorMetrics>()),
+      _filestorHandler(),
+      _sequencedExecutor(),
+      _closed(false),
+      _lock(),
+      _host_info_reporter(_component.getStateUpdater()),
+      _resource_usage_listener_registration(provider.register_resource_usage_listener(_host_info_reporter))
 {
-    _configFetcher.subscribe(_configUri.getConfigId(), this);
+    _configFetcher.subscribe(configUri.getConfigId(), this);
     _configFetcher.start();
     _component.registerMetric(*_metrics);
     _component.registerStatusPage(*this);
     _component.getStateUpdater().addStateListener(*this);
+    hostInfoReporterRegistrar.registerReporter(&_host_info_reporter);
     propagateClusterStates();
 }
 
@@ -81,10 +113,14 @@ FileStorManager::~FileStorManager()
 }
 
 void
-FileStorManager::print(std::ostream& out, bool verbose, const std::string& indent) const
+FileStorManager::print(std::ostream& out, bool , const std::string& ) const
 {
-    (void) verbose; (void) indent;
     out << "FileStorManager";
+}
+
+ProviderErrorWrapper &
+FileStorManager::error_wrapper() noexcept {
+    return static_cast<ProviderErrorWrapper &>(*_provider);
 }
 
 namespace {
@@ -106,6 +142,43 @@ selectSequencer(vespa::config::content::StorFilestorConfig::ResponseSequencerTyp
     }
 }
 
+#ifdef __PIC__
+#define TLS_LINKAGE __attribute__((visibility("hidden"), tls_model("initial-exec")))
+#else
+#define TLS_LINKAGE __attribute__((visibility("hidden"), tls_model("local-exec")))
+#endif
+
+thread_local PersistenceHandler * _G_threadLocalHandler TLS_LINKAGE = nullptr;
+
+size_t
+computeAllPossibleHandlerThreads(const vespa::config::content::StorFilestorConfig & cfg) {
+    return cfg.numThreads +
+           computeNumResponseThreads(cfg.numResponseThreads) +
+           cfg.numNetworkThreads +
+           cfg.numVisitorThreads;
+}
+
+}
+
+PersistenceHandler &
+FileStorManager::createRegisteredHandler(const ServiceLayerComponent & component)
+{
+    std::lock_guard guard(_lock);
+    size_t index = _persistenceHandlers.size();
+    assert(index < _metrics->disk->threads.size());
+    _persistenceHandlers.push_back(
+            std::make_unique<PersistenceHandler>(*_sequencedExecutor, component,
+                                                 *_config, *_provider, *_filestorHandler,
+                                                 *_bucketOwnershipNotifier, *_metrics->disk->threads[index]));
+    return *_persistenceHandlers.back();
+}
+
+PersistenceHandler &
+FileStorManager::getThreadLocalHandler() {
+    if (_G_threadLocalHandler == nullptr) {
+        _G_threadLocalHandler = & createRegisteredHandler(_component);
+    }
+    return *_G_threadLocalHandler;
 }
 /**
  * If live configuration, assuming storageserver makes sure no messages are
@@ -117,25 +190,26 @@ FileStorManager::configure(std::unique_ptr<vespa::config::content::StorFilestorC
     // If true, this is not the first configure.
     bool liveUpdate = ! _threads.empty();
 
-    _threadLockCheckInterval = config->diskOperationTimeout;
-    _failDiskOnError = (config->failDiskAfterErrorCount > 0);
+    _use_async_message_handling_on_schedule = config->useAsyncMessageHandlingOnSchedule;
+    _host_info_reporter.set_noise_level(config->resourceUsageReporterNoiseLevel);
 
     if (!liveUpdate) {
         _config = std::move(config);
-        assert(_component.getDiskCount() == 1);
         size_t numThreads = _config->numThreads;
         size_t numStripes = std::max(size_t(1u), numThreads / 2);
-        _metrics->initDiskMetrics(1, _component.getLoadTypes()->getMetricLoadTypes(), numStripes, numThreads);
+        _metrics->initDiskMetrics(numStripes, computeAllPossibleHandlerThreads(*_config));
 
         _filestorHandler = std::make_unique<FileStorHandlerImpl>(numThreads, numStripes, *this, *_metrics, _compReg);
         uint32_t numResponseThreads = computeNumResponseThreads(_config->numResponseThreads);
-        _sequencedExecutor = vespalib::SequencedTaskExecutor::create(numResponseThreads, 10000, selectSequencer(_config->responseSequencerType));
+        _sequencedExecutor = vespalib::SequencedTaskExecutor::create(response_executor, numResponseThreads, 10000,
+                                                                     selectSequencer(_config->responseSequencerType));
         assert(_sequencedExecutor);
         LOG(spam, "Setting up the disk");
-        for (uint32_t j = 0; j < numThreads; j++) {
-            _threads.push_back(std::make_shared<PersistenceThread>(*_sequencedExecutor, _compReg, _configUri, *_provider,
-                                                                   *_filestorHandler, *_metrics->disks[0]->threads[j]));
+        for (uint32_t i = 0; i < numThreads; i++) {
+            _threads.push_back(std::make_unique<PersistenceThread>(createRegisteredHandler(_component),
+                                                                   *_filestorHandler, i % numStripes, _component));
         }
+        _bucketExecutorRegistration = _provider->register_executor(std::make_shared<BucketExecutorWrapper>(*this));
     }
 }
 
@@ -221,30 +295,35 @@ FileStorManager::mapOperationToBucketAndDisk(api::BucketCommand& cmd, const docu
 }
 
 bool
-FileStorManager::handlePersistenceMessage( const shared_ptr<api::StorageMessage>& msg)
+FileStorManager::handlePersistenceMessage(const shared_ptr<api::StorageMessage>& msg)
 {
     api::ReturnCode errorCode(api::ReturnCode::OK);
-    do {
-        LOG(spam, "Received %s. Attempting to queue it.", msg->getType().getName().c_str());
+    LOG(spam, "Received %s. Attempting to queue it.", msg->getType().getName().c_str());
 
+    if (_use_async_message_handling_on_schedule) {
+       auto result = _filestorHandler->schedule_and_get_next_async_message(msg);
+       if (result.was_scheduled()) {
+           if (result.has_async_message()) {
+               getThreadLocalHandler().processLockedMessage(result.release_async_message());
+           }
+           return true;
+       }
+    } else {
         if (_filestorHandler->schedule(msg)) {
             LOG(spam, "Received persistence message %s. Queued it to disk",
                 msg->getType().getName().c_str());
             return true;
         }
-        switch (_filestorHandler->getDiskState()) {
-            case FileStorHandler::DISABLED:
-                errorCode = api::ReturnCode(api::ReturnCode::DISK_FAILURE, "Disk disabled");
-                break;
-            case FileStorHandler::CLOSED:
-                errorCode = api::ReturnCode(api::ReturnCode::ABORTED, "Shutting down storage node.");
-                break;
-            case FileStorHandler::AVAILABLE:
-                assert(false);
-        }
-    } while (false);
-        // If we get here, we failed to schedule message. errorCode says why
-        // We need to reply to message (while not having bucket lock)
+    }
+    switch (_filestorHandler->getDiskState()) {
+        case FileStorHandler::CLOSED:
+            errorCode = api::ReturnCode(api::ReturnCode::ABORTED, "Shutting down storage node.");
+            break;
+        case FileStorHandler::AVAILABLE:
+            assert(false);
+    }
+    // If we get here, we failed to schedule message. errorCode says why
+    // We need to reply to message (while not having bucket lock)
     if (!msg->getType().isReply()) {
         std::shared_ptr<api::StorageReply> reply = static_cast<api::StorageCommand&>(*msg).makeReply();
         reply->setResult(errorCode);
@@ -436,8 +515,8 @@ FileStorManager::onDeleteBucket(const shared_ptr<api::DeleteBucketCommand>& cmd)
     }
     _filestorHandler->failOperations(cmd->getBucket(),
                                      api::ReturnCode(api::ReturnCode::BUCKET_DELETED,
-                                                     vespalib::make_string("Bucket %s about to be deleted anyway",
-                                                                           cmd->getBucketId().toString().c_str())));
+                                                     fmt("Bucket %s about to be deleted anyway",
+                                                         cmd->getBucketId().toString().c_str())));
     return true;
 }
 
@@ -624,10 +703,10 @@ FileStorManager::onInternal(const shared_ptr<api::InternalCommand>& msg)
     }
     case DestroyIteratorCommand::ID:
     {
-        spi::Context context(msg->getLoadType(), msg->getPriority(), msg->getTrace().getLevel());
+        spi::Context context(msg->getPriority(), msg->getTrace().getLevel());
         shared_ptr<DestroyIteratorCommand> cmd(std::static_pointer_cast<DestroyIteratorCommand>(msg));
         _provider->destroyIterator(cmd->getIteratorId(), context);
-        msg->getTrace().getRoot().addChild(context.getTrace().getRoot());
+        msg->getTrace().addChild(context.steal_trace());
         return true;
     }
     case ReadBucketList::ID:
@@ -639,15 +718,6 @@ FileStorManager::onInternal(const shared_ptr<api::InternalCommand>& msg)
     case ReadBucketInfo::ID:
     {
         shared_ptr<ReadBucketInfo> cmd(std::static_pointer_cast<ReadBucketInfo>(msg));
-        StorBucketDatabase::WrappedEntry entry(mapOperationToDisk(*cmd, cmd->getBucket()));
-        if (entry.exist()) {
-            handlePersistenceMessage(cmd);
-        }
-        return true;
-    }
-    case InternalBucketJoinCommand::ID:
-    {
-        shared_ptr<InternalBucketJoinCommand> cmd(std::static_pointer_cast<InternalBucketJoinCommand>(msg));
         StorBucketDatabase::WrappedEntry entry(mapOperationToDisk(*cmd, cmd->getBucket()));
         if (entry.exist()) {
             handlePersistenceMessage(cmd);
@@ -740,6 +810,8 @@ FileStorManager::sendUp(const std::shared_ptr<api::StorageMessage>& msg)
 void FileStorManager::onClose()
 {
     LOG(debug, "Start closing");
+    _bucketExecutorRegistration.reset();
+    _resource_usage_listener_registration.reset();
     // Avoid getting config during shutdown
     _configFetcher.close();
     LOG(debug, "Closed _configFetcher.");
@@ -878,7 +950,7 @@ void FileStorManager::initialize_bucket_databases_from_provider() {
         assert(!bucket_result.hasError());
         const auto& buckets = bucket_result.getList();
         LOG(debug, "Fetching bucket info for %zu buckets in space '%s'",
-            buckets.size(), elem.first.toString().c_str());
+            buckets.size(), bucket_space.toString().c_str());
         auto& db = elem.second->bucketDatabase();
 
         for (const auto& bucket : buckets) {
@@ -901,6 +973,18 @@ void FileStorManager::initialize_bucket_databases_from_provider() {
 
     update_reported_state_after_db_init();
     _init_handler.notifyDoneInitializing();
+}
+
+void
+FileStorManager::execute(const spi::Bucket &bucket, std::unique_ptr<spi::BucketTask> task) {
+    StorBucketDatabase::WrappedEntry entry(_component.getBucketDatabase(bucket.getBucketSpace()).get(
+            bucket.getBucketId(), "FileStorManager::execute"));
+    if (entry.exist()) {
+        auto cmd = std::make_shared<RunTaskCommand>(bucket, std::move(task));
+        _filestorHandler->schedule(cmd);
+    } else {
+        task->fail(bucket);
+    }
 }
 
 } // storage

@@ -8,7 +8,6 @@
 #include <vespa/searchlib/util/dirtraverse.h>
 #include <vespa/searchlib/util/filekit.h>
 #include <vespa/vespalib/io/fileutil.h>
-#include <vespa/vespalib/util/closuretask.h>
 #include <vespa/searchlib/common/serialnumfileheadercontext.h>
 #include <vespa/searchlib/attribute/attributememorysavetarget.h>
 #include <vespa/searchlib/attribute/attributevector.h>
@@ -24,8 +23,6 @@ using namespace search;
 using namespace vespalib;
 using search::common::FileHeaderContext;
 using search::common::SerialNumFileHeaderContext;
-using vespalib::makeTask;
-using vespalib::makeClosure;
 using searchcorespi::IFlushTarget;
 
 namespace proton {
@@ -65,7 +62,7 @@ FlushableAttribute::Flusher::Flusher(FlushableAttribute & fattr, SerialNum syncT
       _syncToken(syncToken),
       _flushFile("")
 {
-    fattr._attr->commit(syncToken, syncToken);
+    fattr._attr->commit(CommitParam(syncToken));
     AttributeVector &attr = *_fattr._attr;
     // Called by attribute field writer executor
     _flushFile = writer.getSnapshotDir(_syncToken) + "/" + attr.getName();
@@ -171,7 +168,8 @@ FlushableAttribute::FlushableAttribute(const AttributeVectorSP attr,
     _lastStats.setPathElementsToLog(8);
     auto &config = attr->getConfig();
     if (config.basicType() == search::attribute::BasicType::Type::TENSOR &&
-        config.tensorType().is_tensor() && config.tensorType().is_dense() && config.hnsw_index_params().has_value()) {
+        config.tensorType().is_dense() && config.hnsw_index_params().has_value())
+    {
         _replay_operation_cost = 100.0; // replaying operations to hnsw index is 100 times more expensive than reading from tls
     }
 }
@@ -225,7 +223,7 @@ FlushableAttribute::internalInitFlush(SerialNum currentSerial)
 
 
 IFlushTarget::Task::UP
-FlushableAttribute::initFlush(SerialNum currentSerial)
+FlushableAttribute::initFlush(SerialNum currentSerial, std::shared_ptr<search::IFlushToken>)
 {
     // Called by document db executor
     std::promise<IFlushTarget::Task::UP> promise;

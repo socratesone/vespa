@@ -12,13 +12,20 @@ namespace vespalib::eval { struct ValueBuilderFactory; }
 
 namespace vespalib::eval::instruction {
 
-using join_fun_t = vespalib::eval::operation::op2_t;
+using join_fun_t = operation::op2_t;
 
 //-----------------------------------------------------------------------------
 
+struct JoinParam;
+
+template <typename LCT, typename RCT, typename OCT, typename Fun>
+Value::UP generic_mixed_join(const Value &lhs, const Value &rhs, const JoinParam &param);
+
 struct GenericJoin {
     static InterpretedFunction::Instruction
-    make_instruction(const ValueType &lhs_type, const ValueType &rhs_type, join_fun_t function,
+    make_instruction(const ValueType &result_type,
+                     const ValueType &lhs_type, const ValueType &rhs_type,
+                     join_fun_t function,
                      const ValueBuilderFactory &factory, Stash &stash);
 };
 
@@ -34,9 +41,9 @@ struct DenseJoinPlan {
     size_t lhs_size;
     size_t rhs_size;
     size_t out_size;
-    std::vector<size_t> loop_cnt;
-    std::vector<size_t> lhs_stride;
-    std::vector<size_t> rhs_stride;
+    SmallVector<size_t> loop_cnt;
+    SmallVector<size_t> lhs_stride;
+    SmallVector<size_t> rhs_stride;
     DenseJoinPlan(const ValueType &lhs_type, const ValueType &rhs_type);
     ~DenseJoinPlan();
     template <typename F> void execute(size_t lhs, size_t rhs, const F &f) const {
@@ -51,10 +58,13 @@ struct DenseJoinPlan {
  **/
 struct SparseJoinPlan {
     enum class Source { LHS, RHS, BOTH };
-    std::vector<Source> sources;
-    std::vector<size_t> lhs_overlap;
-    std::vector<size_t> rhs_overlap;
+    SmallVector<Source> sources;
+    SmallVector<size_t> lhs_overlap;
+    SmallVector<size_t> rhs_overlap;
+    bool should_forward_lhs_index() const;
+    bool should_forward_rhs_index() const;
     SparseJoinPlan(const ValueType &lhs_type, const ValueType &rhs_type);
+    SparseJoinPlan(size_t num_mapped_dims); // full overlap plan
     ~SparseJoinPlan();
 };
 
@@ -66,16 +76,15 @@ struct SparseJoinState {
     bool                                    swapped;
     const Value::Index                     &first_index;
     const Value::Index                     &second_index;
-    const std::vector<size_t>              &second_view_dims;
-    std::vector<vespalib::stringref>        full_address;
-    std::vector<vespalib::stringref*>       first_address;
-    std::vector<const vespalib::stringref*> address_overlap;
-    std::vector<vespalib::stringref*>       second_only_address;
+    const SmallVector<size_t>              &second_view_dims;
+    SmallVector<string_id>                  full_address;
+    SmallVector<string_id*>                 first_address;
+    SmallVector<const string_id*>           address_overlap;
+    SmallVector<string_id*>                 second_only_address;
     size_t                                  lhs_subspace;
     size_t                                  rhs_subspace;
     size_t                                 &first_subspace;
     size_t                                 &second_subspace;
-
     SparseJoinState(const SparseJoinPlan &plan, const Value::Index &lhs, const Value::Index &rhs);
     ~SparseJoinState();
 };
@@ -89,9 +98,10 @@ struct JoinParam {
     DenseJoinPlan dense_plan;
     join_fun_t function;
     const ValueBuilderFactory &factory;
-    JoinParam(const ValueType &lhs_type, const ValueType &rhs_type,
+    JoinParam(const ValueType &res_type_in,
+              const ValueType &lhs_type, const ValueType &rhs_type,
              join_fun_t function_in, const ValueBuilderFactory &factory_in)
-        : res_type(ValueType::join(lhs_type, rhs_type)),
+        : res_type(res_type_in),
           sparse_plan(lhs_type, rhs_type),
           dense_plan(lhs_type, rhs_type),
           function(function_in),

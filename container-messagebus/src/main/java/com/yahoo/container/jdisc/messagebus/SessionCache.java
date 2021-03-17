@@ -37,6 +37,7 @@ import java.util.logging.Logger;
  * @author Steinar Knutsen
  * @author Einar Rosenvinge
  */
+// TODO jonmv: Remove this? Only used sensibly by FeedHandlerV3, where only timeout varies.
 public final class SessionCache extends AbstractComponent {
 
     private static final Logger log = Logger.getLogger(SessionCache.class.getName());
@@ -123,6 +124,7 @@ public final class SessionCache extends AbstractComponent {
                 .setListenPort(mbusConfig.port())
                 .setNumTargetsPerSpec(mbusConfig.numconnectionspertarget())
                 .setNumNetworkThreads(mbusConfig.numthreads())
+                .setTransportEventsBeforeWakeup(mbusConfig.transport_events_before_wakeup())
                 .setOptimization(RPCNetworkParams.Optimization.valueOf(mbusConfig.optimize_for().name()));
         return SharedMessageBus.newInstance(mbusParams, netParams);
     }
@@ -159,7 +161,7 @@ public final class SessionCache extends AbstractComponent {
         return sourcesCreator.retain(sourceLock, sources, p);
     }
 
-    private abstract class SessionCreator<PARAMS, KEY, SESSION extends SharedResource> {
+    private abstract static class SessionCreator<PARAMS, KEY, SESSION extends SharedResource> {
 
         abstract SESSION create(PARAMS p);
 
@@ -352,6 +354,7 @@ public final class SessionCache extends AbstractComponent {
     }
 
     static class UnknownThrottlePolicySignature extends ThrottlePolicySignature {
+
         private final ThrottlePolicy policy;
 
         UnknownThrottlePolicySignature(final ThrottlePolicy policy) {
@@ -409,26 +412,16 @@ public final class SessionCache extends AbstractComponent {
 
         @Override
         public boolean equals(Object obj) {
-            if (this == obj) {
-                return true;
-            }
-            if (obj == null) {
-                return false;
-            }
-            if (getClass() != obj.getClass()) {
-                return false;
-            }
+            if (this == obj) return true;
+            if (obj == null) return false;
+            if (getClass() != obj.getClass()) return false;
             SourceSessionKey other = (SourceSessionKey) obj;
             if (policy == null) {
-                if (other.policy != null) {
-                    return false;
-                }
+                if (other.policy != null) return false;
             } else if (!policy.equals(other.policy)) {
                 return false;
             }
-            if (Double.doubleToLongBits(timeout) != Double.doubleToLongBits(other.timeout)) {
-                return false;
-            }
+            if (Double.doubleToLongBits(timeout) != Double.doubleToLongBits(other.timeout)) return false;
             return true;
         }
     }

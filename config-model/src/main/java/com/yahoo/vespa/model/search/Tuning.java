@@ -13,7 +13,7 @@ import static com.yahoo.text.Lowercase.toLowerCase;
  *
  * @author geirst
  */
-public class Tuning extends AbstractConfigProducer implements ProtonConfig.Producer {
+public class Tuning extends AbstractConfigProducer<Tuning> implements ProtonConfig.Producer {
 
     public static class SearchNode implements ProtonConfig.Producer {
 
@@ -363,9 +363,7 @@ public class Tuning extends AbstractConfigProducer implements ProtonConfig.Produ
             @Override
             public void getConfig(ProtonConfig.Builder builder) {
                 if (concurrency != null) {
-                    // We divide by 2 as this number is used for 2 different thread pools.
-                    // Not perfect, but the best way to split the resources evenly.
-                    builder.feeding.concurrency(concurrency/2);
+                    builder.feeding.concurrency(concurrency);
                 }
             }
         }
@@ -397,7 +395,7 @@ public class Tuning extends AbstractConfigProducer implements ProtonConfig.Produ
     public DispatchTuning dispatch = DispatchTuning.empty;
     public SearchNode searchNode;
 
-    public Tuning(AbstractConfigProducer parent) {
+    public Tuning(AbstractConfigProducer<?> parent) {
         super(parent, "tuning");
     }
 

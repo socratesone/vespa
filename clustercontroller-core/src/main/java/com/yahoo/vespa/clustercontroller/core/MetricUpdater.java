@@ -32,9 +32,10 @@ public class MetricUpdater {
                 + nodeCounts.getOrDefault(State.MAINTENANCE, 0);
     }
 
-    public void updateClusterStateMetrics(ContentCluster cluster, ClusterState state) {
+    public void updateClusterStateMetrics(ContentCluster cluster, ClusterState state, ResourceUsageStats resourceUsage) {
         Map<String, String> dimensions = new HashMap<>();
         dimensions.put("cluster", cluster.getName());
+        dimensions.put("clusterid", cluster.getName());
         for (NodeType type : NodeType.getTypes()) {
             dimensions.put("node-type", type.toString().toLowerCase());
             MetricReporter.Context context = createContext(dimensions);
@@ -59,6 +60,12 @@ public class MetricUpdater {
         dimensions.remove("node-type");
         MetricReporter.Context context = createContext(dimensions);
         metricReporter.add("cluster-state-change", 1, context);
+
+        metricReporter.set("resource_usage.max_disk_utilization", resourceUsage.getMaxDiskUtilization(), context);
+        metricReporter.set("resource_usage.max_memory_utilization", resourceUsage.getMaxMemoryUtilization(), context);
+        metricReporter.set("resource_usage.nodes_above_limit", resourceUsage.getNodesAboveLimit(), context);
+        metricReporter.set("resource_usage.disk_limit", resourceUsage.getDiskLimit(), context);
+        metricReporter.set("resource_usage.memory_limit", resourceUsage.getMemoryLimit(), context);
     }
 
     public void updateMasterElectionMetrics(Map<Integer, Integer> data) {
@@ -75,14 +82,8 @@ public class MetricUpdater {
         metricReporter.set("agreed-master-votes", maxCount);
     }
 
-    public void becameMaster() {
-        metricReporter.set("is-master", 1);
-        metricReporter.add("master-change", 1);
-    }
-
-    public void noLongerMaster() {
-        metricReporter.set("is-master", 0);
-        metricReporter.add("master-change", 1);
+    public void updateMasterState(boolean isMaster) {
+        metricReporter.set("is-master", isMaster ? 1 : 0);
     }
 
     public void addTickTime(long millis, boolean didWork) {

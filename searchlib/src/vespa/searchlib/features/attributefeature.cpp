@@ -469,7 +469,7 @@ createTensorAttributeExecutor(const IAttributeVector *attribute, const vespalib:
                 tensorType.to_spec().c_str());
         return ConstantTensorExecutor::createEmpty(tensorType, stash);
     }
-    if (tensorAttribute->supports_extract_dense_view()) {
+    if (tensorAttribute->supports_extract_cells_ref()) {
         return stash.create<DenseTensorAttributeExecutor>(*tensorAttribute);
     }
     if (tensorAttribute->supports_get_tensor_ref()) {
@@ -530,7 +530,7 @@ AttributeBlueprint::setup(const fef::IIndexEnvironment & env,
                    "the given key of a weighted set attribute, or"
                    "the tensor of a tensor attribute", output_type);
     const fef::FieldInfo * fInfo = env.getFieldByName(_attrName);
-    if (_tensorType.is_tensor() || isSingleValueBoolField(*fInfo)) {
+    if (_tensorType.has_dimensions() || isSingleValueBoolField(*fInfo)) {
         _numOutputs = 1;
     } else {
         describeOutput("weight", "The weight associated with the given key in a weighted set attribute.");
@@ -558,7 +558,7 @@ fef::FeatureExecutor &
 AttributeBlueprint::createExecutor(const fef::IQueryEnvironment &env, vespalib::Stash &stash) const
 {
     const IAttributeVector * attribute = lookupAttribute(_attrKey, _attrName, env);
-    if (_tensorType.is_tensor()) {
+    if (_tensorType.has_dimensions()) {
         return createTensorAttributeExecutor(attribute, _attrName, _tensorType, stash);
     } else {
         return createAttributeExecutor(_numOutputs, attribute, _attrName, _extra, stash);

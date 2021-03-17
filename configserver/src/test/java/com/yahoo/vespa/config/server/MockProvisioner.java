@@ -2,7 +2,9 @@
 package com.yahoo.vespa.config.server;
 
 import com.yahoo.config.model.api.HostProvisioner;
+import com.yahoo.config.provision.ActivationContext;
 import com.yahoo.config.provision.ApplicationId;
+import com.yahoo.config.provision.ApplicationTransaction;
 import com.yahoo.config.provision.Capacity;
 import com.yahoo.config.provision.ClusterSpec;
 import com.yahoo.config.provision.HostFilter;
@@ -11,7 +13,6 @@ import com.yahoo.config.provision.ProvisionLock;
 import com.yahoo.config.provision.ProvisionLogger;
 import com.yahoo.config.provision.Provisioner;
 import com.yahoo.config.provision.exception.LoadBalancerServiceException;
-import com.yahoo.transaction.NestedTransaction;
 
 import java.util.Collection;
 import java.util.List;
@@ -29,6 +30,7 @@ public class MockProvisioner implements Provisioner {
     private HostFilter lastRestartFilter;
 
     private boolean transientFailureOnPrepare = false;
+    private boolean failureOnRemove = false;
     private HostProvisioner hostProvisioner = null;
 
     public MockProvisioner hostProvisioner(HostProvisioner hostProvisioner) {
@@ -39,6 +41,10 @@ public class MockProvisioner implements Provisioner {
     public MockProvisioner transientFailureOnPrepare() {
         transientFailureOnPrepare = true;
         return this;
+    }
+
+    public void failureOnRemove(boolean failureOnRemove) {
+        this.failureOnRemove = failureOnRemove;
     }
 
     @Override
@@ -53,26 +59,19 @@ public class MockProvisioner implements Provisioner {
     }
 
     @Override
-    public void activate(NestedTransaction transaction, ApplicationId application, Collection<HostSpec> hosts) {
-        activate(transaction, hosts, lock(application));
-    }
-
-    @Override
-    public void activate(NestedTransaction transaction, Collection<HostSpec> hosts, ProvisionLock lock) {
+    public void activate(Collection<HostSpec> hosts, ActivationContext context, ApplicationTransaction transaction) {
         activated = true;
-        lastApplicationId = lock.application();
+        lastApplicationId = transaction.application();
         lastHosts = hosts;
     }
 
     @Override
-    public void remove(NestedTransaction transaction, ApplicationId application) {
-        remove(transaction, lock(application));
-    }
+    public void remove(ApplicationTransaction transaction) {
+        if (failureOnRemove)
+            throw new IllegalStateException("Unable to remove " + transaction.application());
 
-    @Override
-    public void remove(NestedTransaction transaction, ProvisionLock lock) {
         removed = true;
-        lastApplicationId = lock.application();
+        lastApplicationId = transaction.application();
     }
 
     @Override
@@ -110,4 +109,5 @@ public class MockProvisioner implements Provisioner {
     public HostFilter lastRestartFilter() {
         return lastRestartFilter;
     }
+
 }

@@ -21,6 +21,7 @@ import com.yahoo.test.ManualClock;
 import com.yahoo.text.Utf8;
 import com.yahoo.vespa.hosted.provision.Node;
 import com.yahoo.vespa.hosted.provision.Node.State;
+import com.yahoo.vespa.hosted.provision.node.Address;
 import com.yahoo.vespa.hosted.provision.node.Agent;
 import com.yahoo.vespa.hosted.provision.node.Generation;
 import com.yahoo.vespa.hosted.provision.node.History;
@@ -78,7 +79,7 @@ public class NodeSerializerTest {
         node = node.allocate(ApplicationId.from(TenantName.from("myTenant"),
                                                 ApplicationName.from("myApplication"),
                                                 InstanceName.from("myInstance")),
-                             ClusterMembership.from("content/myId/0/0", Vtag.currentVersion, Optional.empty()),
+                             ClusterMembership.from("content/myId/0/0/stateful", Vtag.currentVersion, Optional.empty()),
                              requestedResources,
                              clock.instant());
         assertEquals(1, node.history().events().size());
@@ -133,7 +134,7 @@ public class NodeSerializerTest {
                 "      \"applicationId\" : \"myApplication\",\n" +
                 "      \"tenantId\" : \"myTenant\",\n" +
                 "      \"instanceId\" : \"myInstance\",\n" +
-                "      \"serviceId\" : \"content/myId/0/0\",\n" +
+                "      \"serviceId\" : \"content/myId/0/0/stateful\",\n" +
                 "      \"restartGeneration\" : 3,\n" +
                 "      \"currentRestartGeneration\" : 4,\n" +
                 "      \"removable\" : true,\n" +
@@ -166,7 +167,7 @@ public class NodeSerializerTest {
         node = node.allocate(ApplicationId.from(TenantName.from("myTenant"),
                                                 ApplicationName.from("myApplication"),
                                                 InstanceName.from("myInstance")),
-                             ClusterMembership.from("content/myId/0/0", Vtag.currentVersion, Optional.empty()),
+                             ClusterMembership.from("content/myId/0/0/stateful", Vtag.currentVersion, Optional.empty()),
                              node.flavor().resources(),
                              clock.instant());
         assertEquals(1, node.history().events().size());
@@ -216,7 +217,7 @@ public class NodeSerializerTest {
         node = node.allocate(ApplicationId.from(TenantName.from("myTenant"),
                              ApplicationName.from("myApplication"),
                              InstanceName.from("myInstance")),
-                             ClusterMembership.from("content/myId/0/0", Vtag.currentVersion, Optional.empty()),
+                             ClusterMembership.from("content/myId/0/0/stateful", Vtag.currentVersion, Optional.empty()),
                              node.flavor().resources(),
                              clock.instant());
 
@@ -229,7 +230,9 @@ public class NodeSerializerTest {
     @Test
     public void serialize_parentHostname() {
         final String parentHostname = "parent.yahoo.com";
-        Node node = Node.create("myId", new IP.Config(Set.of("127.0.0.1"), Set.of()), "myHostname", Optional.of(parentHostname), Optional.empty(), nodeFlavors.getFlavorOrThrow("default"), Optional.empty(), NodeType.tenant, Optional.empty());
+        Node node = Node.create("myId", new IP.Config(Set.of("127.0.0.1"), Set.of()), "myHostname", nodeFlavors.getFlavorOrThrow("default"), NodeType.tenant)
+                .parentHostname(parentHostname)
+                .build();
 
         Node deserializedNode = nodeSerializer.fromJson(State.provisioned, nodeSerializer.toJson(node));
         assertEquals(parentHostname, deserializedNode.parentHostname().get());
@@ -247,15 +250,19 @@ public class NodeSerializerTest {
     public void serialize_ip_address_pool() {
         Node node = createNode();
 
-        // Test round-trip with IP address pool
-        node = node.with(node.ipConfig().with(IP.Pool.of(Set.of("::1", "::2", "::3"))));
+        // Test round-trip with address pool
+        node = node.with(node.ipConfig().withPool(IP.Pool.of(
+                Set.of("::1", "::2", "::3"),
+                List.of(new Address("a"), new Address("b"), new Address("c")))));
         Node copy = nodeSerializer.fromJson(node.state(), nodeSerializer.toJson(node));
-        assertEquals(node.ipConfig().pool().asSet(), copy.ipConfig().pool().asSet());
+        assertEquals(node.ipConfig().pool().getIpSet(), copy.ipConfig().pool().getIpSet());
+        assertEquals(Set.copyOf(node.ipConfig().pool().getAddressList()), Set.copyOf(copy.ipConfig().pool().getAddressList()));
 
-        // Test round-trip without IP address pool (handle empty pool)
+        // Test round-trip without address pool (handle empty pool)
         node = createNode();
         copy = nodeSerializer.fromJson(node.state(), nodeSerializer.toJson(node));
-        assertEquals(node.ipConfig().pool().asSet(), copy.ipConfig().pool().asSet());
+        assertEquals(node.ipConfig().pool().getIpSet(), copy.ipConfig().pool().getIpSet());
+        assertEquals(Set.copyOf(node.ipConfig().pool().getAddressList()), Set.copyOf(copy.ipConfig().pool().getAddressList()));
     }
 
     @Test
@@ -308,7 +315,7 @@ public class NodeSerializerTest {
                         "   \"hostname\" : \"myHostname\",\n" +
                         "   \"ipAddresses\" : [\"127.0.0.1\"],\n" +
                         "   \"instance\": {\n" +
-                        "     \"serviceId\": \"content/myId/0/0\",\n" +
+                        "     \"serviceId\": \"content/myId/0/0/stateful\",\n" +
                         "     \"wantedVespaVersion\": \"6.42.2\"\n" +
                         "   }\n" +
                         "}";
@@ -401,7 +408,7 @@ public class NodeSerializerTest {
         node = node.allocate(ApplicationId.from(TenantName.from("myTenant"),
                 ApplicationName.from("myApplication"),
                 InstanceName.from("myInstance")),
-                ClusterMembership.from("content/myId/0/0", Vtag.currentVersion, Optional.empty()),
+                ClusterMembership.from("content/myId/0/0/stateful", Vtag.currentVersion, Optional.empty()),
                 node.flavor().resources(),
                 clock.instant());
         assertTrue(node.allocation().isPresent());
@@ -426,6 +433,19 @@ public class NodeSerializerTest {
         assertEquals(switchHostname, node.switchHostname().get());
     }
 
+    @Test
+    public void exclusive_to_serialization() {
+        Node.Builder builder = Node.create("myId", IP.Config.EMPTY, "myHostname",
+                nodeFlavors.getFlavorOrThrow("default"), NodeType.host);
+        Node node = nodeSerializer.fromJson(State.provisioned, nodeSerializer.toJson(builder.build()));
+        assertFalse(node.exclusiveTo().isPresent());
+
+        ApplicationId exclusiveTo = ApplicationId.from("tenant1", "app1", "instance1");
+        node = builder.exclusiveTo(exclusiveTo).build();
+        node = nodeSerializer.fromJson(State.provisioned, nodeSerializer.toJson(node));
+        assertEquals(exclusiveTo, node.exclusiveTo().get());
+    }
+
     private byte[] createNodeJson(String hostname, String... ipAddress) {
         String ipAddressJsonPart = "";
         if (ipAddress.length > 0) {
@@ -447,11 +467,8 @@ public class NodeSerializerTest {
         return Node.create("myId",
                            new IP.Config(Set.of("127.0.0.1"), Set.of()),
                            "myHostname",
-                           Optional.empty(),
-                           Optional.empty(),
                            nodeFlavors.getFlavorOrThrow("default"),
-                           Optional.empty(), NodeType.tenant,
-                           Optional.empty());
+                           NodeType.tenant).build();
     }
 
 }

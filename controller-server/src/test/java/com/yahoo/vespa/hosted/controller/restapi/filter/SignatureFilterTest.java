@@ -11,13 +11,14 @@ import com.yahoo.security.KeyUtils;
 import com.yahoo.vespa.hosted.controller.Application;
 import com.yahoo.vespa.hosted.controller.ApplicationController;
 import com.yahoo.vespa.hosted.controller.ControllerTester;
-import com.yahoo.vespa.hosted.controller.api.integration.organization.BillingInfo;
 import com.yahoo.vespa.hosted.controller.api.role.Role;
 import com.yahoo.vespa.hosted.controller.api.role.SecurityContext;
 import com.yahoo.vespa.hosted.controller.api.role.SimplePrincipal;
 import com.yahoo.vespa.hosted.controller.application.TenantAndApplicationId;
 import com.yahoo.vespa.hosted.controller.restapi.ApplicationRequestToDiscFilterRequestWrapper;
 import com.yahoo.vespa.hosted.controller.tenant.CloudTenant;
+import com.yahoo.vespa.hosted.controller.tenant.LastLoginInfo;
+import com.yahoo.vespa.hosted.controller.tenant.TenantInfo;
 import org.junit.Before;
 import org.junit.Test;
 
@@ -27,6 +28,8 @@ import java.net.URI;
 import java.net.http.HttpRequest;
 import java.security.PrivateKey;
 import java.security.PublicKey;
+import java.time.Instant;
+import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 
@@ -67,8 +70,13 @@ public class SignatureFilterTest {
         signer = new RequestSigner(privateKey, id.serializedForm(), tester.clock());
 
         tester.curator().writeTenant(new CloudTenant(appId.tenant(),
+                                                     Instant.EPOCH,
+                                                     LastLoginInfo.EMPTY,
                                                      Optional.empty(),
-                                                     ImmutableBiMap.of()));
+                                                     ImmutableBiMap.of(),
+                                                     TenantInfo.EMPTY,
+                                                     List.of(),
+                                                     Optional.empty()));
         tester.curator().writeApplication(new Application(appId, tester.clock().instant()));
     }
 
@@ -95,23 +103,31 @@ public class SignatureFilterTest {
         verifySecurityContext(requestOf(signer.signed(request.copy(), Method.GET, InputStream::nullInputStream), emptyBody),
                               new SecurityContext(new SimplePrincipal("headless@my-tenant.my-app"),
                                                   Set.of(Role.reader(id.tenant()),
-                                                         Role.headless(id.tenant(), id.application()))));
+                                                         Role.headless(id.tenant(), id.application())),
+                                                  tester.clock().instant()));
 
         // Signed POST request with X-Key header gets a headless role.
         byte[] hiBytes = new byte[]{0x48, 0x69};
         verifySecurityContext(requestOf(signer.signed(request.copy(), Method.POST, () -> new ByteArrayInputStream(hiBytes)), hiBytes),
                               new SecurityContext(new SimplePrincipal("headless@my-tenant.my-app"),
                                                   Set.of(Role.reader(id.tenant()),
-                                                         Role.headless(id.tenant(), id.application()))));
+                                                         Role.headless(id.tenant(), id.application())),
+                                                  tester.clock().instant()));
 
         // Signed request gets a developer role when a matching developer key is stored for the tenant.
         tester.curator().writeTenant(new CloudTenant(appId.tenant(),
+                                                     Instant.EPOCH,
+                                                     LastLoginInfo.EMPTY,
                                                      Optional.empty(),
-                                                     ImmutableBiMap.of(publicKey, () -> "user")));
+                                                     ImmutableBiMap.of(publicKey, () -> "user"),
+                                                     TenantInfo.EMPTY,
+                                                     List.of(),
+                                                     Optional.empty()));
         verifySecurityContext(requestOf(signer.signed(request.copy(), Method.POST, () -> new ByteArrayInputStream(hiBytes)), hiBytes),
                               new SecurityContext(new SimplePrincipal("user"),
                                                   Set.of(Role.reader(id.tenant()),
-                                                         Role.developer(id.tenant()))));
+                                                         Role.developer(id.tenant())),
+                                                  tester.clock().instant()));
 
         // Unsigned requests still get no roles.
         verifySecurityContext(requestOf(request.copy().method("GET", HttpRequest.BodyPublishers.ofByteArray(emptyBody)).build(), emptyBody),

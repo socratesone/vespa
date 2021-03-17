@@ -8,9 +8,9 @@ import com.yahoo.config.provision.ClusterSpec;
 import com.yahoo.config.provision.Environment;
 import com.yahoo.config.provision.Flavor;
 import com.yahoo.config.provision.NodeResources;
+import com.yahoo.config.provision.NodeType;
 import com.yahoo.config.provision.RegionName;
 import com.yahoo.config.provision.Zone;
-import com.yahoo.vespa.hosted.provision.Node;
 import com.yahoo.vespa.hosted.provision.NodeRepository;
 import com.yahoo.vespa.hosted.provision.Nodelike;
 import org.junit.Test;
@@ -33,7 +33,7 @@ public class DockerProvisioningCompleteHostCalculatorTest {
                                                                     .build();
         tester.makeReadyHosts(9, hostFlavor.resources()).activateTenantHosts();
 
-        ApplicationId app1 = ProvisioningTester.makeApplicationId("app1");
+        ApplicationId app1 = ProvisioningTester.applicationId("app1");
         ClusterSpec cluster1 = ClusterSpec.request(ClusterSpec.Type.content, new ClusterSpec.Id("cluster1")).vespaVersion("7").build();
 
         var initialResources = new NodeResources(2, 16, 50, 1);
@@ -51,7 +51,6 @@ public class DockerProvisioningCompleteHostCalculatorTest {
                            7, 1, 0.7, 4.6, 14.3, 1.0,
                            app1, cluster1);
 
-        System.out.println("---------------------redeploying the same---------------------");
         tester.activate(app1, cluster1, Capacity.from(new ClusterResources(7, 1, newMinResources),
                                                       new ClusterResources(7, 1, newMaxResources)));
         tester.assertNodes("Redeploying the same ranges does not cause changes",
@@ -64,8 +63,8 @@ public class DockerProvisioningCompleteHostCalculatorTest {
         Flavor hostFlavor = new Flavor(new NodeResources(20, 40, 1000, 4));
         var calculator = new CompleteResourcesCalculator(hostFlavor);
         var originalReal = new NodeResources(0.7, 6.0, 12.9, 1.0);
-        var realToRequest = calculator.realToRequest(originalReal);
-        var requestToReal = calculator.requestToReal(realToRequest);
+        var realToRequest = calculator.realToRequest(originalReal, false);
+        var requestToReal = calculator.requestToReal(realToRequest, false);
         var realResourcesOf = calculator.realResourcesOf(realToRequest);
         assertEquals(originalReal, requestToReal);
         assertEquals(originalReal, realResourcesOf);
@@ -82,18 +81,12 @@ public class DockerProvisioningCompleteHostCalculatorTest {
         }
 
         @Override
-        public NodeResources realResourcesOf(Nodelike node, NodeRepository nodeRepository) {
+        public NodeResources realResourcesOf(Nodelike node, NodeRepository nodeRepository, boolean exclusive) {
             if (node.parentHostname().isEmpty()) return node.resources(); // hosts use configured flavors
             return realResourcesOf(node.resources());
         }
 
         NodeResources realResourcesOf(NodeResources advertisedResources) {
-            var r = advertisedResources.withMemoryGb(advertisedResources.memoryGb() -
-                                                     memoryOverhead(advertisedResourcesOf(hostFlavor).memoryGb(), advertisedResources, false))
-                                       .withDiskGb(advertisedResources.diskGb() -
-                                                   diskOverhead(advertisedResourcesOf(hostFlavor).diskGb(), advertisedResources, false));
-            System.out.println("        real given " + advertisedResources + ": " + r);
-            System.out.println("        adv. given those: " + realToRequest(r));
             return advertisedResources.withMemoryGb(advertisedResources.memoryGb() -
                                                     memoryOverhead(advertisedResourcesOf(hostFlavor).memoryGb(), advertisedResources, false))
                                       .withDiskGb(advertisedResources.diskGb() -
@@ -101,7 +94,7 @@ public class DockerProvisioningCompleteHostCalculatorTest {
         }
 
         @Override
-        public NodeResources requestToReal(NodeResources advertisedResources) {
+        public NodeResources requestToReal(NodeResources advertisedResources, boolean exclusive) {
             double memoryOverhead = memoryOverhead(advertisedResourcesOf(hostFlavor).memoryGb(), advertisedResources, false);
             double diskOverhead = diskOverhead(advertisedResourcesOf(hostFlavor).diskGb(), advertisedResources, false);
             return advertisedResources.withMemoryGb(advertisedResources.memoryGb() - memoryOverhead)
@@ -116,12 +109,15 @@ public class DockerProvisioningCompleteHostCalculatorTest {
         }
 
         @Override
-        public NodeResources realToRequest(NodeResources realResources) {
+        public NodeResources realToRequest(NodeResources realResources, boolean exclusive) {
             double memoryOverhead = memoryOverhead(advertisedResourcesOf(hostFlavor).memoryGb(), realResources, true);
             double diskOverhead = diskOverhead(advertisedResourcesOf(hostFlavor).diskGb(), realResources, true);
             return realResources.withMemoryGb(realResources.memoryGb() + memoryOverhead)
                                 .withDiskGb(realResources.diskGb() + diskOverhead);
         }
+
+        @Override
+        public long thinPoolSizeInBase2Gb(NodeType nodeType, boolean sharedHost) { return 0; }
 
         /**
          * Returns the memory overhead resulting if the given advertised resources are placed on the given node

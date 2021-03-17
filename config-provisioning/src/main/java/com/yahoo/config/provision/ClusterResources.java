@@ -31,6 +31,7 @@ public class ClusterResources {
     public NodeResources nodeResources() { return nodeResources; }
 
     public ClusterResources with(NodeResources resources) { return new ClusterResources(nodes, groups, resources); }
+    public ClusterResources withNodes(int nodes) { return new ClusterResources(nodes, groups, nodeResources); }
     public ClusterResources withGroups(int groups) { return new ClusterResources(nodes, groups, nodeResources); }
 
     /** Returns true if this is smaller than the given resources in any dimension */
@@ -50,6 +51,23 @@ public class ClusterResources {
         if ( ! this.nodeResources.justNonNumbers().compatibleWith(min.nodeResources.justNonNumbers())) return false;
         if ( ! this.nodeResources.justNonNumbers().compatibleWith(max.nodeResources.justNonNumbers())) return false;
         return true;
+    }
+
+    /** Returns the total resources of this, that is the number of nodes times the node resources */
+    public NodeResources totalResources() {
+        return nodeResources.withVcpu(nodeResources.vcpu() * nodes)
+                            .withMemoryGb(nodeResources.memoryGb() * nodes)
+                            .withDiskGb(nodeResources.diskGb() * nodes)
+                            .withBandwidthGbps(nodeResources.bandwidthGbps() * nodes);
+    }
+
+    public ClusterResources justNumbers() {
+        return new ClusterResources(nodes, groups, nodeResources.justNumbers());
+    }
+
+    /** Returns the standard cost of these resources, in dollars per hour */
+    public double cost() {
+        return nodes * nodeResources.cost();
     }
 
     @Override

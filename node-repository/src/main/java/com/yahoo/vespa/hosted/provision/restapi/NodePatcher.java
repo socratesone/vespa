@@ -3,8 +3,8 @@ package com.yahoo.vespa.hosted.provision.restapi;
 
 import com.google.common.base.Suppliers;
 import com.yahoo.component.Version;
+import com.yahoo.config.provision.ApplicationId;
 import com.yahoo.config.provision.DockerImage;
-import com.yahoo.config.provision.Flavor;
 import com.yahoo.config.provision.NodeFlavors;
 import com.yahoo.config.provision.NodeResources;
 import com.yahoo.config.provision.TenantName;
@@ -13,8 +13,12 @@ import com.yahoo.slime.Inspector;
 import com.yahoo.slime.ObjectTraverser;
 import com.yahoo.slime.SlimeUtils;
 import com.yahoo.slime.Type;
+import com.yahoo.transaction.Mutex;
 import com.yahoo.vespa.hosted.provision.LockedNodeList;
 import com.yahoo.vespa.hosted.provision.Node;
+import com.yahoo.vespa.hosted.provision.NodeMutex;
+import com.yahoo.vespa.hosted.provision.NodeRepository;
+import com.yahoo.vespa.hosted.provision.node.Address;
 import com.yahoo.vespa.hosted.provision.node.Agent;
 import com.yahoo.vespa.hosted.provision.node.Allocation;
 import com.yahoo.vespa.hosted.provision.node.IP;
@@ -26,13 +30,13 @@ import java.io.InputStream;
 import java.io.UncheckedIOException;
 import java.time.Clock;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.TreeSet;
-import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
 import static com.yahoo.config.provision.NodeResources.DiskSpeed.fast;
@@ -46,27 +50,35 @@ import static com.yahoo.config.provision.NodeResources.StorageType.remote;
  *
  * @author bratseth
  */
-public class NodePatcher {
+public class NodePatcher implements AutoCloseable {
 
     private static final String WANT_TO_RETIRE = "wantToRetire";
     private static final String WANT_TO_DEPROVISION = "wantToDeprovision";
     private static final Set<String> RECURSIVE_FIELDS = Set.of(WANT_TO_RETIRE);
 
+    private final NodeRepository nodeRepository;
     private final com.google.common.base.Supplier<LockedNodeList> memoizedNodes;
     private final PatchedNodes patchedNodes;
     private final NodeFlavors nodeFlavors;
     private final Inspector inspector;
     private final Clock clock;
 
-    public NodePatcher(NodeFlavors nodeFlavors, InputStream json, Node node, Supplier<LockedNodeList> nodes, Clock clock) {
-        this.memoizedNodes = Suppliers.memoize(nodes::get);
-        this.patchedNodes = new PatchedNodes(node);
+    public NodePatcher(NodeFlavors nodeFlavors, InputStream json, Node node, NodeRepository nodeRepository) {
+        this.nodeRepository = nodeRepository;
         this.nodeFlavors = nodeFlavors;
-        this.clock = clock;
+        this.clock = nodeRepository.clock();
         try {
             this.inspector = SlimeUtils.jsonToSlime(IOUtils.readBytes(json, 1000 * 1000)).get();
         } catch (IOException e) {
             throw new UncheckedIOException("Error reading request body", e);
+        }
+
+        this.patchedNodes = new PatchedNodes(nodeRepository.nodes().lockAndGetRequired(node));
+        try {
+            this.memoizedNodes = Suppliers.memoize(() -> nodeRepository.nodes().list(patchedNodes.nodeMutex()));
+        } catch (RuntimeException e) {
+            patchedNodes.close();
+            throw e;
         }
     }
 
@@ -79,17 +91,25 @@ public class NodePatcher {
         inspector.traverse((String name, Inspector value) -> {
             try {
                 patchedNodes.update(applyField(patchedNodes.node(), name, value, inspector, false));
+
+                if (RECURSIVE_FIELDS.contains(name)) {
+                    for (Node child: patchedNodes.children()) {
+                        patchedNodes.update(applyField(child, name, value, inspector, true));
+                    }
+                }
             } catch (IllegalArgumentException e) {
                 throw new IllegalArgumentException("Could not set field '" + name + "'", e);
             }
-
-            if (RECURSIVE_FIELDS.contains(name)) {
-                for (Node child: patchedNodes.children())
-                    patchedNodes.update(applyField(child, name, value, inspector, true));
-            }
-        } );
+        });
 
         return patchedNodes.nodes();
+    }
+
+    public NodeMutex nodeMutexOfHost() { return patchedNodes.nodeMutex(); }
+
+    @Override
+    public void close() {
+        patchedNodes.close();
     }
 
     private Node applyField(Node node, String name, Inspector value, Inspector root, boolean applyingAsChild) {
@@ -99,9 +119,9 @@ public class NodePatcher {
             case "currentRestartGeneration" :
                 return patchCurrentRestartGeneration(node, asLong(value));
             case "currentDockerImage" :
-                if (node.flavor().getType() != Flavor.Type.DOCKER_CONTAINER)
-                    throw new IllegalArgumentException("Docker image can only be set for docker containers");
-                return node.with(node.status().withDockerImage(DockerImage.fromString(asString(value))));
+                if (node.type().isHost())
+                    throw new IllegalArgumentException("Container image can only be set for child nodes");
+                return node.with(node.status().withContainerImage(DockerImage.fromString(asString(value))));
             case "vespaVersion" :
             case "currentVespaVersion" :
                 return node.with(node.status().withVespaVersion(Version.fromString(asString(value))));
@@ -116,9 +136,11 @@ public class NodePatcher {
             case "parentHostname" :
                 return node.withParentHostname(asString(value));
             case "ipAddresses" :
-                return IP.Config.verify(node.with(node.ipConfig().with(asStringSet(value))), memoizedNodes.get());
+                return IP.Config.verify(node.with(node.ipConfig().withPrimary(asStringSet(value))), memoizedNodes.get());
             case "additionalIpAddresses" :
-                return IP.Config.verify(node.with(node.ipConfig().with(IP.Pool.of(asStringSet(value)))), memoizedNodes.get());
+                return IP.Config.verify(node.with(node.ipConfig().withPool(node.ipConfig().pool().withIpAddresses(asStringSet(value)))), memoizedNodes.get());
+            case "additionalHostnames" :
+                return IP.Config.verify(node.with(node.ipConfig().withPool(node.ipConfig().pool().withAddresses(asAddressList(value)))), memoizedNodes.get());
             case WANT_TO_RETIRE :
             case WANT_TO_DEPROVISION :
                 boolean wantToRetire = asOptionalBoolean(root.field(WANT_TO_RETIRE)).orElse(node.status().wantToRetire());
@@ -149,6 +171,8 @@ public class NodePatcher {
                 return patchRequiredDiskSpeed(node, asString(value));
             case "reservedTo":
                 return value.type() == Type.NIX ? node.withoutReservedTo() : node.withReservedTo(TenantName.from(value.asString()));
+            case "exclusiveTo":
+                return node.withExclusiveTo(SlimeUtils.optionalString(value).map(ApplicationId::fromSerializedForm).orElse(null));
             case "switchHostname":
                 return value.type() == Type.NIX ? node.withoutSwitchHostname() : node.withSwitchHostname(value.asString());
             default :
@@ -210,6 +234,22 @@ public class NodePatcher {
         return strings;
     }
 
+    private List<Address> asAddressList(Inspector field) {
+        if ( ! field.type().equals(Type.ARRAY))
+            throw new IllegalArgumentException("Expected an ARRAY value, got a " + field.type());
+
+        List<Address> addresses = new ArrayList<>(field.entries());
+        for (int i = 0; i < field.entries(); i++) {
+            Inspector entry = field.entry(i);
+            if ( ! entry.type().equals(Type.STRING))
+                throw new IllegalArgumentException("Expected a STRING value, got a " + entry.type());
+            Address address = new Address(entry.asString());
+            addresses.add(address);
+        }
+
+        return addresses;
+    }
+
     private Node patchRequiredDiskSpeed(Node node, String value) {
         Optional<Allocation> allocation = node.allocation();
         if (allocation.isPresent())
@@ -249,36 +289,55 @@ public class NodePatcher {
         return Optional.of(field).filter(Inspector::valid).map(this::asBoolean);
     }
 
-    private class PatchedNodes {
-        private final Map<String, Node> nodes = new HashMap<>();
+    private class PatchedNodes implements Mutex {
+        private final Map<String, NodeMutex> nodes = new HashMap<>();
         private final String hostname;
         private boolean fetchedChildren;
 
-        private PatchedNodes(Node node) {
-            this.hostname = node.hostname();
+        private PatchedNodes(NodeMutex nodeMutex) {
+            this.hostname = nodeMutex.node().hostname();
+            nodes.put(hostname, nodeMutex);
+            fetchedChildren = !nodeMutex.node().type().isHost();
+        }
 
-            nodes.put(hostname, node);
-            fetchedChildren = !node.type().isHost();
+        public NodeMutex nodeMutex() {
+            return nodes.get(hostname);
         }
 
         public Node node() {
-            return nodes.get(hostname);
+            return nodeMutex().node();
         }
 
         public List<Node> children() {
             if (!fetchedChildren) {
-                memoizedNodes.get().childrenOf(hostname).forEach(this::update);
+                memoizedNodes.get()
+                        .childrenOf(hostname)
+                        .forEach(node -> nodeRepository.nodes().lockAndGet(node)
+                                .ifPresent(nodeMutex -> nodes.put(nodeMutex.node().hostname(), nodeMutex)));
                 fetchedChildren = true;
             }
-            return nodes.values().stream().filter(node -> !node.type().isHost()).collect(Collectors.toList());
+            return nodes.values().stream()
+                    .map(NodeMutex::node)
+                    .filter(node -> !node.type().isHost())
+                    .collect(Collectors.toList());
         }
 
         public void update(Node node) {
-            nodes.put(node.hostname(), node);
+            NodeMutex currentNodeMutex = nodes.get(node.hostname());
+            if (currentNodeMutex == null) {
+                throw new IllegalStateException("unable to update non-existing child: " + node.hostname());
+            }
+
+            nodes.put(node.hostname(), currentNodeMutex.with(node));
         }
 
         public List<Node> nodes() {
-            return List.copyOf(nodes.values());
+            return nodes.values().stream().map(NodeMutex::node).collect(Collectors.toList());
+        }
+
+        @Override
+        public void close() {
+            nodes.values().forEach(NodeMutex::close);
         }
     }
 }
